@@ -22,7 +22,7 @@ your existing kit).
 |---|---|---|
 | **0** | state store, engagement config, credential model, `init`/`config`/`add`/`status` | **done** |
 | **1** | nxc `spray` + `(Pwn3d!)` parsing, `ingest`, loot → creds, the credential loop, `analyze` + KB detect predicates | **done** |
-| 1.5 | Defender lab harness, `evasion.py`, technique green/red matrix, `posture` | planned |
+| **1.5** | Defender lab harness (`lab test`), `evasion.py`, technique green/red matrix, `posture` | **done** |
 | **2** | transports, executor with capture + safety gate, `enum`, per-vector privesc drivers, `run` | **done** |
 | 3 | report (`--check`, md/docx/pdf, cleanup manifest) + recce bridge | planned |
 | 4 | Kerberos/delegation/ADCS/BloodHound depth | planned |
@@ -37,6 +37,10 @@ recce contract stays green.
 sh report/preflight.sh          # checks TOOLS
 sh report/avcheck.sh            # static-signature FLOOR test (ClamAV) — never a Defender verdict
 #   + work through SUPPLIED-BINARIES.md (Potato exes, CVE PoCs, PEAS — the kit doesn't ship these)
+
+bin/fieldkit config set lab_host=10.13.13.5    # a Defender-on lab VM
+bin/fieldkit lab test           # prove which delivery paths evade the real Defender
+bin/fieldkit posture            # the green/red matrix — everything is red until lab-proven
 
 # 1) one engagement = one database in the working directory
 bin/fieldkit init 'ACME internal'
@@ -115,7 +119,7 @@ A wrong-format credential is caught at input, not forty hosts into a spray. Pass
 
 | Path | What |
 |---|---|
-| `fieldkit/` | the v2 package — state/config/creds/scope, the loop (`netexec`, `ingest`, `spray`, `dump`, `kb`), and execution (`transport`, `executor`, `runner`, `hostenum`, `privesc`) |
+| `fieldkit/` | the v2 package — state/config/creds/scope, the loop (`netexec`, `ingest`, `spray`, `dump`, `kb`), execution (`transport`, `executor`, `runner`, `hostenum`, `privesc`), and evasion (`evasion`, `lab`) |
 | `bin/fieldkit` | run it from a clone without installing |
 | `tests/` | unit tests + the recce integration contract |
 | `report/` | v1 findings → Markdown + DOCX + PDF (ported in Phase 3) |

@@ -199,9 +199,25 @@ _V2 = [
     "CREATE INDEX ix_step_host    ON step(host_id)",
 ]
 
+# v3: evasion lab results — the green/red matrix. One latest verdict per technique,
+# stamped with the Defender signature version it was taken under (so `posture` can
+# age it out). Upserted by technique.
+_V3 = [
+    """
+    CREATE TABLE evasion (
+        id         INTEGER PRIMARY KEY,
+        technique  TEXT NOT NULL UNIQUE,
+        verdict    TEXT NOT NULL,          -- clean | caught | error
+        signature  TEXT,                    -- Defender AV signature version at test time
+        detail     TEXT,
+        tested_at  TEXT NOT NULL
+    )
+    """,
+]
+
 #: (version, [statements]) applied in order; a database records the last applied
 #: version in PRAGMA user_version. Append to migrate; never edit a shipped entry.
-MIGRATIONS = [(1, _V1), (2, _V2)]
+MIGRATIONS = [(1, _V1), (2, _V2), (3, _V3)]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -595,6 +611,27 @@ class Store:
         if proven_only:
             sql += " WHERE proven = 1"
         return self.conn.execute(sql + " ORDER BY id").fetchall()
+
+    # -- evasion lab --------------------------------------------------------
+
+    def record_evasion(self, technique, verdict, signature=None, detail=None):
+        """Upsert the latest lab verdict for a technique. Returns the row id."""
+        with self._write():
+            self.conn.execute(
+                "INSERT INTO evasion (technique, verdict, signature, detail, tested_at) "
+                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(technique) DO UPDATE SET "
+                "verdict=excluded.verdict, signature=excluded.signature, "
+                "detail=excluded.detail, tested_at=excluded.tested_at",
+                (technique, verdict, signature, detail, utcnow()))
+            return self.conn.execute(
+                "SELECT id FROM evasion WHERE technique = ?", (technique,)).fetchone()[0]
+
+    def evasion_result(self, technique):
+        return self.conn.execute(
+            "SELECT * FROM evasion WHERE technique = ?", (technique,)).fetchone()
+
+    def evasion_results(self):
+        return self.conn.execute("SELECT * FROM evasion ORDER BY technique").fetchall()
 
     # -- analysis (what `analyze` ranks) ------------------------------------
 

@@ -18,9 +18,12 @@ import re
 import sqlite3
 import sys
 
+from datetime import datetime, timezone
+
 from . import (__version__, config as config_mod, creds as creds_mod,
-               executor as executor_mod, hostenum as hostenum_mod, ingest as ingest_mod,
-               kb as kb_mod, privesc as privesc_mod, scope as scope_mod, spray as spray_mod)
+               evasion as evasion_mod, executor as executor_mod, hostenum as hostenum_mod,
+               ingest as ingest_mod, kb as kb_mod, lab as lab_mod, privesc as privesc_mod,
+               scope as scope_mod, spray as spray_mod)
 from .errors import ConfirmationError, FieldkitError
 from .state import DB_ENV_VAR, Store, default_db_path
 
@@ -475,6 +478,76 @@ def cmd_run(args):
     return 0
 
 
+def cmd_lab_test(args):
+    with _open_store(args) as store:
+        store.require_engagement()
+        cfg = config_mod.load(store)
+        lab_host = args.host or cfg.get("lab_host")
+        if not lab_host:
+            _err("no lab host — set one with `fieldkit config set lab_host=<ip>` or pass --host")
+            return 2
+        host, cred, err = _resolve_target(store, lab_host)
+        if err:
+            _err(err)
+            return 2
+        if host["os"] and host["os"] != evasion_mod.WINDOWS:
+            _err(f"the lab host {lab_host} is not Windows — the Defender harness is Windows-only")
+            return 2
+        if not _confirm(f"run the Defender lab probes against {lab_host}? (drops the EICAR "
+                        "control + benign probes on the lab)", args.yes):
+            print("aborted — nothing ran")
+            return 1
+        report = lab_mod.run_tests(store, host, cred, allow=("read-only", "config-change"),
+                                   on_event=lambda m: print(m))
+
+    if report.aborted:
+        _err(report.aborted)
+        return 2
+    greens = report.green
+    print(f"\nlab {lab_host} (signature {report.signature or '?'}): "
+          f"{len(greens)} green, {len(report.results) - len(greens)} red")
+    if report.skipped:
+        print(f"skipped (need a staged benign probe): {', '.join(report.skipped)}")
+    print(f"\nsee the full matrix: {PROG} posture")
+    return 0
+
+
+def cmd_posture(args):
+    now = datetime.now(timezone.utc)
+    with _open_store(args) as store:
+        store.require_engagement()
+        cfg = config_mod.load(store)
+        lab_host = cfg.get("lab_host")
+        statuses = [evasion_mod.resolve(t, store.evasion_result(t.key), now=now)
+                    for t in evasion_mod.TECHNIQUES]
+
+    label = {evasion_mod.GREEN: "GREEN", evasion_mod.CAUGHT: "RED  caught",
+             evasion_mod.STALE: "RED  stale", evasion_mod.UNTESTED: "RED  untested"}
+    print("evasion posture — assume-caught: every path is red until the lab proves it clean\n")
+    print(f"  lab host: {lab_host or '(unset — `fieldkit config set lab_host=<ip>`)'}")
+    proven = [s for s in statuses if s.usable]
+    print(f"  {_plural(len(proven), 'technique')} lab-proven green; "
+          "the rest are treated as caught.\n")
+
+    for os_name in (evasion_mod.WINDOWS, evasion_mod.LINUX):
+        group = evasion_mod.recommend([s for s in statuses if s.technique.os == os_name])
+        if not group:
+            continue
+        print(f"  {os_name}:")
+        for s in group:
+            t = s.technique
+            amsi = "AMSI" if t.amsi_surface else "no-AMSI"
+            print(f"    {label[s.verdict]:<13} {t.title:<34} [{amsi}]  {s.reason}")
+        print()
+
+    win = evasion_mod.recommend([s for s in statuses if s.technique.os == evasion_mod.WINDOWS])
+    order = ", ".join(s.technique.key for s in win)
+    print(f"recommended delivery order (Windows, current knowledge):\n  {order}")
+    if not proven:
+        print(f"\nnothing is lab-proven — run `{PROG} lab test` against a Defender host to earn a green.")
+    return 0
+
+
 def cmd_status(args):
     with _open_store(args) as store:
         row = store.require_engagement()
@@ -657,6 +730,25 @@ def build_parser():
                        help="permit a riskier vector (repeatable)")
     p_run.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
     p_run.set_defaults(func=cmd_run)
+
+    p_lab = sub.add_parser(
+        "lab", help="prove evasion techniques against a Defender lab host")
+    lab_sub = p_lab.add_subparsers(dest="lab_command", metavar="<action>")
+    l_test = lab_sub.add_parser(
+        "test", help="run the benign probes and record Defender's verdict",
+        description="Confirms the lab's Defender is live (EICAR control), then runs a "
+                    "benign probe per technique and records green/red from Defender's "
+                    "own verdict. Refuses to report greens from an unprotected lab.")
+    l_test.add_argument("--host", metavar="IP", help="lab host (default: config lab_host)")
+    l_test.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
+    l_test.set_defaults(func=cmd_lab_test)
+    p_lab.set_defaults(func=lambda a: _missing(p_lab))
+
+    p_posture = sub.add_parser(
+        "posture", help="the evasion green/red matrix + recommended delivery",
+        description="Shows every technique's status under assume-caught (red until a "
+                    "fresh lab result proves it clean) and the recommended delivery order.")
+    p_posture.set_defaults(func=cmd_posture)
 
     p_status = sub.add_parser("status", help="the engagement board")
     p_status.add_argument("--hosts", action="store_true", help="list every host")

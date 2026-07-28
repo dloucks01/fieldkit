@@ -402,5 +402,27 @@ class RunCliTest(CliTestCase):
         self.assertIn("not in scope", out)
 
 
+class PostureCliTest(CliTestCase):
+    def test_posture_defaults_to_assume_caught(self):
+        self.init()
+        out = self.run_cli("posture")
+        self.assertIn("assume-caught", out)
+        self.assertIn("RED  untested", out)          # nothing proven yet
+        self.assertIn("recommended delivery order", out)
+        self.assertIn("native-exe", out)
+
+    def test_posture_shows_green_after_a_clean_lab_result(self):
+        self.init()
+        self.store().record_evasion("native-exe", "clean", signature="1.401.5")
+        out = self.run_cli("posture")
+        self.assertIn("GREEN", out)
+        self.assertIn("1 technique lab-proven green", out)
+
+    def test_lab_test_without_a_lab_host_errors(self):
+        self.init()
+        out = self.run_cli("lab", "test", "--yes", expect=2)
+        self.assertIn("no lab host", out)
+
+
 if __name__ == "__main__":
     unittest.main()

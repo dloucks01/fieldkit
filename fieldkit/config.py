@@ -93,6 +93,7 @@ KEYS = {
     "userlist":  (_v_path, "path to the username wordlist (pre-staged for air-gap)"),
     "passlist":  (_v_path, "path to the password wordlist"),
     "client":    (lambda k, v: v, "client name, for the report header"),
+    "lab_host":  (_v_host, "a Defender-on Windows lab host to prove evasion against (see `posture`)"),
 }
 
 DEFAULTS = {
