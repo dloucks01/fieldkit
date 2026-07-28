@@ -24,19 +24,26 @@ from fieldkit.runner import RunResult  # noqa: E402
 from fieldkit.state import Store  # noqa: E402
 
 
-def fake_run(impersonatable_sysadmin="sa", linked=("SQL02",), starts_sysadmin=False):
-    """A fake nxc mssql -q: routes by SQL content, tracks the role grant statefully."""
+def fake_run(impersonatable_sysadmin="sa", linked=("SQL02",), starts_sysadmin=False,
+             xp_directly=False):
+    """A fake nxc mssql -q: routes by SQL content, tracks the role grant statefully.
+    ``xp_directly`` = xp_cmdshell runs without being sysadmin (granted rights / already on)."""
     state = {"granted": False}
 
     def run(argv, env=None):
         sql = argv[argv.index("-q") + 1] if "-q" in argv else ""
         out = ""
-        if "sp_addsrvrolemember" in sql:
+        if "echo FK:XPOK" in sql:                       # the xp_cmdshell capability test
+            if xp_directly or starts_sysadmin or state["granted"]:
+                out = "FK:XPOK"
+        elif "sp_configure" in sql:                     # enable/disable — no-op
+            out = ""
+        elif "sp_addsrvrolemember" in sql:
             state["granted"] = True
         elif "EXECUTE AS" in sql and "IS_SRVROLEMEMBER" in sql:
             out = "FK:1" if impersonatable_sysadmin else "FK:0"
         elif "IS_SRVROLEMEMBER" in sql:
-            out = "FK:1" if (starts_sysadmin or state["granted"]) else "FK:0"
+            out = "FK:1" if starts_sysadmin else "FK:0"
         elif "SUSER_NAME" in sql:
             out = "FK:appuser"
         elif "IMPERSONATE" in sql:
@@ -91,11 +98,32 @@ class EscalateTest(MssqlTestCase):
         self.assertFalse([f for f in self.store.findings()
                           if f["vector_type"] == "mssql_impersonation"])
 
-    def test_already_sysadmin_is_a_noop(self):
+    def test_xp_cmdshell_directly_without_sysadmin(self):
+        # the reported field case: not sysadmin, no impersonatable login, but xp_cmdshell
+        # runs (granted rights / already enabled) — must establish exec, not dead-end.
+        rep = mssql.escalate_privs(
+            self.store, self.host, self.cred,
+            run=fake_run(impersonatable_sysadmin=None, linked=(), xp_directly=True),
+            allow_config_change=True)
+        self.assertEqual(rep.status, "xpcmd")
+        proven = [f for f in self.store.findings() if f["vector_type"] == "mssql_xpcmdshell"]
+        self.assertEqual(len(proven), 1)
+        self.assertTrue(self.store.steps(finding_id=proven[0]["id"]))
+        self.assertEqual(self.store.counts()["admin_access"], 1)   # access upgraded → exec
+        self.assertTrue(any("xp_cmdshell" in (a["cleanup_cmd"] or "")
+                            for a in self.store.artifacts()))       # disable-it cleanup
+
+    def test_sysadmin_establishes_xpcmd_directly(self):
         rep = mssql.escalate_privs(self.store, self.host, self.cred,
                                    run=fake_run(starts_sysadmin=True), allow_config_change=True)
+        self.assertEqual(rep.status, "xpcmd")                      # sysadmin runs xp_cmdshell
+        self.assertEqual(self.store.counts()["admin_access"], 1)
+
+    def test_read_only_reports_sysadmin_without_touching_anything(self):
+        rep = mssql.escalate_privs(self.store, self.host, self.cred,
+                                   run=fake_run(starts_sysadmin=True), allow_config_change=False)
         self.assertEqual(rep.status, "already_sysadmin")
-        self.assertEqual(self.store.counts()["admin_access"], 0)
+        self.assertEqual(self.store.counts()["admin_access"], 0)   # read-only: nothing changed
 
     def test_no_path_when_no_impersonation_or_linked(self):
         rep = mssql.escalate_privs(self.store, self.host, self.cred,

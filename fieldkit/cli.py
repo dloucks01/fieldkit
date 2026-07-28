@@ -299,8 +299,43 @@ def cmd_spray(args):
     return 0
 
 
+def _first_dir(v):
+    return v.split(",")[0].strip() if v else v
+
+
 def _stage_dirs(cfg):
-    return dict(stage_win=cfg.get("stage_win"), stage_lin=cfg.get("stage_lin"))
+    # a comma-separated stage_win/stage_lin means "try these dirs"; single-dir rendering
+    # (find_vector, run) uses the first.
+    return dict(stage_win=_first_dir(cfg.get("stage_win")),
+                stage_lin=_first_dir(cfg.get("stage_lin")))
+
+
+def _stage_dir_list(cfg, key):
+    v = cfg.get(key)
+    return [d.strip() for d in v.split(",") if d.strip()] if v else []
+
+
+def _expand_stage_dirs(store, host_ip, host_os, cfg, vectors, dirs):
+    """For each provisioned (stages/builds) vector, one copy per stage dir — so an
+    'artifact didn't land' (delivery) miss advances the loop to the SAME tool in the next
+    writable dir. Set e.g. `config set stage_win='C:\\Windows\\Temp,C:\\Users\\Public'`."""
+    import dataclasses
+    win = host_os == "windows"
+    other = _first_dir(cfg.get("stage_lin" if win else "stage_win"))
+    out = []
+    for v in vectors:
+        if not (getattr(v, "stages", ()) or getattr(v, "builds", ())):
+            out.append(v)
+            continue
+        for d in dirs:
+            kw = {"stage_win": d, "stage_lin": other} if win else \
+                 {"stage_win": other, "stage_lin": d}
+            v2 = privesc_mod.find_vector(store, host_ip, v.key, **kw)
+            if v2:
+                leaf = d.rstrip("\\/").replace("/", "\\").rsplit("\\", 1)[-1] or "dir"
+                slug = "".join(c for c in leaf if c.isalnum()) or "dir"
+                out.append(dataclasses.replace(v2, key=f"{v2.key}@{slug}"))
+    return out
 
 
 def cmd_analyze(args):
@@ -535,6 +570,12 @@ def cmd_escalate(args):
             _err(f"no privesc vectors on {args.host} — run `fieldkit enum {args.host}` "
                  "then `fieldkit analyze` first")
             return 2
+        # a comma-separated stage_win/stage_lin → try each dir for provisioned vectors,
+        # so a "didn't land" miss rolls to the same tool in the next writable dir.
+        dir_key = "stage_win" if host["os"] == "windows" else "stage_lin"
+        dirs = _stage_dir_list(cfg, dir_key)
+        if len(dirs) > 1:
+            vectors = _expand_stage_dirs(store, args.host, host["os"], cfg, vectors, dirs)
         allow = ["read-only"] + list(args.allow or [])
 
         # evasion posture: order delivery alternates + know which are already caught.
@@ -689,6 +730,13 @@ def _print_escalation_outcome(outcome):
     else:
         print("no vector proved elevation — every ranked move was tried. See the trail "
               "for the per-vector verdict and its recommended manual step.")
+    if not outcome.ok and any(a.verdict and a.verdict.axis == "delivery"
+                              for a in outcome.attempts):
+        print("\nan artifact didn't land at the stage dir. Try more writable dirs — the loop "
+              "walks each one:\n  fieldkit config set "
+              "stage_win='C:\\Windows\\Temp,C:\\Users\\Public,C:\\ProgramData'\n"
+              "then re-run. If it's AV eating the payload (common with Potatoes), that's an "
+              "evasion problem, not a dir problem — see `fieldkit poc` / posture.")
     manual = [a for a in outcome.attempts if a.action == escalate_mod.MANUAL]
     if manual:
         print(f"\n{_plural(len(manual), 'manual route')} can't be auto-fired — prepare "
@@ -853,16 +901,21 @@ def cmd_mssql_escalate(args):
         return 2
 
     print()
-    if rep.status == "already_sysadmin":
-        print("already sysadmin on this instance — run "
-              f"`{PROG} enum {args.host}` then `{PROG} escalate {args.host} --allow config-change` "
-              "(over xp_cmdshell).")
+    nxt = (f"next: `{PROG} enum {args.host}` → "
+           f"`{PROG} escalate {args.host} --allow config-change` → SYSTEM (over xp_cmdshell).")
+    if rep.status == "xpcmd":
+        print("GOT EXEC: xp_cmdshell runs OS commands as the SQL service account (enabled + "
+              "verified). Recorded as a finding; your MSSQL access is upgraded to admin, and "
+              "disabling xp_cmdshell is on the cleanup manifest.")
+        print(nxt)
     elif rep.status == "escalated":
-        print(f"ESCALATED: impersonated {rep.via} and added your login to the sysadmin role "
-              "(verified). Recorded as a finding; cleanup (drop the role member) is on the "
-              "manifest.")
-        print(f"next: `{PROG} enum {args.host}` → `{PROG} escalate {args.host} --allow config-change` "
-              "→ SYSTEM.")
+        print(f"ESCALATED: impersonated {rep.via} → added your login to sysadmin → enabled "
+              "xp_cmdshell (verified). Recorded as a finding; cleanup (drop the role member, "
+              "disable xp_cmdshell) is on the manifest.")
+        print(nxt)
+    elif rep.status == "already_sysadmin":
+        print("you are sysadmin — re-run with `--allow config-change` to enable + confirm "
+              f"xp_cmdshell, then `{PROG} enum`/`escalate` run over it.")
     elif rep.status == "gated":
         print(f"impersonatable sysadmin login(s): {', '.join(rep.impersonatable)} — re-run "
               "with `--allow config-change` to grant yourself sysadmin (reversible).")
