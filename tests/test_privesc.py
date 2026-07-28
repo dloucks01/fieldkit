@@ -178,6 +178,18 @@ class WindowsDriverTest(unittest.TestCase):
         v = [x for x in vectors_for(f, "10.0.0.7") if x.key.startswith("unquoted:")][0]
         self.assertEqual(v.builds, ())                          # can't restart -> no auto-build
 
+    def test_weak_service_perms_reconfigures_binpath_natively(self):
+        f = HostFacts(os="windows",
+                      reconfigurable_services={"AppMgmt": "C:\\Program Files\\App\\svc.exe -k net"})
+        v = [x for x in vectors_for(f, "10.0.0.7", stage_win="C:\\stg")
+             if x.key == "weakservice:AppMgmt"][0]
+        self.assertIn('sc config AppMgmt binPath= "cmd /c whoami', v.command)
+        self.assertIn("sc start AppMgmt", v.command)
+        self.assertIn("type", v.command)                       # reads the SYSTEM proof back
+        self.assertEqual(v.builds, ())                         # native — nothing to build/stage
+        self.assertIn("binPath= C:\\Program Files\\App\\svc.exe -k net", v.cleanup)  # restored
+        self.assertEqual(v.report_type, "weak_service_perms")
+
     def test_unquoted_service(self):
         f = HostFacts(os="windows",
                       unquoted_services=[(None, "C:\\Program Files\\My App\\svc.exe")])

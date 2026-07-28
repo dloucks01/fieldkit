@@ -44,6 +44,12 @@ WIN_OUT = {
     "services": ("Name     PathName                          StartMode\n"
                  "MyApp    C:\\Program Files\\My App\\svc.exe   Auto\n"
                  "Spooler  C:\\Windows\\System32\\spoolsv.exe   Auto\n"),
+    # per-service SDDL: MyApp grants Authenticated Users change-config (DC); Spooler doesn't.
+    "svcperms": (
+        "SVC|MyApp|C:\\Program Files\\My App\\svc.exe|"
+        "O:SYG:SYD:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;AU)(A;;CCLCSWRPWPDTLOCRRC;;;BU)\n"
+        "SVC|Spooler|C:\\Windows\\System32\\spoolsv.exe|"
+        "O:SYG:SYD:(A;;CCLCSWLOCRRC;;;AU)\n"),
 }
 
 
@@ -57,6 +63,8 @@ def make_runner(table, aie_both=True):
             return RunResult(argv, exit_code=0, stdout=hit * (2 if aie_both else 1))
         if command.startswith("wmic service"):
             return RunResult(argv, exit_code=0, stdout=table.get("services", ""))
+        if "sdshow" in command:
+            return RunResult(argv, exit_code=0, stdout=table.get("svcperms", ""))
         return RunResult(argv, exit_code=0, stdout=table.get(command, ""))
     return run
 
@@ -111,7 +119,7 @@ class WindowsFactsTest(EnumTestCase):
     def test_run_and_parse(self):
         host, cred, hid = self.windows_host()
         report = run_enum(self.store, host, cred, run=make_runner(WIN_OUT))
-        self.assertEqual(set(report.ran), {"priv", "groups", "aie", "services"})
+        self.assertEqual(set(report.ran), {"priv", "groups", "aie", "services", "svcperms"})
         f = facts_for(self.store, hid)
         self.assertIn("SeImpersonatePrivilege", f.privs)
         self.assertIn("Backup Operators", f.win_groups)
@@ -119,11 +127,40 @@ class WindowsFactsTest(EnumTestCase):
         self.assertTrue(f.always_install_elevated)
         self.assertEqual(len(f.unquoted_services), 1)  # MyApp, not the C:\Windows Spooler
         self.assertEqual(f.unquoted_services[0][0], "MyApp")  # the service name is captured
+        # MyApp's ACL grants Authenticated Users change-config; Spooler's does not
+        self.assertIn("MyApp", f.reconfigurable_services)
+        self.assertNotIn("Spooler", f.reconfigurable_services)
 
     def test_aie_needs_both_keys(self):
         host, cred, hid = self.windows_host()
         run_enum(self.store, host, cred, run=make_runner(WIN_OUT, aie_both=False))
         self.assertFalse(facts_for(self.store, hid).always_install_elevated)
+
+
+class SvcPermsParseTest(unittest.TestCase):
+    """The SDDL change-config heuristic — a broad principal with DC/GA/mask is a hijack."""
+
+    def parse(self, sddl):
+        from fieldkit.hostenum import HostFacts, _p_svcperms
+        f = HostFacts(os="windows")
+        _p_svcperms(f, f"SVC|Svc|C:\\svc.exe|{sddl}\n")
+        return "Svc" in f.reconfigurable_services
+
+    def test_dc_letter_to_authenticated_users(self):
+        self.assertTrue(self.parse("D:(A;;CCDCLCSWRPWP;;;AU)"))
+
+    def test_generic_all_to_users(self):
+        self.assertTrue(self.parse("D:(A;;GA;;;BU)"))
+
+    def test_hex_mask_with_change_config_bit(self):
+        self.assertTrue(self.parse("D:(A;;0x00000002;;;WD)"))   # 0x2 = SERVICE_CHANGE_CONFIG
+
+    def test_change_config_to_narrow_sid_ignored(self):
+        # granting a specific service SID / SYSTEM change-config is normal, not a finding
+        self.assertFalse(self.parse("D:(A;;GA;;;S-1-5-80-1234)"))
+
+    def test_broad_sid_without_change_config_ignored(self):
+        self.assertFalse(self.parse("D:(A;;CCLCSWRPWPLOCRRC;;;AU)"))  # start/stop, not DC
 
 
 class GuardTest(EnumTestCase):
