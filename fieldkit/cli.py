@@ -14,16 +14,16 @@ Phase 0 surface:
 """
 import argparse
 import os
-import re
 import sqlite3
 import sys
 
 from datetime import datetime, timezone
 
-from . import (__version__, config as config_mod, creds as creds_mod,
-               evasion as evasion_mod, executor as executor_mod, hostenum as hostenum_mod,
-               adcs as adcs_mod, arsenal as arsenal_mod, bloodhound as bloodhound_mod,
-               bridge as bridge_mod, delegation as delegation_mod, ingest as ingest_mod,
+from . import (__version__, adcs as adcs_mod, arsenal as arsenal_mod,
+               bloodhound as bloodhound_mod, bridge as bridge_mod,
+               classify as classify_mod, config as config_mod, creds as creds_mod,
+               delegation as delegation_mod, evasion as evasion_mod,
+               executor as executor_mod, hostenum as hostenum_mod, ingest as ingest_mod,
                kb as kb_mod, kerberos as kerberos_mod, lab as lab_mod,
                privesc as privesc_mod, report as report_mod, scope as scope_mod,
                spray as spray_mod)
@@ -409,13 +409,6 @@ def cmd_enum(args):
     return 0
 
 
-def _looks_elevated(output, os_name):
-    low = (output or "").lower()
-    if os_name == hostenum_mod.WINDOWS:
-        return "nt authority\\system" in low or "\\administrator" in low
-    return "uid=0(" in low or bool(re.search(r"\buid=0\b", low))
-
-
 def cmd_run(args):
     with _open_store(args) as store:
         store.require_engagement()
@@ -460,21 +453,19 @@ def cmd_run(args):
         if res.blocked:
             _err(res.blocked)
             return 2
-        if not res.ok:
-            _err(f"the vector did not complete: {res.run.error if res.run else 'no output'}")
-            return 1
-        elevated = _looks_elevated(res.output, host["os"])
-        if elevated:
+        verdict = classify_mod.classify(res.run, os_name=host["os"])
+        if verdict.ok:
             store.add_finding(vtype, vector.title, host_id=host["id"], proven=True,
                               evidence=(res.output or "").strip()[:500])
 
     print("\n--- output ---")
     print((res.output or "").rstrip() or "(no output)")
     print("---")
-    if elevated:
+    if verdict.ok:
         print("PROVEN: the command returned an elevated context. Captured as a finding.")
     else:
-        print("ran, but the output does not clearly show elevation — check it above.")
+        print(f"verdict: {verdict.outcome} ({verdict.confidence} confidence) — {verdict.detail}")
+        print(f"  → {verdict.guidance}")
     if vector.cleanup:
         print(f"cleanup recorded: {vector.cleanup}")
     return 0
@@ -1078,6 +1069,9 @@ def build_parser():
     ar_find = ar_sub.add_parser("find", help="print the path to a staged artifact by name")
     ar_find.add_argument("name")
     ar_find.set_defaults(func=cmd_arsenal_find)
+    ar_rules = ar_sub.add_parser(
+        "rules", help="print the failure-classifier ruleset (how it reads tool output)")
+    ar_rules.set_defaults(func=lambda a: (print(classify_mod.describe_rules()) or 0))
     p_arsenal.set_defaults(func=cmd_arsenal_list)  # bare `arsenal` = list
 
     p_status = sub.add_parser("status", help="the engagement board")
