@@ -245,6 +245,15 @@ disk). The SeImpersonate ladder's in-memory rung is `Invoke-GodPotato.ps1` via a
 the loop climbs to a fileless delivery that sidesteps the on-disk signature entirely. Needs
 `config set lhost=<ip>`.
 
+In-memory / fileless delivery: a vector may `serves=(script,)` instead of staging a binary
+— the loop serves it over HTTP (ephemeral port, `config lhost`) and the target IEX-loads it in
+memory (nothing on disk). The **SeImpersonate ladder** is generated as 5 native `.exe` rungs
+(`seimpersonate:<tool>`, auto-staged) **plus a `.ps1` equivalent for each**
+(`seimpersonate:ps-<tool>`, serving `Invoke-<Tool>.ps1` via a `powershell -ep bypass` IEX
+cradle). So when the on-disk Potatoes are AV-caught, the loop climbs to the fileless rungs that
+sidestep the on-disk signature. Stage your `Invoke-<Tool>.ps1` wrappers in the arsenal; the ps1
+invocation mirrors the .exe args (tune it to your wrapper).
+
 ## 12. Evasion (assume-caught + the delivery ladder)
 
 ```bash

