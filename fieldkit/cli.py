@@ -516,6 +516,9 @@ def cmd_escalate(args):
             if v.delivery:
                 marks.append(f"delivery {v.delivery}"
                              + (" — KNOWN CAUGHT, will skip" if v.delivery in caught else ""))
+            for name, _ in v.stages:
+                have = "in arsenal" if arsenal_mod.find(name) else "NOT staged"
+                marks.append(f"auto-stage {name} ({have})")
             mark = ("  (" + "; ".join(marks) + ")") if marks else ""
             print(f"  {v.key:<26} {v.axes:<18} {v.safety}{mark}")
         if not runnable:
@@ -550,11 +553,30 @@ def cmd_escalate(args):
                                  detail=f"caught live during escalation on {args.host} "
                                         f"({now.date().isoformat()})")
 
+        def stage(vector):
+            done = []
+            for name, remote in vector.stages:
+                local = arsenal_mod.find(name)
+                if not local:
+                    return escalate_mod.StageResult(
+                        False, f"{name} not in the arsenal — `fieldkit arsenal` to fetch it")
+                act = executor_mod.Action(
+                    host=host, cred=cred, command=None, label=f"stage:{name}",
+                    safety="config-change", upload=(local, remote),
+                    creates=[(f"staged {name} at {remote}", f"del {remote}")])
+                res = executor_mod.execute(store, act, allow=allow,
+                                           on_event=lambda m: print(m))
+                if res.blocked or not res.ok:
+                    return escalate_mod.StageResult(
+                        False, res.blocked or f"upload of {name} failed")
+                done.append(f"{name}→{remote}")
+            return escalate_mod.StageResult(True, "staged " + ", ".join(done))
+
         print("\n--- escalating ---")
         outcome = escalate_mod.escalate(
             vectors, fire=fire, allow=allow, os_name=host["os"], budget=budget,
             delivery_order=delivery_order, caught=caught, mark_caught=mark_caught,
-            on_event=lambda m: print(m))
+            stage=None if args.no_stage else stage, on_event=lambda m: print(m))
 
         if outcome.ok:
             v = outcome.proven
@@ -1103,6 +1125,8 @@ def build_parser():
                        help="permit riskier vectors in the loop (repeatable)")
     p_esc.add_argument("--max", type=int, metavar="N",
                        help=f"cap vectors fired (default {escalate_mod.DEFAULT_BUDGET})")
+    p_esc.add_argument("--no-stage", action="store_true",
+                       help="don't auto-stage a missing artifact from the arsenal on a miss")
     p_esc.add_argument("--dry-run", action="store_true",
                        help="print the ranked plan and exit without firing")
     p_esc.add_argument("--rules", action="store_true",

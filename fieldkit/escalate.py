@@ -18,9 +18,14 @@ Design, kept parallel to :mod:`fieldkit.classify`:
     (native PE → in-memory → script). A delivery already known-caught (lab or a live
     catch this run) is skipped without firing — assume-caught applied live, so the loop
     never re-burns a burned delivery on the client. See :data:`fieldkit.privesc` families;
-  * **only what the kit can actually do** — for the axes with no automation yet
-    (build/rebuild/stage) the loop ``ADVANCE``\\s while the trail still carries the
-    classifier's guidance for the operator's manual step;
+  * **auto-stage a missing tool** — when a vector fails because the artifact it needs
+    is not on the target (the ``stage`` axis, or its Windows phrasing on the ``delivery``
+    axis) and the vector declares stageable artifacts, the loop pushes them from the
+    arsenal via the injected ``stage`` and re-fires the same vector once. No arsenal
+    match → it advances, carrying the classifier's "stage it" guidance;
+  * **only what the kit can actually do** — the ``build``/``rebuild`` axes still
+    ``ADVANCE`` (fieldkit deliberately owns no payload toolchain), with the classifier's
+    guidance in the trail for the operator's manual step;
   * **the safety gate is upheld** — a vector whose blast radius exceeds ``allow`` is
     *skipped without firing*; the loop never escalates its own authorisation;
   * **a decision trail** — every step (fired, retried, gated, skipped) is recorded, so
@@ -42,6 +47,13 @@ ADVANCE = "advance"      # this vector is spent — move to the next-ranked one
 GATED = "gated"          # blast radius exceeds --allow — never fired
 SKIPPED = "skipped"      # not fired for another reason (blocked transport, budget)
 BURNED = "burned"        # delivery is known-caught — skipped without firing (assume-caught)
+STAGED = "staged"        # pushed a missing artifact from the arsenal, then re-fired
+
+#: fallback axes that mean "the artifact this vector needs is not on the target". The
+#: same missing-binary shows as NO_TOOL on linux (`command not found`) and DELIVERY on
+#: windows (`is not recognized`), so auto-stage triggers on both — but only for a vector
+#: that declares what to stage.
+STAGE_AXES = ("stage", "delivery")
 
 #: classifier fallback *axis* -> what the loop does about it. The axes the current kit
 #: cannot yet act on (build/rebuild/stage/evasion) fall through to ADVANCE; the trail
@@ -94,6 +106,14 @@ class Outcome:
         return [a for a in self.attempts if a.fired]
 
 
+@dataclass
+class StageResult:
+    """The result of an attempt to stage a vector's missing artifact(s)."""
+
+    ok: bool
+    detail: str = ""
+
+
 def order_deliveries(vectors, delivery_order):
     """Order each delivery *family*'s alternates by evasion posture, in place of the raw
     score tiebreak. ``delivery_order`` is technique keys best-first (from
@@ -121,7 +141,7 @@ def order_deliveries(vectors, delivery_order):
 
 def escalate(vectors, *, fire, allow="read-only", os_name=None,
              budget=DEFAULT_BUDGET, retries=1, on_event=None,
-             delivery_order=None, caught=None, mark_caught=None):
+             delivery_order=None, caught=None, mark_caught=None, stage=None):
     """Walk ``vectors`` (already ranked best-first) along the fallback axis.
 
     ``fire(vector) -> ExecResult`` runs one vector and is injected (the CLI wires it to
@@ -134,7 +154,12 @@ def escalate(vectors, *, fire, allow="read-only", os_name=None,
     objective's delivery alternates; ``caught`` is the set of technique keys already known
     caught (those vectors are skipped without firing); ``mark_caught(technique)`` is called
     when a delivery is caught live, so the catch persists and the same delivery is not
-    re-burned. Returns an :class:`Outcome` with the winning vector and the full trail.
+    re-burned.
+
+    Auto-stage: ``stage(vector) -> StageResult`` pushes a vector's declared ``stages``
+    artifacts from the arsenal. It is called once per vector when the target reports the
+    artifact missing (a :data:`STAGE_AXES` verdict); on success the vector is re-fired.
+    Returns an :class:`Outcome` with the winning vector and the full trail.
     """
     def emit(msg):
         if on_event:
@@ -146,6 +171,7 @@ def escalate(vectors, *, fire, allow="read-only", os_name=None,
 
     vectors = order_deliveries(vectors, delivery_order)
     caught = set(caught or ())
+    staged_keys = set()
 
     fired = 0
     for vector in vectors:
@@ -183,6 +209,24 @@ def escalate(vectors, *, fire, allow="read-only", os_name=None,
 
             verdict = classify_mod.classify(result.run, os_name=os_name)
             axis_action = POLICY.get(verdict.axis, SURFACE)
+
+            # auto-stage: the artifact this vector needs isn't on the target. Push it from
+            # the arsenal and re-fire — once per vector, and only within budget.
+            if (verdict.axis in STAGE_AXES and stage is not None
+                    and getattr(vector, "stages", ()) and vector.key not in staged_keys
+                    and fired < budget):
+                staged_keys.add(vector.key)
+                emit(f"  stage  {vector.key}: {verdict.outcome} — staging from the arsenal")
+                sres = stage(vector)
+                if sres and sres.ok:
+                    attempts.append(Attempt(vector, STAGED, verdict, sres.detail))
+                    emit(f"  staged {vector.key}: {sres.detail} — retrying")
+                    continue  # re-fire the same vector, now that its artifact is present
+                # couldn't stage — advance, but say why.
+                why = sres.detail if sres else "no arsenal match"
+                attempts.append(Attempt(vector, ADVANCE, verdict, f"stage failed: {why}"))
+                emit(f"  advance  {vector.key}: {verdict.outcome} — stage failed: {why}")
+                break
 
             if axis_action == RETRY and tries < retries and fired < budget:
                 tries += 1
@@ -234,6 +278,9 @@ def describe_policy():
         lines.append(f"  {act:<8} {gloss}\n           axes: {axes}")
     lines.append("  gated    a vector above --allow is skipped, never fired")
     lines.append("  burned   a delivery known-caught (lab/live) is skipped, never fired")
+    lines.append("  staged   a missing artifact is pushed from the arsenal, then re-fired")
     lines.append("\nevasion axis: a CAUGHT fire marks its delivery red (live) and the loop "
                  "climbs\n           to the next delivery of the same objective, in posture order.")
+    lines.append("stage/delivery axes: if the vector declares stageable artifacts, the loop "
+                 "auto-\n           stages them from the arsenal and re-fires once, else advances.")
     return "\n".join(lines)

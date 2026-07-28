@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fieldkit.creds import Credential  # noqa: E402
 from fieldkit.transport import (  # noqa: E402
-    applicable, by_name, render_exec, select,
+    applicable, by_name, render_exec, render_put, select, select_put,
 )
 
 
@@ -91,6 +91,28 @@ class SelectTest(unittest.TestCase):
     def test_linux_selects_ssh(self):
         t = select("linux", {"ssh"}, is_admin=False)
         self.assertEqual(t.name, "ssh")
+
+
+class PutTest(unittest.TestCase):
+    def test_smb_put_needs_admin(self):
+        self.assertIsNone(select_put("windows", {"smb"}, is_admin=False))
+        self.assertEqual(select_put("windows", {"smb"}, is_admin=True).name, "smb")
+
+    def test_winrm_has_no_put_path(self):
+        # winrm can exec but not transfer files — no staging over it.
+        self.assertIsNone(select_put("windows", {"winrm"}, is_admin=False))
+
+    def test_ssh_can_put(self):
+        self.assertEqual(select_put("linux", {"ssh"}, is_admin=False).name, "ssh")
+
+    def test_render_put_builds_put_file_argv(self):
+        t = by_name("smb")
+        r = render_put(t, Credential("admin", "pw", domain="corp"), "10.0.0.7",
+                       "/arsenal/GodPotato.exe", "C:\\Windows\\Temp\\GodPotato.exe")
+        self.assertIn("--put-file", r.argv)
+        i = r.argv.index("--put-file")
+        self.assertEqual(r.argv[i + 1:i + 3],
+                         ["/arsenal/GodPotato.exe", "C:\\Windows\\Temp\\GodPotato.exe"])
 
 
 if __name__ == "__main__":  # pragma: no cover

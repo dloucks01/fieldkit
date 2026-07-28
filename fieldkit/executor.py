@@ -42,6 +42,9 @@ class Action:
     finding_id: int = None
     #: cleanup manifest entries this action will create: (description, cleanup_cmd).
     creates: tuple = ()
+    #: (local, remote) to push instead of running a command — a stage step. Uses a
+    #: file-transfer transport (smb/ssh); config-change by nature (it writes to disk).
+    upload: tuple = None
 
 
 @dataclass
@@ -87,6 +90,13 @@ def execute(store, action, *, run=None, allow="read-only", timeout=600, on_event
         transport = transport_mod.by_name(action.transport)
         if transport is None:
             return ExecResult(blocked=f"unknown transport {action.transport!r}")
+    elif action.upload:
+        methods, is_admin = _proven_path(store, host["id"], cred_row["id"])
+        transport = transport_mod.select_put(host["os"], methods, is_admin)
+        if transport is None:
+            return ExecResult(
+                blocked=f"no proven file-transfer path to {host['ip']} — staging needs "
+                        "smb (as admin) or ssh proven on the host first")
     else:
         methods, is_admin = _proven_path(store, host["id"], cred_row["id"])
         transport = transport_mod.select(host["os"], methods, is_admin, shell=action.shell)
@@ -104,14 +114,20 @@ def execute(store, action, *, run=None, allow="read-only", timeout=600, on_event
             transport=transport.name)
 
     cred = Credential.from_row(cred_row)
-    rendered = transport_mod.render_exec(transport, cred, host["ip"], action.command)
+    if action.upload:
+        local, remote = action.upload
+        rendered = transport_mod.render_put(transport, cred, host["ip"], local, remote)
+        recorded_cmd = f"put-file {local} -> {remote}"
+    else:
+        rendered = transport_mod.render_exec(transport, cred, host["ip"], action.command)
+        recorded_cmd = action.command
     if on_event:
-        on_event(f"  [{transport.name}] {host['ip']}: {action.command}")
+        on_event(f"  [{transport.name}] {host['ip']}: {recorded_cmd}")
     result = run(rendered.argv, rendered.env)
 
     with store.transaction():
         step_id = store.add_step(
-            cmd=action.command, output=result.output,
+            cmd=recorded_cmd, output=result.output,
             exit_code=result.exit_code, host_id=host["id"],
             finding_id=action.finding_id, label=action.label, transport=transport.name)
         for entry in action.creates:
