@@ -94,7 +94,7 @@ def val(f): return a[a.index(f) + 1] if f in a else None
 flag = "-x" if "-x" in a else ("-X" if "-X" in a else None)
 if flag:
     cmd = a[a.index(flag) + 1]
-    if "IEX" in cmd or "Invoke-GodPotato" in cmd:      # the in-memory IEX rung evades AV
+    if "Reflection.Assembly" in cmd:                   # the in-memory reflective load evades AV
         print("nt authority\\system")
     elif "Potato" in cmd:                              # any native .exe Potato is caught
         print("This script contains malicious content and has been blocked by your antivirus")
@@ -438,12 +438,12 @@ class FullFunnelTest(unittest.TestCase):
         os.chmod(p, os.stat(p).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
     def test_escalate_redelivers_when_delivery_is_caught(self):
-        # the on-disk Potatoes are caught -> the loop climbs to the in-memory IEX rung,
-        # serves Invoke-GodPotato.ps1 over HTTP, proves there, records native-exe caught.
+        # the on-disk Potatoes are caught -> the loop climbs to the in-memory reflective rung,
+        # serves the same GodPotato.exe over HTTP + loads it in memory, records native-exe caught.
         self._install_nxc(FAKE_NXC_CAUGHT)
         arsenal = os.path.join(self.dir, "arsenal")
         os.makedirs(os.path.join(arsenal, "win-potato"))
-        open(os.path.join(arsenal, "win-potato", "Invoke-GodPotato.ps1"), "w").close()
+        open(os.path.join(arsenal, "win-potato", "GodPotato.exe"), "w").close()
         old = os.environ.get("FIELDKIT_ARSENAL")
         os.environ["FIELDKIT_ARSENAL"] = arsenal
         self.addCleanup(lambda: os.environ.__setitem__("FIELDKIT_ARSENAL", old) if old
@@ -459,7 +459,7 @@ class FullFunnelTest(unittest.TestCase):
         run = self.cli("escalate", "10.0.0.7", "--allow", "config-change", "--yes")
         self.assertIn("caught", run)                       # the native delivery tripped AMSI
         self.assertIn("marked 'native-exe' red", run)      # it was learned red, live
-        self.assertIn("serving Invoke-GodPotato.ps1", run)  # in-memory IEX delivery
+        self.assertIn("serving GodPotato.exe", run)        # in-memory reflective delivery
         self.assertIn("PROVEN", run)                       # then re-delivered to a win
         self.assertEqual(self.store().counts()["proven_findings"], 1)
 

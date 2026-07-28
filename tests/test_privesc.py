@@ -123,20 +123,29 @@ class WindowsDriverTest(unittest.TestCase):
         self.assertEqual(spoof.stages, (("PrintSpoofer", "C:\\Windows\\Temp\\PrintSpoofer.exe"),))
         self.assertEqual({v.report_type for v in vs}, {"seimpersonate"})
 
-    def test_iex_godpotato_is_a_fileless_served_delivery(self):
-        # the in-memory rung: serve Invoke-GodPotato.ps1 and IEX it — nothing on disk.
+    def test_reflective_godpotato_is_a_fileless_served_delivery(self):
+        # the in-memory rung: serve the compiled GodPotato.exe and reflectively load it —
+        # nothing lands on disk, and no separate Invoke-*.ps1 wrapper is needed.
         f = HostFacts(os="windows", privs={"SeImpersonatePrivilege"})
         v = [x for x in vectors_for(f, "10.0.0.7") if x.key == "seimpersonate:ps-godpotato"][0]
         self.assertEqual(v.delivery, "inmem-fileless")
-        self.assertEqual(v.serves, ("Invoke-GodPotato.ps1",))
+        self.assertEqual(v.serves, ("GodPotato",))        # resolve key; real filename substituted
         self.assertEqual(v.stages, ())                    # nothing staged to disk
-        self.assertIn("{url}Invoke-GodPotato.ps1", v.command)
-        self.assertIn("IEX", v.command)
+        self.assertIn("{url}{served}", v.command)         # served filename filled in at serve time
+        self.assertIn("Reflection.Assembly", v.command)
+
+    def test_cpp_potato_has_no_reflective_rung(self):
+        # PrintSpoofer/JuicyPotatoNG are native C++ PEs, not .NET assemblies — native-exe only.
+        f = HostFacts(os="windows", privs={"SeImpersonatePrivilege"})
+        keys = {x.key for x in vectors_for(f, "10.0.0.7")}
+        self.assertIn("seimpersonate:printspoofer", keys)
+        self.assertNotIn("seimpersonate:ps-printspoofer", keys)
+        self.assertNotIn("seimpersonate:ps-juicypotatong", keys)
 
     def test_assign_primary_token_maps_to_same_ladder(self):
         f = HostFacts(os="windows", privs={"SeAssignPrimaryTokenPrivilege"})
         vs = [x for x in vectors_for(f, "10.0.0.7") if x.family == "seimpersonate"]
-        self.assertEqual(len(vs), 10)  # 5 native .exe rungs + 5 ps1 (IEX) rungs
+        self.assertEqual(len(vs), 8)   # 5 native .exe rungs + 3 .NET reflective-load rungs
 
     def test_stage_dir_is_substituted(self):
         f = HostFacts(os="windows", privs={"SeImpersonatePrivilege"})

