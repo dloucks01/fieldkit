@@ -85,7 +85,20 @@ SIGNATURES = (
          "needs elevation (precondition not met)"),
     Rule(DENIED, r"a required privilege is not held|status_privilege_not_held",
          "privilege not held"),
-    Rule(DENIED, r"logon failure|status_logon_failure", "auth rejected"),
+    Rule(DENIED, r"logon failure|status_logon_failure|kdc_err_preauth_failed",
+         "auth rejected (bad password)"),
+    Rule(DENIED, r"status_account_locked_out|account (has been|is) locked",
+         "account locked out — STOP, do not keep trying this identity"),
+    Rule(DENIED, r"status_account_disabled|status_account_expired|account is disabled",
+         "account disabled/expired"),
+    Rule(DENIED, r"status_password_expired|status_password_must_change|password (has )?expired",
+         "password expired — must change before use"),
+    Rule(DENIED, r"kdc_err_c_principal_unknown|status_no_such_user",
+         "principal unknown (no such user)"),
+    Rule(DENIED, r"status_logon_type_not_granted|status_account_restriction",
+         "logon type not granted / account restricted"),
+    Rule(DENIED, r"execution of scripts is disabled on this system",
+         "PowerShell execution policy (bypassable — retry with -ep bypass)"),
     # -- bad build (ran, but wrong image) -----------------------------------
     Rule(BAD_BUILD, r"is not a valid win32 application|bad exe format|%1 is not a valid",
          "wrong architecture"),
@@ -95,19 +108,42 @@ SIGNATURES = (
     Rule(DELIVERY, r"cannot find the (file|path)|system cannot find", "file/path not found"),
     Rule(DELIVERY, r"no such file or directory", "not on disk"),
     Rule(DELIVERY, r"is not recognized as an internal or external", "command/exe absent"),
+    # -- timeout / unreachable (network refused it; retry then next) ----------
+    Rule(TIMEOUT, r"connection refused|status_connection_refused", "connection refused"),
+    Rule(TIMEOUT, r"connection reset|status_connection_reset", "connection reset"),
+    Rule(TIMEOUT, r"no route to host|(network|host) is unreachable", "host unreachable"),
+    Rule(TIMEOUT, r"connection timed out|status_io_timeout|timed out waiting",
+         "connection timed out"),
     # -- build error (compiler output; usually attacker-side) ----------------
+    # this specific rule must precede the generic NO_TOOL `command not found` below.
+    Rule(BUILD_ERROR,
+         r"(gcc|mingw|wixl|make|nasm)\b[^\n]*command not found|command not found[^\n]*(gcc|mingw|wixl|make|nasm)",
+         "build toolchain missing"),
     Rule(BUILD_ERROR, r"\berror:\s|undefined reference|fatal error", "compiler error"),
-    Rule(BUILD_ERROR, r"command not found.*(gcc|mingw|wixl)", "build toolchain missing"),
+    # -- required tool missing, reported on stdout (attacker-side) ------------
+    Rule(NO_TOOL, r"modulenotfounderror: no module named|importerror: no module named",
+         "python module missing (stage/install it)"),
+    Rule(NO_TOOL, r"command not found|not installed|no such file.*(certipy|impacket|nxc|netexec|evil-winrm)",
+         "required tool missing — stage it"),
 )
 
 
 # ---- elevation proof --------------------------------------------------------
 
 def looks_elevated(output, os_name):
-    """True when the relayed output shows an elevated context (the vector's proof)."""
+    """True when the relayed output shows an elevated context (the vector's proof).
+
+    The windows ``\\administrator`` marker must be the *account* a ``whoami`` returned
+    (``domain\\administrator`` at a token boundary), never a path segment — otherwise
+    benign output like ``C:\\Users\\Administrator\\x.exe`` would forge a SUCCESS. So we
+    require it not be followed by another path character, which excludes both the
+    ``…\\Administrator\\…`` directory case and the ``BUILTIN\\Administrators`` group.
+    """
     low = (output or "").lower()
     if os_name == "windows":
-        return "nt authority\\system" in low or "\\administrator" in low
+        if "nt authority\\system" in low:
+            return True
+        return re.search(r"\\administrator\b(?!\\)", low) is not None
     return "uid=0(" in low or re.search(r"\buid=0\b", low) is not None
 
 

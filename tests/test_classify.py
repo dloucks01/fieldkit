@@ -104,6 +104,74 @@ class SignatureTest(unittest.TestCase):
         self.assertEqual(classify(res("payload.c:5: error: expected ';'")).outcome, BUILD_ERROR)
 
 
+class MarkerFalsePositiveTest(unittest.TestCase):
+    """A path segment must never forge a SUCCESS — the worst possible misclassification."""
+
+    def test_admin_in_path_is_not_elevated(self):
+        self.assertFalse(looks_elevated(r"C:\Users\Administrator\Desktop\god.exe", "windows"))
+
+    def test_admin_in_path_delivery_not_success(self):
+        v = classify(res(r"The system cannot find the file C:\Users\Administrator\x.exe."),
+                     os_name="windows")
+        self.assertEqual(v.outcome, DELIVERY)
+
+    def test_administrators_group_is_not_elevated(self):
+        self.assertFalse(looks_elevated(r"Members: BUILTIN\Administrators", "windows"))
+
+    def test_whoami_administrator_account_is_elevated(self):
+        self.assertTrue(looks_elevated("CORP\\administrator", "windows"))
+        self.assertEqual(classify(res("CORP\\Administrator"), os_name="windows").outcome, SUCCESS)
+
+
+class AuthPreconditionTest(unittest.TestCase):
+    """Real nxc/impacket STATUS_* and KDC_ERR_* strings → DENIED, not UNKNOWN."""
+
+    def test_account_locked(self):
+        v = classify(res("[-] CORP\\svc:Passw0rd STATUS_ACCOUNT_LOCKED_OUT"))
+        self.assertEqual(v.outcome, DENIED)
+
+    def test_password_expired(self):
+        self.assertEqual(classify(res("STATUS_PASSWORD_EXPIRED")).outcome, DENIED)
+
+    def test_kerberos_preauth_failed(self):
+        self.assertEqual(classify(res("KDC_ERR_PREAUTH_FAILED")).outcome, DENIED)
+
+    def test_principal_unknown(self):
+        self.assertEqual(classify(res("KDC_ERR_C_PRINCIPAL_UNKNOWN")).outcome, DENIED)
+
+    def test_logon_type_not_granted(self):
+        self.assertEqual(classify(res("STATUS_LOGON_TYPE_NOT_GRANTED")).outcome, DENIED)
+
+
+class UnreachableTest(unittest.TestCase):
+    """Network refusal → TIMEOUT axis (retry then next), not UNKNOWN."""
+
+    def test_connection_refused(self):
+        v = classify(res("[-] Connection refused"))
+        self.assertEqual(v.outcome, TIMEOUT)
+        self.assertEqual(v.axis, "retry")
+
+    def test_no_route_to_host(self):
+        self.assertEqual(classify(res("No route to host")).outcome, TIMEOUT)
+
+
+class ToolMissingStdoutTest(unittest.TestCase):
+    """A missing tool reported on stdout (not the spawn error) still → NO_TOOL."""
+
+    def test_command_not_found_certipy(self):
+        v = classify(res("bash: certipy: command not found"))
+        self.assertEqual(v.outcome, NO_TOOL)
+        self.assertEqual(v.axis, "stage")
+
+    def test_python_module_missing(self):
+        self.assertEqual(classify(res("ModuleNotFoundError: No module named 'impacket'")).outcome,
+                         NO_TOOL)
+
+    def test_build_toolchain_beats_generic_no_tool(self):
+        # ordering regression: `gcc: command not found` is BUILD_ERROR, not NO_TOOL
+        self.assertEqual(classify(res("gcc: command not found")).outcome, BUILD_ERROR)
+
+
 class FallthroughTest(unittest.TestCase):
     def test_clean_run_no_marker(self):
         v = classify(res("some benign output", exit_code=0), os_name="linux")
