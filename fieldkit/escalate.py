@@ -12,10 +12,14 @@ Design, kept parallel to :mod:`fieldkit.classify`:
   * **an inspectable policy table** (:data:`POLICY`) maps each classifier *axis* to one
     of four honest loop actions. It is the whole "what the loop does about a verdict"
     surface — read it, tune it, and the behaviour follows;
-  * **only what the kit can actually do** — the loop advances, retries, stops or
-    surfaces. It does *not* pretend to auto-rebuild a bad image, auto-stage a missing
-    tool, or swap an alternate delivery for a caught technique (no per-vector delivery
-    ladder exists yet), so those axes ``ADVANCE`` while the trail still carries the
+  * **the evasion axis re-delivers** — a CAUGHT verdict does not just advance: the loop
+    *records the caught delivery as red* (live evidence, into state via ``mark_caught``)
+    and climbs to the next alternate of the same objective in **evasion-posture order**
+    (native PE → in-memory → script). A delivery already known-caught (lab or a live
+    catch this run) is skipped without firing — assume-caught applied live, so the loop
+    never re-burns a burned delivery on the client. See :data:`fieldkit.privesc` families;
+  * **only what the kit can actually do** — for the axes with no automation yet
+    (build/rebuild/stage) the loop ``ADVANCE``\\s while the trail still carries the
     classifier's guidance for the operator's manual step;
   * **the safety gate is upheld** — a vector whose blast radius exceeds ``allow`` is
     *skipped without firing*; the loop never escalates its own authorisation;
@@ -37,6 +41,7 @@ RETRY = "retry"          # transient (no response) — re-fire the same vector, 
 ADVANCE = "advance"      # this vector is spent — move to the next-ranked one
 GATED = "gated"          # blast radius exceeds --allow — never fired
 SKIPPED = "skipped"      # not fired for another reason (blocked transport, budget)
+BURNED = "burned"        # delivery is known-caught — skipped without firing (assume-caught)
 
 #: classifier fallback *axis* -> what the loop does about it. The axes the current kit
 #: cannot yet act on (build/rebuild/stage/evasion) fall through to ADVANCE; the trail
@@ -89,15 +94,47 @@ class Outcome:
         return [a for a in self.attempts if a.fired]
 
 
+def order_deliveries(vectors, delivery_order):
+    """Order each delivery *family*'s alternates by evasion posture, in place of the raw
+    score tiebreak. ``delivery_order`` is technique keys best-first (from
+    :func:`fieldkit.evasion.posture`). A family's block stays where its best-ranked member
+    sat; non-family vectors keep their position. No posture → the list is unchanged.
+    """
+    vs = list(vectors)
+    if not delivery_order:
+        return vs
+    rank = {k: i for i, k in enumerate(delivery_order)}
+    anchor = {}
+    for i, v in enumerate(vs):
+        fam = getattr(v, "family", None)
+        if fam and fam not in anchor:
+            anchor[fam] = i
+
+    def key(pair):
+        i, v = pair
+        fam = getattr(v, "family", None)
+        if fam:
+            return (anchor[fam], rank.get(getattr(v, "delivery", None), len(rank)), i)
+        return (i, 0, i)
+    return [v for _, v in sorted(enumerate(vs), key=key)]
+
+
 def escalate(vectors, *, fire, allow="read-only", os_name=None,
-             budget=DEFAULT_BUDGET, retries=1, on_event=None):
+             budget=DEFAULT_BUDGET, retries=1, on_event=None,
+             delivery_order=None, caught=None, mark_caught=None):
     """Walk ``vectors`` (already ranked best-first) along the fallback axis.
 
     ``fire(vector) -> ExecResult`` runs one vector and is injected (the CLI wires it to
     :func:`fieldkit.executor.execute`; tests pass a fake). ``allow`` is the authorised
     blast radius — vectors above it are skipped, never fired. The loop fires at most
     ``budget`` vectors and re-fires a :data:`RETRY` (timeout) vector up to ``retries``
-    extra times. Returns an :class:`Outcome` with the winning vector and the full trail.
+    extra times.
+
+    Evasion re-delivery: ``delivery_order`` (evasion posture, best-first) orders each
+    objective's delivery alternates; ``caught`` is the set of technique keys already known
+    caught (those vectors are skipped without firing); ``mark_caught(technique)`` is called
+    when a delivery is caught live, so the catch persists and the same delivery is not
+    re-burned. Returns an :class:`Outcome` with the winning vector and the full trail.
     """
     def emit(msg):
         if on_event:
@@ -107,6 +144,9 @@ def escalate(vectors, *, fire, allow="read-only", os_name=None,
     if not vectors:
         return Outcome(attempts=attempts, stopped="empty")
 
+    vectors = order_deliveries(vectors, delivery_order)
+    caught = set(caught or ())
+
     fired = 0
     for vector in vectors:
         # safety gate — never fire above the authorised blast radius.
@@ -114,6 +154,14 @@ def escalate(vectors, *, fire, allow="read-only", os_name=None,
             note = f"{vector.safety} exceeds --allow — skipped (re-run with --allow {vector.safety})"
             attempts.append(Attempt(vector, GATED, note=note))
             emit(f"  gated  {vector.key}: {note}")
+            continue
+
+        # assume-caught, live: never re-fire a delivery already known caught.
+        delivery = getattr(vector, "delivery", None)
+        if delivery and delivery in caught:
+            note = f"delivery {delivery!r} is known-caught — not fired (assume-caught)"
+            attempts.append(Attempt(vector, BURNED, note=note))
+            emit(f"  burned {vector.key}: {note}")
             continue
 
         if fired >= budget:
@@ -143,11 +191,22 @@ def escalate(vectors, *, fire, allow="read-only", os_name=None,
                 emit(f"  retry  {vector.key}: {verdict.outcome} — re-firing")
                 continue
 
+            # evasion axis: a caught delivery is learned (red, live) so it is not
+            # re-burned, and the loop climbs to the next delivery of the same objective.
+            note = verdict.guidance
+            if verdict.axis == "evasion" and delivery:
+                if delivery not in caught:
+                    caught.add(delivery)
+                    if mark_caught:
+                        mark_caught(delivery)
+                note = f"marked {delivery!r} red; re-delivering in posture order"
+                emit(f"  caught {vector.key}: delivery {delivery!r} marked red")
+
             # settle this vector: STOP / SURFACE end the loop, everything else advances.
             action = STOP if axis_action == STOP else \
                 SURFACE if axis_action == SURFACE else ADVANCE
-            attempts.append(Attempt(vector, action, verdict, verdict.guidance))
-            emit(f"  {action:<7}{vector.key}: {verdict.outcome} — {verdict.guidance}")
+            attempts.append(Attempt(vector, action, verdict, note))
+            emit(f"  {action:<8} {vector.key}: {verdict.outcome} — {note}")
 
             if action == STOP:
                 return Outcome(proven=vector, attempts=attempts, stopped="proven")
@@ -174,4 +233,7 @@ def describe_policy():
         axes = ", ".join(sorted(axis_action.get(act, [])))
         lines.append(f"  {act:<8} {gloss}\n           axes: {axes}")
     lines.append("  gated    a vector above --allow is skipped, never fired")
+    lines.append("  burned   a delivery known-caught (lab/live) is skipped, never fired")
+    lines.append("\nevasion axis: a CAUGHT fire marks its delivery red (live) and the loop "
+                 "climbs\n           to the next delivery of the same objective, in posture order.")
     return "\n".join(lines)

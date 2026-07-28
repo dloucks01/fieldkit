@@ -10,7 +10,7 @@ tools it drives are the operator's existing kit. Authorized engagements only.
 
 ```bash
 bin/fieldkit <command>          # shim for `python3 -m fieldkit` (run from a clone)
-python3 -m pytest -q            # 412 tests, ~1.2s, no network/subprocess/tools needed
+python3 -m pytest -q            # 426 tests, ~1.3s, no network/subprocess/tools needed
 python3 -m pyflakes fieldkit/ tests/   # keep clean before committing
 ```
 
@@ -38,7 +38,7 @@ fallback axis; `report` renders the captured evidence.
 |---|---|---|
 | Foundation | `state.py`, `config.py`, `creds.py`, `scope.py`, `errors.py` | SQLite store (+migrations), engagement config, the canonical credential model + per-tool renderers, scope parsing, one error family |
 | Loop | `netexec.py`, `ingest.py`, `spray.py`, `dump.py`, `kb.py` | parse nxc `(Pwn3d!)`/`--pass-pol`; fold captures into state; the live spray loop; parse SAM/LSA/NTDS → loot→creds; the opportunity KB + three-axis ranking |
-| Execution | `transport.py`, `executor.py`, `runner.py`, `hostenum.py`, `privesc.py`, `classify.py`, `escalate.py` | run a command on a host (nxc `-x`/ssh); the safety gate + evidence capture; the one subprocess spawn; OS enum → `HostFacts`; privesc vectors (GTFOBins/caps/Se*/…); the inspectable failure classifier (output→`Verdict`+fallback axis); the orchestrator that walks that axis over the ranked vectors |
+| Execution | `transport.py`, `executor.py`, `runner.py`, `hostenum.py`, `privesc.py`, `classify.py`, `escalate.py` | run a command on a host (nxc `-x`/ssh); the safety gate + evidence capture; the one subprocess spawn; OS enum → `HostFacts`; privesc vectors (GTFOBins/caps/Se*/…); the inspectable failure classifier (output→`Verdict`+fallback axis); the orchestrator that walks that axis over the ranked vectors, incl. evasion re-delivery (climb a privesc `family`'s delivery ladder in posture order; a caught delivery is learned red) |
 | AD depth | `kerberos.py`, `delegation.py`, `adcs.py`, `bloodhound.py` | roasting → loot; `--find-delegation`; certipy ESC1-16; SharpHound graph + owned→DA pathfinding |
 | Evasion | `evasion.py`, `lab.py` | technique catalog + assume-caught model; Defender lab harness (EICAR-gated) |
 | Reporting | `report.py`, `reportkb.py`, `bridge.py` | build+render+`--check`+cleanup from state; the remediation KB (~80 vector_types); the recce export contract |
@@ -58,7 +58,10 @@ fallback axis; `report` renders the captured evidence.
 4. **Safety gate.** Actions declare `read-only < config-change < crash-risk`; the executor
    admits a prefix (`allow=`). Read-only runs freely; riskier needs explicit `--allow`.
 5. **Assume-caught.** Evasion is a ranking axis. Every technique is red until a fresh
-   Defender-lab result greens it (`evasion.resolve`); greens go stale after 14 days.
+   Defender-lab result greens it (`evasion.resolve`); greens go stale after 14 days. The
+   `escalate` loop applies this live: a delivery caught mid-run is recorded red
+   (`record_evasion`) and skipped thereafter, and it re-delivers via the next method in
+   `evasion.posture` order — the lab isn't the only source of catches, the target is too.
 6. **Three-axis ranking.** `kb.score(exploitability, safety, detection)` orders both loop
    opportunities and privesc vectors — quiet/safe/high-impact/precondition-met floats up.
 7. **One credential model.** `creds.Credential` is canonical; liberal parse in, strict
@@ -85,6 +88,9 @@ Older DBs upgrade in place on open. SQLite can't drop NOT NULL — rebuild the t
 
 - **A privesc technique** → one entry in `privesc.GTFO`/`CAPS`/`WIN_PRIVS` or one driver in
   `privesc.DRIVERS`; set `report_type` to a `reportkb.KB` key.
+- **A delivery alternate for the escalate loop** → add a `Vector` sharing a `family` with a
+  distinct `delivery` (an `evasion.TECHNIQUES` key), e.g. `privesc.WIN_IMPERSONATION`. The
+  loop re-delivers along the family in `evasion.posture` order when one is caught.
 - **An analyze opportunity** → append a predicate to `kb.PREDICATES` (reads store, yields
   `Opportunity`); AD modules already do this for roast/delegation/ADCS/BH.
 - **An evasion technique** → a row in `evasion.TECHNIQUES` (+ a `lab.PROBES` probe if
