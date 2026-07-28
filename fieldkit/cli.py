@@ -22,10 +22,11 @@ from datetime import datetime, timezone
 
 from . import (__version__, config as config_mod, creds as creds_mod,
                evasion as evasion_mod, executor as executor_mod, hostenum as hostenum_mod,
-               adcs as adcs_mod, bloodhound as bloodhound_mod, bridge as bridge_mod,
-               delegation as delegation_mod, ingest as ingest_mod, kb as kb_mod,
-               kerberos as kerberos_mod, lab as lab_mod, privesc as privesc_mod,
-               report as report_mod, scope as scope_mod, spray as spray_mod)
+               adcs as adcs_mod, arsenal as arsenal_mod, bloodhound as bloodhound_mod,
+               bridge as bridge_mod, delegation as delegation_mod, ingest as ingest_mod,
+               kb as kb_mod, kerberos as kerberos_mod, lab as lab_mod,
+               privesc as privesc_mod, report as report_mod, scope as scope_mod,
+               spray as spray_mod)
 from .errors import ConfirmationError, FieldkitError
 from .state import DB_ENV_VAR, Store, default_db_path
 
@@ -740,6 +741,59 @@ def cmd_export_recce(args):
     return 0
 
 
+def cmd_arsenal_list(args):
+    st = arsenal_mod.staged()
+    root = arsenal_mod.arsenal_dir()
+    if not st:
+        print(f"nothing staged in {root} — run `sh exploits/fetch.sh` on a connected box.")
+        return 0
+    total = sum(len(v) for v in st.values())
+    print(f"staged arsenal ({total} artifacts in {root}):\n")
+    for cat, names in st.items():
+        print(f"  {cat} ({len(names)})")
+        print("    " + ", ".join(names))
+    return 0
+
+
+def cmd_arsenal_find(args):
+    p = arsenal_mod.find(args.name)
+    if p:
+        print(p)
+        return 0
+    _err(f"{args.name!r} is not staged (checked {arsenal_mod.arsenal_dir()})")
+    return 1
+
+
+def _resolutions():
+    out = []
+    for key, need in sorted(arsenal_mod.PRIVESC_NEEDS.items()):
+        out.append(("privesc", arsenal_mod.resolve(key, need)))
+    for key, need in sorted(arsenal_mod.EVASION_NEEDS.items()):
+        out.append(("evasion", arsenal_mod.resolve(key, need)))
+    return out
+
+
+def cmd_arsenal_check(args):
+    res = _resolutions()
+    marks = {arsenal_mod.BUILTIN: "native", arsenal_mod.BUILD: "build",
+             arsenal_mod.STAGED: "staged", arsenal_mod.SUPPLIED: "supply"}
+    gaps = [(g, r) for g, r in res if not r.ready]
+    print("arsenal readiness — what each route needs to fire:\n")
+    if args.all:
+        for group, r in res:
+            flag = "OK " if r.ready else "!! "
+            print(f"  {flag}[{marks[r.need.kind]:<6}] {group}:{r.key:<24} {r.detail}")
+        print()
+    print(f"{_plural(len(gaps), 'gap')} — routes that need an artifact you must stage/supply:")
+    if not gaps:
+        print("  (none — every mapped route is native, buildable, or already staged)")
+    for _, r in gaps:
+        print(f"  !! {r.key:<24} {r.need.hint}")
+        print(f"       {r.detail}")
+    print("\n(build-kind routes are produced by `fieldkit poc`; run with --all for the full map)")
+    return 0
+
+
 def cmd_status(args):
     with _open_store(args) as store:
         row = store.require_engagement()
@@ -1011,6 +1065,20 @@ def build_parser():
     p_recce.add_argument("--all", action="store_true",
                          help="include unproven findings (default: proven only)")
     p_recce.set_defaults(func=cmd_export_recce)
+
+    p_arsenal = sub.add_parser(
+        "arsenal", help="what tools/exploits are staged, and what each route needs")
+    ar_sub = p_arsenal.add_subparsers(dest="arsenal_command", metavar="<action>")
+    ar_list = ar_sub.add_parser("list", help="list staged artifacts by category")
+    ar_list.set_defaults(func=cmd_arsenal_list)
+    ar_check = ar_sub.add_parser(
+        "check", help="readiness: which privesc/evasion routes are ready vs need staging")
+    ar_check.add_argument("--all", action="store_true", help="show every route, not just gaps")
+    ar_check.set_defaults(func=cmd_arsenal_check)
+    ar_find = ar_sub.add_parser("find", help="print the path to a staged artifact by name")
+    ar_find.add_argument("name")
+    ar_find.set_defaults(func=cmd_arsenal_find)
+    p_arsenal.set_defaults(func=cmd_arsenal_list)  # bare `arsenal` = list
 
     p_status = sub.add_parser("status", help="the engagement board")
     p_status.add_argument("--hosts", action="store_true", help="list every host")
