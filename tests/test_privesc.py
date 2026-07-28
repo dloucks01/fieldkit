@@ -77,6 +77,20 @@ class LinuxDriverTest(unittest.TestCase):
         self.assertIn("sudo:env-preload",
                       self.keys(self.facts(sudo_env_keep={"LD_PRELOAD"})))
 
+    def test_ld_preload_builds_so_and_fires_concrete_command(self):
+        # with an allowed sudo binary, the vector builds a root .so and preloads it.
+        f = self.facts(sudo_env_keep={"LD_PRELOAD"}, sudo_binaries={"apache2ctl"})
+        v = [x for x in vectors_for(f, "10.0.0.8", stage_lin="/dev/shm")
+             if x.key == "sudo:env-preload"][0]
+        self.assertEqual(v.builds, (("so", "/dev/shm/p.so", "id"),))
+        self.assertIn("sudo LD_PRELOAD=/dev/shm/p.so apache2ctl", v.command)
+        self.assertEqual(v.report_type, "ld_preload")
+
+    def test_ld_preload_without_allowed_binary_stays_guidance(self):
+        f = self.facts(sudo_env_keep={"LD_PRELOAD"})   # no sudo_binaries
+        v = [x for x in vectors_for(f, "10.0.0.8") if x.key == "sudo:env-preload"][0]
+        self.assertEqual(v.builds, ())                 # nothing to trigger -> no auto-build
+
     def test_sudo_all_suppresses_individual_sudo_gtfo(self):
         keys = self.keys(self.facts(sudo_all=True, sudo_binaries={"find"}))
         self.assertIn("sudo:ALL", keys)
@@ -143,8 +157,26 @@ class WindowsDriverTest(unittest.TestCase):
         f = HostFacts(os="windows", always_install_elevated=True)
         v = [x for x in vectors_for(f, "10.0.0.7", stage_win="C:\\stage")
              if x.key == "aie"][0]
-        self.assertEqual(v.builds, (("msi", "C:\\stage\\evil.msi"),))
+        self.assertEqual(v.builds, (("msi", "C:\\stage\\evil.msi", None),))
         self.assertEqual(v.report_type, "alwaysinstallelevated")  # a real reportkb key
+
+    def test_unquoted_service_builds_and_plants_a_payload(self):
+        f = HostFacts(os="windows",
+                      unquoted_services=[("AppMgmt", "C:\\Program Files\\My App\\svc.exe")])
+        v = [x for x in vectors_for(f, "10.0.0.7", stage_win="C:\\stg")
+             if x.key.startswith("unquoted:")][0]
+        # builds a payload exe planted at the first space-truncated candidate
+        self.assertEqual(v.builds[0][0], "exe")
+        self.assertEqual(v.builds[0][1], "C:\\Program.exe")
+        self.assertIn("whoami", v.builds[0][2])                 # writes its identity
+        self.assertIn("sc start AppMgmt", v.command)            # restarts by name
+        self.assertIn("type", v.command)                       # reads the proof back
+        self.assertEqual(v.report_type, "unquoted_service")
+
+    def test_unquoted_without_a_name_stays_guidance(self):
+        f = HostFacts(os="windows", unquoted_services=[(None, "C:\\a b\\s.exe")])
+        v = [x for x in vectors_for(f, "10.0.0.7") if x.key.startswith("unquoted:")][0]
+        self.assertEqual(v.builds, ())                          # can't restart -> no auto-build
 
     def test_unquoted_service(self):
         f = HostFacts(os="windows",
