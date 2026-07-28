@@ -82,12 +82,16 @@ class PredicateTest(KbTestCase):
         self.assertIn("xp_cmdshell", opp[0].detail)
         self.assertIn("escalate", opp[0].next_step)
 
-    def test_non_sysadmin_mssql_does_not_surface_exec(self):
+    def test_non_sysadmin_mssql_surfaces_privesc_not_exec(self):
         s = self.store
         low, _ = s.add_credential(Credential("app", "pw", local_auth=True))
         hid, _ = s.add_host("10.0.0.9", os_name="windows")
         s.add_access(hid, low, "mssql", admin=False)  # a login, not sysadmin
-        self.assertNotIn("mssql-exec", [o.key for o in analyze(s)])
+        keys = [o.key for o in analyze(s)]
+        self.assertNotIn("mssql-exec", keys)          # no OS exec without sysadmin
+        self.assertIn("mssql-privesc", keys)          # but a SQL-layer escalation to try
+        opp = [o for o in analyze(s) if o.key == "mssql-privesc"][0]
+        self.assertIn("mssql escalate", opp.next_step)
 
     def test_looting_a_host_drops_it_from_unlooted(self):
         before = [o for o in analyze(self.store) if o.key == "loot-admin-host"]

@@ -50,6 +50,21 @@ KB = {
              "as SYSTEM.",
         rem="Run services under least-privileged Virtual/Managed Service Accounts and remove SeImpersonate where "
             "not required. Keep the OS patched (RPC/EFSRPC/DCOM hardening). Monitor for named-pipe/token abuse."),
+    "mssql_impersonation": dict(sev="High", cwe="CWE-269", os="win",
+        name="MSSQL EXECUTE AS impersonation escalates a login to sysadmin",
+        desc="A low-privileged SQL login holds IMPERSONATE on a sysadmin login (commonly sa). "
+             "`EXECUTE AS LOGIN` assumes that identity and adds the attacker's login to the sysadmin "
+             "fixed server role, from which xp_cmdshell runs OS commands as the SQL service account.",
+        rem="Revoke IMPERSONATE grants from non-administrative logins; run SQL Server under a "
+            "least-privileged service account; keep xp_cmdshell disabled; audit fixed-server-role "
+            "membership and login permissions."),
+    "mssql_linked_server": dict(sev="High", cwe="CWE-266", os="win",
+        name="MSSQL linked server enables privilege escalation / lateral movement",
+        desc="A linked server is configured with RPC-out / data access, so queries can be executed on the "
+             "remote instance — often under a privileged remote login. `EXEC ('...') AT [linked]` reaches "
+             "sysadmin and xp_cmdshell on another SQL host.",
+        rem="Remove unnecessary linked servers; map linked-server logins to a least-privileged account "
+            "(or 'not be made'); disable RPC out where not required; keep xp_cmdshell disabled."),
     "sebackup": dict(sev="High", cwe="CWE-250", os="win",
         name="SeBackup/Backup Operators enables credential hive theft",
         desc="Membership in Backup Operators (or SeBackupPrivilege/SeRestorePrivilege) lets a user read the "
@@ -538,7 +553,9 @@ RISK = {
     "lsass": "read-only", "stored_creds": "read-only", "gpp_cpassword": "read-only", "sebackup": "read-only",
     "hivenightmare": "read-only", "readable_shadow": "read-only", "private_key_exposure": "read-only",
     "cmdline_creds": "read-only", "default_credentials": "read-only", "password_reuse": "read-only",
+    "mssql_linked_server": "read-only",   # an enumerated observation, not exploited
     # reversible (shell-spawn / minor artifact, easily undone)
+    "mssql_impersonation": "reversible",  # add/drop a sysadmin role member
     "gtfobins_suid": "reversible", "gtfobins_sudo": "reversible", "sudo_misconfig": "reversible",
     "capability": "reversible", "docker_group": "reversible", "lxd_group": "reversible", "disk_group": "reversible",
     "screen_root_session": "reversible", "uac_bypass": "reversible", "seimpersonate": "reversible",

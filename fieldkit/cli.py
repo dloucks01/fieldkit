@@ -26,8 +26,8 @@ from . import (__version__, adcs as adcs_mod, arsenal as arsenal_mod,
                evasion as evasion_mod,
                executor as executor_mod, hostenum as hostenum_mod, ingest as ingest_mod,
                kb as kb_mod, kerberos as kerberos_mod, lab as lab_mod,
-               poc as poc_mod, privesc as privesc_mod, report as report_mod,
-               scope as scope_mod, spray as spray_mod)
+               mssql as mssql_mod, poc as poc_mod, privesc as privesc_mod,
+               report as report_mod, scope as scope_mod, spray as spray_mod)
 from .errors import ConfirmationError, FieldkitError
 from .state import DB_ENV_VAR, Store, default_db_path
 
@@ -790,6 +790,52 @@ def cmd_poc(args):
     return 0
 
 
+def cmd_mssql_escalate(args):
+    with _open_store(args) as store:
+        store.require_engagement()
+        host, cred, err = _resolve_target(store, args.host)
+        if err:
+            _err(err)
+            return 2
+        allow_cc = "config-change" in (args.allow or [])
+        prompt = ("enumerate + escalate MSSQL privileges on "
+                  + args.host + (" (may add your login to the sysadmin role — reversible)?"
+                                 if allow_cc else
+                                 " (read-only enum; add --allow config-change to escalate)?"))
+        if not _confirm(prompt, args.yes):
+            print("aborted — nothing ran")
+            return 1
+        rep = mssql_mod.escalate_privs(store, host, cred, allow_config_change=allow_cc,
+                                       on_event=lambda m: print(m))
+    if rep.aborted:
+        _err(rep.aborted)
+        return 2
+
+    print()
+    if rep.status == "already_sysadmin":
+        print("already sysadmin on this instance — run "
+              f"`{PROG} enum {args.host}` then `{PROG} escalate {args.host} --allow config-change` "
+              "(over xp_cmdshell).")
+    elif rep.status == "escalated":
+        print(f"ESCALATED: impersonated {rep.via} and added your login to the sysadmin role "
+              "(verified). Recorded as a finding; cleanup (drop the role member) is on the "
+              "manifest.")
+        print(f"next: `{PROG} enum {args.host}` → `{PROG} escalate {args.host} --allow config-change` "
+              "→ SYSTEM.")
+    elif rep.status == "gated":
+        print(f"impersonatable sysadmin login(s): {', '.join(rep.impersonatable)} — re-run "
+              "with `--allow config-change` to grant yourself sysadmin (reversible).")
+    elif rep.status == "linked_only":
+        print(f"no impersonation path, but RPC-out linked server(s): {', '.join(rep.linked)} "
+              "(recorded as observations). Hop with `EXEC ('…') AT [<server>]`.")
+    elif rep.status == "failed":
+        print("the impersonation grant did not verify as sysadmin — inspect manually.")
+    else:
+        print("no SQL-layer escalation path found (no impersonatable sysadmin login, no "
+              "RPC-out linked servers).")
+    return 0
+
+
 def cmd_lab_test(args):
     with _open_store(args) as store:
         store.require_engagement()
@@ -1409,6 +1455,23 @@ def build_parser():
     a_find.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
     a_find.set_defaults(func=cmd_adcs_find)
     p_adcs.set_defaults(func=lambda a: _missing(p_adcs))
+
+    p_mssql = sub.add_parser(
+        "mssql", help="MSSQL privilege escalation (low-priv login → sysadmin → SYSTEM)")
+    mssql_sub = p_mssql.add_subparsers(dest="mssql_command", metavar="<action>")
+    m_esc = mssql_sub.add_parser(
+        "escalate", help="try EXECUTE AS impersonation / linked-server paths to sysadmin",
+        description="From a non-sysadmin MSSQL login, enumerates the SQL-layer escalation "
+                    "surface (impersonatable sysadmin logins, RPC-out linked servers). With "
+                    "--allow config-change it impersonates a sysadmin login and adds your "
+                    "login to the sysadmin role (reversible), so `enum`/`escalate` then run "
+                    "over xp_cmdshell → SYSTEM. Read-only without --allow.")
+    m_esc.add_argument("host", metavar="IP", help="the MSSQL host")
+    m_esc.add_argument("--allow", action="append", choices=["config-change"], metavar="LEVEL",
+                       help="permit the role grant (config-change) to actually escalate")
+    m_esc.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
+    m_esc.set_defaults(func=cmd_mssql_escalate)
+    p_mssql.set_defaults(func=lambda a: _missing(p_mssql))
 
     p_report = sub.add_parser(
         "report", help="render the customer report (proven Findings + Observations)",

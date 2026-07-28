@@ -100,38 +100,46 @@ class LinuxDriverTest(unittest.TestCase):
 class WindowsDriverTest(unittest.TestCase):
     def test_seimpersonate_potato(self):
         f = HostFacts(os="windows", privs={"SeImpersonatePrivilege"})
-        v = [x for x in vectors_for(f, "10.0.0.7") if x.key == "seimpersonate:native"][0]
+        v = [x for x in vectors_for(f, "10.0.0.7") if x.key == "seimpersonate:godpotato"][0]
         self.assertIn("GodPotato", v.command)
         self.assertIn("whoami", v.command)
         self.assertEqual(v.safety, "config-change")
         self.assertEqual(v.family, "seimpersonate")
         self.assertEqual(v.delivery, "native-exe")
 
-    def test_seimpersonate_is_a_delivery_ladder(self):
-        # one objective, several delivery methods the loop can climb in posture order.
+    def test_seimpersonate_tries_multiple_potato_variants(self):
+        # one objective, a ladder of Potato *tools* (different binaries/techniques) across
+        # native/fileless/script deliveries — the loop advances through them.
         f = HostFacts(os="windows", privs={"SeImpersonatePrivilege"})
         vs = [x for x in vectors_for(f, "10.0.0.7") if x.family == "seimpersonate"]
+        keys = {v.key for v in vs}
+        for tool in ("godpotato", "printspoofer", "juicypotatong", "sweetpotato", "efspotato"):
+            self.assertIn(f"seimpersonate:{tool}", keys)
         self.assertEqual({v.delivery for v in vs},
                          {"native-exe", "inmem-fileless", "ps-amsi-revshell"})
-        # all record under the one finding type, so proof dedupes regardless of delivery
+        # each native variant auto-stages its own exe; all record under one finding type
+        god = [v for v in vs if v.key == "seimpersonate:godpotato"][0]
+        self.assertEqual(god.stages, (("GodPotato", "C:\\Windows\\Temp\\GodPotato.exe"),))
+        spoof = [v for v in vs if v.key == "seimpersonate:printspoofer"][0]
+        self.assertEqual(spoof.stages, (("PrintSpoofer", "C:\\Windows\\Temp\\PrintSpoofer.exe"),))
         self.assertEqual({v.report_type for v in vs}, {"seimpersonate"})
 
     def test_assign_primary_token_maps_to_same_ladder(self):
         f = HostFacts(os="windows", privs={"SeAssignPrimaryTokenPrivilege"})
         vs = [x for x in vectors_for(f, "10.0.0.7") if x.family == "seimpersonate"]
-        self.assertEqual(len(vs), 3)
+        self.assertEqual(len(vs), 7)   # 5 native tools + in-memory + PowerShell
 
     def test_stage_dir_is_substituted(self):
         f = HostFacts(os="windows", privs={"SeImpersonatePrivilege"})
         v = [x for x in vectors_for(f, "10.0.0.7", stage_win="C:\\stage")
-             if x.key == "seimpersonate:native"][0]
+             if x.key == "seimpersonate:godpotato"][0]
         self.assertIn("C:\\stage\\GodPotato.exe", v.command)
 
     def test_native_alternate_declares_a_stageable_artifact(self):
         # the loop reads Vector.stages to auto-stage a missing tool (Phase 8).
         f = HostFacts(os="windows", privs={"SeImpersonatePrivilege"})
         v = [x for x in vectors_for(f, "10.0.0.7", stage_win="C:\\stage")
-             if x.key == "seimpersonate:native"][0]
+             if x.key == "seimpersonate:godpotato"][0]
         self.assertEqual(v.stages, (("GodPotato", "C:\\stage\\GodPotato.exe"),))
         # the in-memory / script alternates are built, not staged
         inmem = [x for x in vectors_for(f, "10.0.0.7") if x.key == "seimpersonate:inmem"][0]
