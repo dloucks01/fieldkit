@@ -499,14 +499,25 @@ def cmd_escalate(args):
             return 2
         allow = ["read-only"] + list(args.allow or [])
 
+        # evasion posture: order delivery alternates + know which are already caught.
+        now = datetime.now(timezone.utc)
+        delivery_order, caught = evasion_mod.posture(store.evasion_result, host["os"], now=now)
+        vectors = escalate_mod.order_deliveries(vectors, delivery_order)
+
         # the plan, before anything runs: what the loop would try, in order.
         gated = [v for v in vectors if not executor_mod.gate(v.safety, allow)]
         runnable = [v for v in vectors if executor_mod.gate(v.safety, allow)]
         print(f"escalation plan for {args.host} — {_plural(len(vectors), 'vector')} ranked, "
               f"blast radius {'/'.join(allow)}:")
         for v in vectors:
-            mark = " (gated — needs --allow %s)" % v.safety if v in gated else ""
-            print(f"  {v.key:<24} {v.axes:<18} {v.safety}{mark}")
+            marks = []
+            if v in gated:
+                marks.append(f"gated — needs --allow {v.safety}")
+            if v.delivery:
+                marks.append(f"delivery {v.delivery}"
+                             + (" — KNOWN CAUGHT, will skip" if v.delivery in caught else ""))
+            mark = ("  (" + "; ".join(marks) + ")") if marks else ""
+            print(f"  {v.key:<26} {v.axes:<18} {v.safety}{mark}")
         if not runnable:
             _err("every vector is above the current --allow — re-run with --allow "
                  "config-change (and/or crash-risk) once you accept the blast radius")
@@ -534,10 +545,16 @@ def cmd_escalate(args):
             results[vector.key] = res
             return res
 
+        def mark_caught(technique):
+            store.record_evasion(technique, "caught",
+                                 detail=f"caught live during escalation on {args.host} "
+                                        f"({now.date().isoformat()})")
+
         print("\n--- escalating ---")
         outcome = escalate_mod.escalate(
-            vectors, fire=fire, allow=allow, os_name=host["os"],
-            budget=budget, on_event=lambda m: print(m))
+            vectors, fire=fire, allow=allow, os_name=host["os"], budget=budget,
+            delivery_order=delivery_order, caught=caught, mark_caught=mark_caught,
+            on_event=lambda m: print(m))
 
         if outcome.ok:
             v = outcome.proven

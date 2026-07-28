@@ -170,3 +170,23 @@ def recommend(statuses):
                 -t.stealth,
                 t.key)
     return sorted(statuses, key=key)
+
+
+def posture(result_for, os_name, *, now=None):
+    """Project lab/live evidence into what the escalation loop needs to walk deliveries.
+
+    ``result_for(key)`` returns the stored evasion record for a technique (or ``None``);
+    it is injected so this stays store-free. Returns ``(order, caught)``:
+
+      * ``order`` — technique keys best-first (:func:`recommend`), so the loop re-delivers
+        a caught vector via the next-preferred method;
+      * ``caught`` — the set of techniques with a live/lab **caught** verdict, which the
+        loop skips without firing (assume-caught: never re-burn a known-caught delivery).
+
+    Only a genuine ``caught`` record pre-empts; an *untested* technique is still tried —
+    the loop is exactly where that evidence is earned.
+    """
+    statuses = [resolve(t, result_for(t.key), now=now) for t in for_os(os_name)]
+    order = [s.technique.key for s in recommend(statuses)]
+    caught = {s.technique.key for s in statuses if s.verdict == CAUGHT}
+    return order, caught

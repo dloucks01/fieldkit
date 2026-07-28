@@ -85,6 +85,32 @@ if "--continue-on-success" in a:
 sys.exit(0)
 '''
 
+# a variant where the on-disk GodPotato trips AMSI but the in-memory loader lands SYSTEM,
+# so the escalation loop must climb the delivery ladder (native-exe -> inmem-fileless).
+FAKE_NXC_CAUGHT = r'''#!/usr/bin/env python3
+import sys
+a = sys.argv[1:]
+def val(f): return a[a.index(f) + 1] if f in a else None
+flag = "-x" if "-x" in a else ("-X" if "-X" in a else None)
+if flag:
+    cmd = a[a.index(flag) + 1]
+    if "GodPotato" in cmd:
+        print("This script contains malicious content and has been blocked by your antivirus")
+    elif "loader.exe" in cmd:
+        print("nt authority\\system")
+    elif "whoami /priv" in cmd:
+        print("SeImpersonatePrivilege        Enabled")
+    sys.exit(0)
+if "--continue-on-success" in a:
+    user, secret, dom = val("-u"), (val("-p") or val("-H")), val("-d")
+    principal = (dom + "\\" + user) if dom else user
+    print("SMB 10.0.0.7 445 WS02 [*] Windows 10 Build 19041 x64 (name:WS02) "
+          "(domain:corp.local) (signing:False) (SMBv1:False)")
+    print(f"SMB 10.0.0.7 445 WS02 [+] {principal}:{secret} (Pwn3d!)")
+    sys.exit(0)
+sys.exit(0)
+'''
+
 FAKE_CERTIPY = r'''#!/usr/bin/env python3
 print("""Certipy v4.8.2
 Certificate Templates
@@ -114,6 +140,7 @@ class FullFunnelTest(unittest.TestCase):
 
         # fake nxc + certipy on PATH
         bindir = os.path.join(self.dir, "bin")
+        self.bindir = bindir
         os.makedirs(bindir)
         for name, body in (("nxc", FAKE_NXC), ("certipy", FAKE_CERTIPY)):
             p = os.path.join(bindir, name)
@@ -171,9 +198,10 @@ class FullFunnelTest(unittest.TestCase):
         self.assertIn("SeImpersonate", analyze)
 
         # 5) fire the privesc vector through the safety gate (config-change -> --allow)
-        gated = self.cli("run", "10.0.0.7", "seimpersonate", "--yes", expect=2)
+        gated = self.cli("run", "10.0.0.7", "seimpersonate:native", "--yes", expect=2)
         self.assertIn("safety gate", gated)              # blocked without --allow
-        run = self.cli("run", "10.0.0.7", "seimpersonate", "--allow", "config-change", "--yes")
+        run = self.cli("run", "10.0.0.7", "seimpersonate:native",
+                       "--allow", "config-change", "--yes")
         self.assertIn("PROVEN", run)
         self.assertEqual(self.store().counts()["proven_findings"], 1)
 
@@ -247,6 +275,37 @@ class FullFunnelTest(unittest.TestCase):
         # the finding carries the *captured* PoC output, not a paraphrase
         proven = [f for f in self.store().findings() if f["proven"]]
         self.assertIn("nt authority\\system", proven[0]["evidence"].lower())
+
+
+    def _install_nxc(self, body):
+        p = os.path.join(self.bindir, "nxc")
+        with open(p, "w") as fh:
+            fh.write(body)
+        os.chmod(p, os.stat(p).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    def test_escalate_redelivers_when_delivery_is_caught(self):
+        # Phase 7: the on-disk potato is caught -> the loop climbs to the in-memory
+        # delivery, proves there, and records native-exe as caught (live evidence).
+        self._install_nxc(FAKE_NXC_CAUGHT)
+        self.cli("init", "ACME Corp")
+        self.cli("add", "hosts", "10.0.0.7 WS02")
+        self.cli("add", "cred", "corp.local/jdoe:Winter2025!", "--yes")
+        self.cli("spray", "smb", "--yes")
+        self.cli("enum", "10.0.0.7", "--yes")
+
+        run = self.cli("escalate", "10.0.0.7", "--allow", "config-change", "--yes")
+        self.assertIn("caught", run)                       # the native delivery tripped AMSI
+        self.assertIn("marked 'native-exe' red", run)      # it was learned red, live
+        self.assertIn("PROVEN", run)                       # then re-delivered to a win
+        self.assertIn("in-memory", run)                    # the winning alternate's title
+        self.assertEqual(self.store().counts()["proven_findings"], 1)
+
+        # the live catch persisted: native-exe is now caught in the evasion matrix,
+        # so posture (and a future run) will skip it without firing.
+        rec = self.store().evasion_result("native-exe")
+        self.assertEqual(rec["verdict"], "caught")
+        posture = self.cli("posture")
+        self.assertIn("native", posture)
 
 
 if __name__ == "__main__":  # pragma: no cover

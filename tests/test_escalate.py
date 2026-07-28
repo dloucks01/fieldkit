@@ -25,7 +25,7 @@ from fieldkit.runner import RunResult  # noqa: E402
 class _Vector:
     """The slice of privesc.Vector the orchestrator reads."""
 
-    def __init__(self, key, safety="read-only"):
+    def __init__(self, key, safety="read-only", family=None, delivery=None):
         self.key = key
         self.title = key
         self.safety = safety
@@ -35,6 +35,8 @@ class _Vector:
         self.host = "10.0.0.5"
         self.cleanup = None
         self.report_type = ""
+        self.family = family
+        self.delivery = delivery
 
 
 class _Exec:
@@ -243,6 +245,77 @@ class BudgetRetryTest(unittest.TestCase):
         self.assertEqual(fire.calls, ["slow"])
         self.assertEqual(out.stopped, "budget")
         self.assertEqual(out.attempts[0].action, esc.ADVANCE)  # settled, not retried
+
+
+CAUGHT = _Exec(run("This script contains malicious content and has been blocked"))
+
+
+class ReDeliveryTest(unittest.TestCase):
+    """The evasion axis: a caught delivery is learned red and re-delivered in posture order."""
+
+    def _ladder(self):
+        # one objective, three delivery methods (posture: native -> inmem -> ps)
+        return [
+            _Vector("imp:native", "config-change", family="imp", delivery="native-exe"),
+            _Vector("imp:inmem", "config-change", family="imp", delivery="inmem-fileless"),
+            _Vector("imp:ps", "config-change", family="imp", delivery="ps-amsi-revshell"),
+        ]
+
+    def test_caught_climbs_to_next_delivery_and_learns(self):
+        vs = self._ladder()
+        marked = []
+        fire = scripted({"imp:native": CAUGHT, "imp:inmem": _Exec(WIN_ROOT)})
+        out = esc.escalate(vs, fire=fire, allow=["read-only", "config-change"],
+                           os_name="windows", mark_caught=marked.append)
+        self.assertIs(out.proven, vs[1])                 # climbed native -> inmem
+        self.assertEqual(fire.calls, ["imp:native", "imp:inmem"])
+        self.assertEqual(marked, ["native-exe"])         # the caught delivery was learned
+        self.assertEqual(out.attempts[0].action, esc.ADVANCE)
+        self.assertEqual(out.attempts[0].verdict.outcome, "caught")
+
+    def test_known_caught_delivery_is_skipped_not_fired(self):
+        vs = self._ladder()
+        fire = scripted({"imp:inmem": _Exec(WIN_ROOT)})  # native must never be fired
+        out = esc.escalate(vs, fire=fire, allow=["read-only", "config-change"],
+                           os_name="windows", caught={"native-exe"})
+        self.assertIs(out.proven, vs[1])
+        self.assertEqual(fire.calls, ["imp:inmem"])      # native skipped pre-emptively
+        self.assertEqual(out.attempts[0].action, esc.BURNED)
+        self.assertIsNone(out.attempts[0].verdict)
+
+    def test_all_deliveries_caught_exhausts_family(self):
+        vs = self._ladder()
+        fire = scripted({"imp:native": CAUGHT, "imp:inmem": CAUGHT, "imp:ps": CAUGHT})
+        marked = []
+        out = esc.escalate(vs, fire=fire, allow=["read-only", "config-change"],
+                           os_name="windows", mark_caught=marked.append)
+        self.assertFalse(out.ok)
+        self.assertEqual(out.stopped, "exhausted")
+        self.assertEqual(marked, ["native-exe", "inmem-fileless", "ps-amsi-revshell"])
+
+
+class OrderDeliveriesTest(unittest.TestCase):
+    def test_posture_reorders_within_family(self):
+        # list arrives inmem-first (e.g. score tiebreak); posture prefers native.
+        vs = [_Vector("imp:inmem", family="imp", delivery="inmem-fileless"),
+              _Vector("imp:native", family="imp", delivery="native-exe"),
+              _Vector("other")]
+        order = ["native-exe", "inmem-fileless", "ps-amsi-revshell"]
+        got = [v.key for v in esc.order_deliveries(vs, order)]
+        self.assertEqual(got, ["imp:native", "imp:inmem", "other"])
+
+    def test_no_posture_keeps_order(self):
+        vs = [_Vector("a"), _Vector("b")]
+        self.assertEqual([v.key for v in esc.order_deliveries(vs, None)], ["a", "b"])
+
+    def test_non_family_vectors_keep_position(self):
+        vs = [_Vector("x"),
+              _Vector("imp:inmem", family="imp", delivery="inmem-fileless"),
+              _Vector("imp:native", family="imp", delivery="native-exe")]
+        order = ["native-exe", "inmem-fileless"]
+        got = [v.key for v in esc.order_deliveries(vs, order)]
+        # x stays first; the imp block reorders native-first at its anchor slot
+        self.assertEqual(got, ["x", "imp:native", "imp:inmem"])
 
 
 class InspectTest(unittest.TestCase):

@@ -86,14 +86,31 @@ class LinuxDriverTest(unittest.TestCase):
 class WindowsDriverTest(unittest.TestCase):
     def test_seimpersonate_potato(self):
         f = HostFacts(os="windows", privs={"SeImpersonatePrivilege"})
-        v = [x for x in vectors_for(f, "10.0.0.7") if x.key == "seimpersonate"][0]
+        v = [x for x in vectors_for(f, "10.0.0.7") if x.key == "seimpersonate:native"][0]
         self.assertIn("GodPotato", v.command)
         self.assertIn("whoami", v.command)
         self.assertEqual(v.safety, "config-change")
+        self.assertEqual(v.family, "seimpersonate")
+        self.assertEqual(v.delivery, "native-exe")
+
+    def test_seimpersonate_is_a_delivery_ladder(self):
+        # one objective, several delivery methods the loop can climb in posture order.
+        f = HostFacts(os="windows", privs={"SeImpersonatePrivilege"})
+        vs = [x for x in vectors_for(f, "10.0.0.7") if x.family == "seimpersonate"]
+        self.assertEqual({v.delivery for v in vs},
+                         {"native-exe", "inmem-fileless", "ps-amsi-revshell"})
+        # all record under the one finding type, so proof dedupes regardless of delivery
+        self.assertEqual({v.report_type for v in vs}, {"seimpersonate"})
+
+    def test_assign_primary_token_maps_to_same_ladder(self):
+        f = HostFacts(os="windows", privs={"SeAssignPrimaryTokenPrivilege"})
+        vs = [x for x in vectors_for(f, "10.0.0.7") if x.family == "seimpersonate"]
+        self.assertEqual(len(vs), 3)
 
     def test_stage_dir_is_substituted(self):
         f = HostFacts(os="windows", privs={"SeImpersonatePrivilege"})
-        v = vectors_for(f, "10.0.0.7", stage_win="C:\\stage")[0]
+        v = [x for x in vectors_for(f, "10.0.0.7", stage_win="C:\\stage")
+             if x.key == "seimpersonate:native"][0]
         self.assertIn("C:\\stage\\GodPotato.exe", v.command)
 
     def test_backup_operators_group_route(self):
