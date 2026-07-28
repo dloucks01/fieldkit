@@ -470,6 +470,15 @@ class Store:
             "SELECT * FROM access WHERE host_id = ? ORDER BY admin DESC, id",
             (host_id,)).fetchall()
 
+    def credential_with_access_on(self, host_id):
+        """A credential that authenticates on this host — the acting foothold for enum
+        and privesc. Prefers admin, then a password (least surprising to render)."""
+        return self.conn.execute(
+            "SELECT c.* FROM credential c JOIN access a ON a.cred_id = c.id "
+            "WHERE a.host_id = ? "
+            "ORDER BY a.admin DESC, (c.secret_type = 'password') DESC, a.id LIMIT 1",
+            (host_id,)).fetchone()
+
     def admin_credential_for(self, host_id):
         """A credential that holds admin on this host — the key the loot step uses.
 

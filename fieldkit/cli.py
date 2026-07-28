@@ -18,7 +18,8 @@ import sqlite3
 import sys
 
 from . import (__version__, config as config_mod, creds as creds_mod,
-               ingest as ingest_mod, kb as kb_mod, scope as scope_mod, spray as spray_mod)
+               hostenum as hostenum_mod, ingest as ingest_mod, kb as kb_mod,
+               scope as scope_mod, spray as spray_mod)
 from .errors import ConfirmationError, FieldkitError
 from .state import DB_ENV_VAR, Store, default_db_path
 
@@ -317,6 +318,77 @@ def cmd_analyze(args):
     return 0
 
 
+def _resolve_target(store, ip):
+    """(host_row, cred_row) for a target, or an error string. Shared by enum/run."""
+    host = store.host_by_ip(ip)
+    if host is None:
+        return None, None, f"{ip} is not in scope — add it with `fieldkit add hosts`"
+    cred = store.credential_with_access_on(host["id"])
+    if cred is None:
+        return host, None, (f"no credential is proven on {ip} — spray/validate one there "
+                            "first (enum runs as a credential that already works)")
+    return host, cred, None
+
+
+def _facts_summary(facts):
+    """One-line-per-signal digest of what enum found, for the operator."""
+    lines = []
+    if facts.os == hostenum_mod.LINUX:
+        lines.append(f"  user: {facts.user or '?'} (uid {facts.uid})"
+                     + (" — ROOT" if facts.is_root else "")
+                     + (f"  groups: {', '.join(sorted(facts.groups))}" if facts.groups else ""))
+        if facts.sudo_all:
+            lines.append("  sudo: FULL root (ALL)")
+        elif facts.sudo_binaries:
+            lines.append(f"  sudo: {', '.join(sorted(facts.sudo_binaries))}"
+                         + ("  NOPASSWD" if facts.sudo_nopasswd else "")
+                         + (f"  env_keep={','.join(sorted(facts.sudo_env_keep))}"
+                            if facts.sudo_env_keep else ""))
+        if facts.suid:
+            lines.append(f"  suid: {', '.join(sorted(facts.suid))}")
+        if facts.caps:
+            lines.append(f"  caps: {', '.join(f'{k}={v}' for k, v in sorted(facts.caps.items()))}")
+        if facts.kernel:
+            lines.append(f"  kernel: {facts.kernel}")
+    else:
+        if facts.privs:
+            lines.append(f"  privileges: {', '.join(sorted(facts.privs))}")
+        if facts.win_groups:
+            lines.append(f"  groups: {', '.join(sorted(facts.win_groups))}")
+        if facts.always_install_elevated:
+            lines.append("  AlwaysInstallElevated: ON (both keys)")
+        if facts.unquoted_services:
+            lines.append(f"  unquoted services: {len(facts.unquoted_services)}")
+    return lines
+
+
+def cmd_enum(args):
+    with _open_store(args) as store:
+        store.require_engagement()
+        host, cred, err = _resolve_target(store, args.host)
+        if err:
+            _err(err)
+            return 2
+        principal = creds_mod.Credential.from_row(cred).principal
+        if not _confirm(f"enumerate {args.host} as {principal}? (read-only, runs commands "
+                        "on the target)", args.yes):
+            print("aborted — nothing ran")
+            return 1
+        report = hostenum_mod.run_enum(store, host, cred, on_event=lambda m: print(m))
+        if report.blocked:
+            _err(report.blocked)
+            return 2
+        facts = hostenum_mod.facts_for(store, host["id"])
+
+    print(f"\nenumerated {args.host}: {_plural(len(report.ran), 'check')} captured"
+          + (f", {len(report.failed)} failed" if report.failed else ""))
+    summary = _facts_summary(facts)
+    if summary:
+        print("\n".join(summary))
+    print(f"\nnext: {PROG} analyze   (ranks the privesc vectors this enum unlocked)")
+    return 0
+
+
 def cmd_status(args):
     with _open_store(args) as store:
         row = store.require_engagement()
@@ -477,6 +549,15 @@ def build_parser():
     p_analyze.add_argument("--proof", action="store_true",
                            help="show each opportunity's safe-proof (report evidence)")
     p_analyze.set_defaults(func=cmd_analyze)
+
+    p_enum = sub.add_parser(
+        "enum", help="enumerate a host you have a foothold on (read-only, captured)",
+        description="Runs the OS-appropriate privesc enumeration on a host through the "
+                    "read-only executor, captures every check as evidence, and prints "
+                    "the signals that feed `analyze`.")
+    p_enum.add_argument("host", metavar="IP", help="a host you already have access on")
+    p_enum.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
+    p_enum.set_defaults(func=cmd_enum)
 
     p_status = sub.add_parser("status", help="the engagement board")
     p_status.add_argument("--hosts", action="store_true", help="list every host")
