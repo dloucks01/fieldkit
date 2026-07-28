@@ -219,5 +219,35 @@ class FullFunnelTest(unittest.TestCase):
         self.assertEqual(payload["findings"][0]["_recce"]["confidence"], "confirmed")
 
 
+    def test_escalate_walks_to_proof(self):
+        # a minimal engagement, then let the orchestrator walk the ranked vectors
+        # instead of naming one by hand (Phase 6).
+        self.cli("init", "ACME Corp")
+        self.cli("add", "hosts", "10.0.0.7 WS02")
+        self.cli("add", "cred", "corp.local/jdoe:Winter2025!", "--yes")
+        self.cli("spray", "smb", "--yes")
+        self.cli("enum", "10.0.0.7", "--yes")
+
+        # the config-change vector is gated with no --allow — the loop fires nothing
+        gated = self.cli("escalate", "10.0.0.7", "--yes", expect=2)
+        self.assertIn("above the current --allow", gated)
+        self.assertEqual(self.store().counts()["proven_findings"], 0)
+
+        # --dry-run shows the plan but still fires nothing
+        dry = self.cli("escalate", "10.0.0.7", "--allow", "config-change", "--dry-run")
+        self.assertIn("escalation plan", dry)
+        self.assertIn("seimpersonate", dry)
+        self.assertEqual(self.store().counts()["proven_findings"], 0)
+
+        # walk it for real: the loop fires seimpersonate, classifies SYSTEM, stops on proof
+        run = self.cli("escalate", "10.0.0.7", "--allow", "config-change", "--yes")
+        self.assertIn("PROVEN", run)
+        self.assertIn("seimpersonate", run)
+        self.assertEqual(self.store().counts()["proven_findings"], 1)
+        # the finding carries the *captured* PoC output, not a paraphrase
+        proven = [f for f in self.store().findings() if f["proven"]]
+        self.assertIn("nt authority\\system", proven[0]["evidence"].lower())
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
