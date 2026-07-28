@@ -633,9 +633,12 @@ def cmd_escalate(args):
         if outcome.ok:
             v = outcome.proven
             vtype = v.report_type or v.key.split(":", 1)[0]
-            evidence = (results[v.key].output or "").strip()[:500]
-            store.add_finding(vtype, v.title, host_id=host["id"], proven=True,
-                              evidence=evidence)
+            res = results[v.key]
+            evidence = (res.output or "").strip()[:500]
+            finding_id, _ = store.add_finding(vtype, v.title, host_id=host["id"],
+                                              proven=True, evidence=evidence)
+            if res.step_id is not None:  # link the captured proof step (anti-fabrication)
+                store.attach_step(res.step_id, finding_id)
             if v.cleanup:
                 store.add_artifact(f"{v.title} (artifact)", cleanup_cmd=v.cleanup,
                                    host_id=host["id"])
