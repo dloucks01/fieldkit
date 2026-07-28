@@ -71,6 +71,7 @@ def build(store, config, *, proven_only=True):
             "affected_host": label,
             "ip": ip,
             "hostname": hostname,
+            "proven": bool(f["proven"]),
             "evidence": f["evidence"] or "",
             "references": "",
             "steps": steps,
@@ -93,10 +94,16 @@ def _kb(f):
 
 def check(findings):
     """Anti-fabrication / completeness gate. Returns ``(errors, warns)`` as
-    ``(tag, message)`` lists — errors must be empty before a report is trustworthy."""
+    ``(tag, message)`` lists — errors must be empty before a report is trustworthy.
+
+    A **proven** finding must carry its captured proof (command + output) — that is the
+    anti-fabrication spine. An **observation** (an unproven finding, ``proven=False``,
+    surfaced by enumeration but not exploited) is *not* a claim of compromise, so it is
+    not required to carry a PoC — a missing walkthrough is a note, not an error."""
     errors, warns = [], []
     for i, f in enumerate(findings, 1):
         tag = f.get("title") or f.get("vector_type") or f"finding #{i}"
+        proven = f.get("proven", True)   # absent flag → treat as a proven finding
         vt = f.get("vector_type")
         if not vt:
             errors.append((tag, "missing vector_type"))
@@ -108,7 +115,9 @@ def check(findings):
             warns.append((tag, "no evidence summary"))
         steps = f.get("steps", [])
         if not steps:
-            errors.append((tag, "no proof-of-concept steps captured"))
+            (errors if proven else warns).append(
+                (tag, "no proof-of-concept steps captured"
+                 + ("" if proven else " (observation — not exploited)")))
         for n, s in enumerate(steps, 1):
             if not str(s.get("cmd", "")).strip():
                 errors.append((tag, f"step {n}: empty command"))
@@ -130,12 +139,184 @@ SEV_MEAN = {
     "Info":     "informational — no direct escalation, but relevant to the overall posture.",
 }
 
+#: the business-impact narrative per severity — what an attacker actually gains.
+IMPACT = {
+    "Critical": "An attacker can take complete control of the affected host immediately "
+                "and with high reliability. From there they can read or alter all data on "
+                "the host, disable security controls, extract stored credentials, and pivot "
+                "into the wider environment.",
+    "High":     "An attacker holding only low-privileged access can obtain full "
+                "administrative control of the affected host (SYSTEM on Windows, root on "
+                "Linux). With that control they can read or modify all data on the host, "
+                "disable endpoint security, harvest stored and cached credentials, and use "
+                "the host as a foothold to move laterally toward domain compromise.",
+    "Medium":   "An attacker can obtain partial elevation, or full elevation only under "
+                "specific preconditions. This still meaningfully weakens the host's "
+                "security boundary and is commonly chained with other issues.",
+    "Low":      "Impact is limited, or the weakness is exploitable only in narrow "
+                "circumstances, but it still erodes defence-in-depth.",
+    "Info":     "No direct privilege escalation, but the item is relevant to the host's "
+                "overall security posture.",
+}
+
+
+def _impact(f):
+    return IMPACT.get(_sev(f), IMPACT["Info"])
+
+
+def _shot(w, caption):
+    """A screenshot placeholder — fieldkit captures text; this marks where the operator
+    should paste the matching terminal screenshot for the polished deliverable."""
+    w(f"> 📷 **Screenshot for the report:** {caption}")
+    w("")
+
+
+def _glance(w, rows, kind):
+    w(f"### {kind} at a glance")
+    w("")
+    w("| # | " + kind[:-1] + " | Severity | Affected host | CWE |")
+    w("|---|------|----------|---------------|-----|")
+    for i, f in enumerate(rows, 1):
+        k = _kb(f)
+        w(f"| {i} | {f.get('title') or k['name']} | {_sev(f)} | "
+          f"{f.get('affected_host', '')} | {k['cwe']} |")
+    w("")
+
+
+def _render_finding(w, i, f):
+    k = _kb(f)
+    title = f.get("title") or k["name"]
+    refs = ", ".join(x for x in [k.get("refs"), f.get("references")] if x)
+    w(f"## Finding {i}. {title}")
+    w("")
+    w(f"**Severity:** {_sev(f)}  ")
+    w(f"**Affected host:** {f.get('affected_host', '')}  ")
+    w(f"**Classification:** {k['cwe']}" + (f" · {refs}" if refs else "") + "  ")
+    w("")
+    w("> **FINDING — proven.** This weakness was **exploited** during the assessment. "
+      "The exact commands and their captured output are reproduced below so it can be "
+      "independently reproduced and re-tested after remediation.")
+    w("")
+    w("### Description")
+    w("")
+    w(k["desc"])
+    w("")
+    w("### Impact")
+    w("")
+    w(_impact(f))
+    w("")
+    w("### Technical walkthrough")
+    w("")
+    steps = f.get("steps", [])
+    if not steps:
+        w("_(no reproduction steps recorded)_")
+        w("")
+    else:
+        w(f"The following was executed against `{f.get('ip') or f.get('affected_host', '')}`. "
+          "Each step shows the verbatim command and its captured output.")
+        w("")
+    proof_step = None
+    for n, s in enumerate(steps, 1):
+        via = f" _(via {s['transport']})_" if s.get("transport") else ""
+        w(f"**Step {n} — command{via}:**")
+        w("")
+        w("```")
+        w(str(s.get("cmd", "")).rstrip())
+        w("```")
+        if s.get("output"):
+            proof_step = s
+            w("")
+            w("Observed result:")
+            w("")
+            w("```")
+            w(str(s["output"]).rstrip())
+            w("```")
+            w("")
+            _shot(w, "the terminal above — the command and its result.")
+    # the decisive proof (money shot)
+    proof = (f.get("evidence") or (proof_step or {}).get("output", "")).strip()
+    if proof:
+        w("### Proof of compromise")
+        w("")
+        w("The step above returned an elevated / privileged context, confirming the "
+          "escalation succeeded:")
+        w("")
+        w("```")
+        w(proof.rstrip())
+        w("```")
+        w("")
+        _shot(w, "the elevated shell / identity output above — this is the single most "
+                 "important screenshot for this finding.")
+    if f.get("artifacts"):
+        w("### Changes made during testing")
+        w("")
+        w("To validate this finding the following changes were made to the target and "
+          "have been reverted (see the internal cleanup manifest):")
+        for a in f["artifacts"]:
+            w(f"- {a.get('desc', 'change') if isinstance(a, dict) else a}")
+        w("")
+    w("### Remediation")
+    w("")
+    w(k["rem"])
+    w("")
+    w("---")
+    w("")
+
+
+def _render_observation(w, i, f):
+    k = _kb(f)
+    title = f.get("title") or k["name"]
+    refs = ", ".join(x for x in [k.get("refs"), f.get("references")] if x)
+    w(f"## Observation {i}. {title}")
+    w("")
+    w(f"**Potential severity:** {_sev(f)}  ")
+    w(f"**Affected host:** {f.get('affected_host', '')}  ")
+    w(f"**Classification:** {k['cwe']}" + (f" · {refs}" if refs else "") + "  ")
+    w("")
+    w("> ⚠️ **OBSERVATION — identified, not exploited.** This weakness was surfaced by "
+      "enumeration/tooling but was **not** exercised during the assessment (out of scope, "
+      "time, or to avoid disruption). The risk is real but **unconfirmed** — validate it "
+      "before relying on the remediation, and do not treat it as a demonstrated compromise.")
+    w("")
+    w("### Description")
+    w("")
+    w(k["desc"])
+    w("")
+    w("### Potential impact (if exploited)")
+    w("")
+    w(_impact(f))
+    w("")
+    w("### How this was identified / how to confirm")
+    w("")
+    if f.get("evidence"):
+        w("Identified from the following evidence:")
+        w("")
+        w("```")
+        w(str(f["evidence"]).rstrip())
+        w("```")
+        w("")
+    w("To confirm, exploit the weakness with the corresponding technique in a controlled "
+      "window and capture the result (fieldkit: re-run enumeration, then `run`/`escalate`/"
+      "`prep` the matching vector).")
+    w("")
+    w("### Recommended remediation")
+    w("")
+    w(k["rem"])
+    w("")
+    w("---")
+    w("")
+
 
 def render_markdown(engagement, findings):
-    """The customer report as Markdown."""
+    """The customer report as Markdown. Proven weaknesses render as **Findings** (with the
+    full captured walkthrough + screenshot placeholders); unproven ones render as clearly
+    labelled **Observations**."""
     L = []
     w = L.append
     eng = engagement
+    proven = [f for f in findings if f.get("proven", True)]
+    observations = [f for f in findings if not f.get("proven", True)]
+
     w(f"# Penetration Test Report — {eng.get('client', '')}")
     w("")
     w(f"**Assessor:** {eng.get('assessor') or '—'}  ")
@@ -148,40 +329,63 @@ def render_markdown(engagement, findings):
     w("")
 
     counts = {}
-    for f in findings:
+    for f in proven:
         counts[_sev(f)] = counts.get(_sev(f), 0) + 1
-    nhost = len({f.get("affected_host", "") for f in findings if f.get("affected_host")}) or 1
-    top_sev = (min((_sev(f) for f in findings), key=lambda s: kb.SEV_ORDER.get(s, 9))
-               if findings else "Info")
-    full_control = sum(1 for f in findings if _sev(f) in ("Critical", "High"))
+    nhost = len({f.get("affected_host", "") for f in proven if f.get("affected_host")}) or 1
+    top_sev = (min((_sev(f) for f in proven), key=lambda s: kb.SEV_ORDER.get(s, 9))
+               if proven else "Info")
+    full_control = sum(1 for f in proven if _sev(f) in ("Critical", "High"))
 
     w("## Executive summary")
     w("")
-    if not findings:
+    if not proven and not observations:
         w("No privilege-escalation or access findings were proven within the authorized "
           "scope and time window. See *Assessment limitations* — absence of findings is "
           "not proof of security.")
         w("")
     else:
-        w(f"The assessment proved **{len(findings)} finding(s)** across **{nhost} "
-          f"in-scope host(s)**. By severity:")
-        w("")
-        for s in kb.SEV_ORDER:
-            if s in counts:
-                w(f"- **{counts[s]} {s}** — {SEV_MEAN[s]}")
-        w("")
+        if proven:
+            extra = (f", and additionally identified **{len(observations)} observation(s)** "
+                     "that were not exploited" if observations else "")
+            w(f"The assessment **proved {len(proven)} finding(s)** across **{nhost} "
+              f"in-scope host(s)**{extra}. By severity of the proven findings:")
+            w("")
+            for s in kb.SEV_ORDER:
+                if s in counts:
+                    w(f"- **{counts[s]} {s}** — {SEV_MEAN[s]}")
+            w("")
+        else:
+            w(f"No findings were **proven**, but **{len(observations)} observation(s)** "
+              "were identified — weaknesses seen but not exploited within scope and time. "
+              "See *Observations*; absence of a proven finding is not proof of security.")
+            w("")
         if full_control:
             w(f"The overall risk is assessed as **{top_sev}**. {full_control} of the "
-              f"{len(findings)} finding(s) allow an attacker to obtain complete "
+              f"{len(proven)} proven finding(s) allow an attacker to obtain complete "
               "administrative control of the affected host — and with it the ability to "
               "read or alter all data, disable security controls, harvest credentials, "
               "and pivot into the wider environment.")
-        else:
+            w("")
+        elif proven:
             w(f"The overall risk is assessed as **{top_sev}**. See each finding for impact.")
-        w("")
+            w("")
+
+    w("### How to read this report")
+    w("")
+    w("This report separates two kinds of result — the distinction is deliberate and "
+      "load-bearing:")
+    w("")
+    w("- **Findings** are weaknesses we **proved by exploiting them**. Each carries the "
+      "exact commands that were run and their captured output, so you can reproduce and "
+      "re-test after remediation. A finding is a *demonstrated* compromise.")
+    w("- **Observations** are weaknesses we **identified but did not exploit** within the "
+      "authorized scope and time window. The risk is real but **unconfirmed** — treat them "
+      "as prioritized areas to validate and fix, not as demonstrated compromises.")
+    w("")
+
     w("### Methodology & completeness")
     w("")
-    w("Each finding was **validated hands-on** — confirmed by execution, not inferred "
+    w("Each **finding** was **validated hands-on** — confirmed by execution, not inferred "
       "from version numbers — and the exact commands and their observed results are "
       "reproduced per writeup so the customer can independently re-test after "
       "remediation. Where a host exposed more than one path, **all are reported**: each "
@@ -193,77 +397,35 @@ def render_markdown(engagement, findings):
              "referenced per finding." if eng.get("evidence_log") else ""))
     w("")
 
-    if findings:
-        w("### Findings at a glance")
-        w("")
-        w("| # | Finding | Severity | Affected host | CWE |")
-        w("|---|---------|----------|---------------|-----|")
-        for i, f in enumerate(findings, 1):
-            k = _kb(f)
-            w(f"| {i} | {f.get('title') or k['name']} | {_sev(f)} | "
-              f"{f.get('affected_host', '')} | {k['cwe']} |")
-        w("")
+    if proven:
+        _glance(w, proven, "Findings")
+    if observations:
+        _glance(w, observations, "Observations")
     w("---")
     w("")
 
-    for i, f in enumerate(findings, 1):
-        k = _kb(f)
-        title = f.get("title") or k["name"]
-        refs = ", ".join(x for x in [k.get("refs"), f.get("references")] if x)
-        w(f"## {i}. {title}")
+    if proven:
+        w("# Findings (proven)")
         w("")
-        w(f"**Severity:** {_sev(f)}  ")
-        w(f"**Affected host:** {f.get('affected_host', '')}  ")
-        w(f"**Classification:** {k['cwe']}" + (f" · {refs}" if refs else "") + "  ")
+        for i, f in enumerate(proven, 1):
+            _render_finding(w, i, f)
+
+    if observations:
+        w("# Observations (identified, not exploited)")
         w("")
-        w("### Description")
+        w("The items below were **surfaced during enumeration but not exploited**. They "
+          "are not demonstrated compromises; each should be validated in a controlled "
+          "window before it is relied upon as fixed.")
         w("")
-        w(k["desc"])
-        w("")
-        if f.get("evidence"):
-            w("### Evidence")
-            w("")
-            w(f["evidence"])
-            w("")
-        w("### Proof of concept — steps & commands")
-        w("")
-        if not f.get("steps"):
-            w("_(no reproduction steps recorded)_")
-            w("")
-        for n, s in enumerate(f.get("steps", []), 1):
-            via = f" _(via {s['transport']})_" if s.get("transport") else ""
-            w(f"**Step {n}.** Command{via}:")
-            w("")
-            w("```")
-            w(str(s.get("cmd", "")).rstrip())
-            w("```")
-            if s.get("output"):
-                w("")
-                w("Result:")
-                w("")
-                w("```")
-                w(str(s["output"]).rstrip())
-                w("```")
-            w("")
-        if f.get("artifacts"):
-            w("### Changes made during testing")
-            w("")
-            w("To validate this finding the following changes were made to the target "
-              "and have been reverted (see the internal cleanup manifest):")
-            for a in f["artifacts"]:
-                w(f"- {a.get('desc', 'change') if isinstance(a, dict) else a}")
-            w("")
-        w("### Remediation")
-        w("")
-        w(k["rem"])
-        w("")
-        w("---")
-        w("")
+        for i, f in enumerate(observations, 1):
+            _render_observation(w, i, f)
 
     w("## Assessment limitations")
     w("")
     w("- **Absence of findings is not proof of security.** This assessment enumerated a "
       "defined set of known vectors within the authorized scope and time window.")
+    w("- **Observations are unconfirmed.** They indicate likely weaknesses but were not "
+      "exploited; validate each before assuming impact or successful remediation.")
     w("- **Point-in-time.** Findings reflect the systems' state during the test window.")
     w("- **Remediation guidance is general** and must be validated against the client's "
       "environment before deployment.")
