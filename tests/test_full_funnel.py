@@ -383,6 +383,10 @@ class FullFunnelTest(unittest.TestCase):
         # the finding carries the *captured* PoC output, not a paraphrase
         proven = [f for f in self.store().findings() if f["proven"]]
         self.assertIn("nt authority\\system", proven[0]["evidence"].lower())
+        # and the captured step is LINKED to the finding, so anti-fabrication passes for
+        # an escalate-proven finding (regression: escalate used to record it unlinked)
+        self.assertTrue(self.store().steps(finding_id=proven[0]["id"]))
+        self.assertIn("CHECK OK", self.cli("report", "--check"))
 
 
     def _install_nxc(self, body):

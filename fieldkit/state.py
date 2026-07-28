@@ -610,6 +610,14 @@ class Store:
                  exit_code, utcnow()))
             return cur.lastrowid
 
+    def attach_step(self, step_id, finding_id):
+        """Link an already-captured step to a finding. The escalate loop captures the
+        proof step before it knows which vector will prove, so it back-links on success —
+        this keeps `report --check` (a finding needs its captured step) passing."""
+        with self._write():
+            self.conn.execute("UPDATE step SET finding_id = ? WHERE id = ?",
+                              (finding_id, step_id))
+
     def steps(self, finding_id=None, host_id=None):
         if finding_id is not None:
             return self.conn.execute(

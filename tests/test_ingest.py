@@ -145,6 +145,15 @@ class ApplyTest(unittest.TestCase):
         # winrm is a new method row; the svc cred now holds admin somewhere.
         self.assertEqual(self.store.counts()["admin_access"], 1)
 
+    def test_ssh_auth_infers_linux_os_without_a_banner(self):
+        # a banner-less ssh foothold must still be enum-plannable (proto -> OS family).
+        apply_nxc(self.store, classify_nxc("SSH   10.0.0.9   22   LIN01   [+] deploy:pw\n"))
+        self.assertEqual(self.store.host_by_ip("10.0.0.9")["os"], "linux")
+
+    def test_smb_auth_infers_windows_os_without_a_banner(self):
+        apply_nxc(self.store, classify_nxc("SMB   10.0.0.11   445   SRV   [+] corp\\a:pw\n"))
+        self.assertEqual(self.store.host_by_ip("10.0.0.11")["os"], "windows")
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

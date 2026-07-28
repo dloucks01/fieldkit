@@ -35,6 +35,10 @@ class NxcIntent:
         return [(c, r) for c, r in self.creds if r.admin]
 
 
+#: the OS family a successful auth on a protocol implies, when no banner said otherwise.
+_PROTO_OS = {"SSH": "linux", "SMB": "windows", "WINRM": "windows", "RDP": "windows"}
+
+
 def _os_from_banner(info):
     """Map an nxc banner to fieldkit's coarse OS label, or None if it does not say."""
     text = (info.os or "").lower()
@@ -95,8 +99,11 @@ def apply_nxc(store, intent, source="spray"):
             cred_id, created = store.add_credential(cred, source=source)
             rep.creds_added += created
             rep.creds_reused += not created
-            # A valid result may name a host no banner covered — ensure it exists.
-            host_id, host_created = store.add_host(result.ip)
+            # A valid result may name a host no banner covered — ensure it exists, and
+            # infer the OS family from the proto that authed (ssh→linux, smb/winrm→windows)
+            # so a banner-less host (e.g. an ssh foothold) is still enum-plannable.
+            host_id, host_created = store.add_host(
+                result.ip, os_name=_PROTO_OS.get(result.proto))
             rep.hosts_added += host_created
             _, acreated = store.add_access(
                 host_id, cred_id, method=result.proto.lower(), admin=result.admin)
