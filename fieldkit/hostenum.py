@@ -48,6 +48,11 @@ ENUM_PLAN = {
                          '/v AlwaysInstallElevated & reg query "HKCU\\Software\\Policies\\'
                          'Microsoft\\Windows\\Installer" /v AlwaysInstallElevated'),
         EnumCheck("services", "wmic service get name,pathname,startmode"),
+        # per-service security descriptor: which services a non-admin can reconfigure.
+        EnumCheck("svcperms",
+                  "Get-CimInstance Win32_Service|%{'SVC|'+$_.Name+'|'+$_.PathName+'|'+"
+                  "((sc.exe sdshow $_.Name)-join'')}",
+                  shell="powershell"),
     ),
 }
 
@@ -73,6 +78,9 @@ class HostFacts:
     win_groups: set = field(default_factory=set)        # Administrators, Backup Operators, ...
     always_install_elevated: bool = False
     unquoted_services: list = field(default_factory=list)  # (service_or_None, path)
+    #: service name -> its raw binPath, for services whose ACL grants a broad principal
+    #: SERVICE_CHANGE_CONFIG (reconfigure the binPath to a command that runs as SYSTEM).
+    reconfigurable_services: dict = field(default_factory=dict)
 
     @property
     def is_root(self):
@@ -215,7 +223,42 @@ def _p_services(facts, text):
             facts.unquoted_services.append((name, path))
 
 
+#: SDDL abbreviations for principals a non-admin foothold is typically a member of.
+_BROAD_SIDS = {"AU", "BU", "WD", "IU", "DU", "S-1-1-0", "S-1-5-11", "S-1-5-32-545"}
+
+
+def _grants_change_config(rights):
+    """True when a service ACE's rights include SERVICE_CHANGE_CONFIG (DC) — letters,
+    GENERIC_ALL (GA), or a hex mask with the 0x0002 bit set."""
+    r = rights.strip()
+    if "DC" in r or "GA" in r:
+        return True
+    if r.startswith("0x"):
+        try:
+            return bool(int(r, 16) & 0x0002)
+        except ValueError:
+            return False
+    return False
+
+
+def _p_svcperms(facts, text):
+    for line in text.splitlines():
+        if not line.startswith("SVC|"):
+            continue
+        parts = line.split("|", 3)
+        if len(parts) < 4 or not parts[1]:
+            continue
+        name, binpath, sddl = parts[1], parts[2], parts[3]
+        # ACE = (type;flags;rights;object;inherit;sid). A broad principal granted
+        # SERVICE_CHANGE_CONFIG can repoint binPath to a SYSTEM command.
+        for rights, sid in re.findall(r"\(A;[^;]*;([^;]*);[^;]*;[^;]*;([^)]+)\)", sddl):
+            if sid.strip() in _BROAD_SIDS and _grants_change_config(rights):
+                facts.reconfigurable_services[name] = binpath.strip()
+                break
+
+
 _PARSERS = {
     "id": _p_id, "sudo": _p_sudo, "suid": _p_suid, "caps": _p_caps, "kernel": _p_kernel,
     "priv": _p_priv, "groups": _p_groups, "aie": _p_aie, "services": _p_services,
+    "svcperms": _p_svcperms,
 }
