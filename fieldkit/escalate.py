@@ -49,6 +49,7 @@ GATED = "gated"          # blast radius exceeds --allow — never fired
 SKIPPED = "skipped"      # not fired for another reason (blocked transport, budget)
 BURNED = "burned"        # delivery is known-caught — skipped without firing (assume-caught)
 STAGED = "staged"        # pushed a missing artifact from the arsenal, then re-fired
+MANUAL = "manual"        # needs operator hands after prep — not auto-fired (`fieldkit prep`)
 
 #: fallback axes that mean "the artifact this vector needs is not on the target". The
 #: same missing-binary shows as NO_TOOL on linux (`command not found`) and DELIVERY on
@@ -179,6 +180,14 @@ def escalate(vectors, *, fire, allow="read-only", os_name=None,
 
     fired = 0
     for vector in vectors:
+        # manual routes (overwrite/plant into a running service) can't be one-shot proven
+        # — surface them for `fieldkit prep`, don't fire.
+        if getattr(vector, "manual", False):
+            note = f"manual route — prepare it: `fieldkit prep {vector.host} {vector.key}`"
+            attempts.append(Attempt(vector, MANUAL, note=note))
+            emit(f"  manual {vector.key}: {note}")
+            continue
+
         # safety gate — never fire above the authorised blast radius.
         if not executor_mod.gate(vector.safety, allow):
             note = f"{vector.safety} exceeds --allow — skipped (re-run with --allow {vector.safety})"

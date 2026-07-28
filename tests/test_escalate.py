@@ -26,7 +26,7 @@ class _Vector:
     """The slice of privesc.Vector the orchestrator reads."""
 
     def __init__(self, key, safety="read-only", family=None, delivery=None, stages=(),
-                 builds=()):
+                 builds=(), manual=False):
         self.key = key
         self.title = key
         self.safety = safety
@@ -40,6 +40,7 @@ class _Vector:
         self.delivery = delivery
         self.stages = stages
         self.builds = builds
+        self.manual = manual
 
 
 class _Exec:
@@ -476,6 +477,21 @@ class AutoBuildTest(unittest.TestCase):
                            os_name="windows", build=build)
         self.assertFalse(out.ok)
         self.assertEqual(len(build.calls), 1)              # built once, not forever
+
+
+class ManualTest(unittest.TestCase):
+    """A manual route is surfaced, never auto-fired — the loop hands it to `prep`."""
+
+    def test_manual_vector_is_not_fired(self):
+        v1 = _Vector("writablesvc:X", "config-change", manual=True)
+        v2 = _Vector("safe")
+        fire = scripted({"safe": _Exec(WIN_ROOT)})     # no entry for the manual one
+        out = esc.escalate([v1, v2], fire=fire, allow=["read-only", "config-change"],
+                           os_name="windows")
+        self.assertIs(out.proven, v2)
+        self.assertEqual(fire.calls, ["safe"])      # manual never fired
+        self.assertEqual(out.attempts[0].action, esc.MANUAL)
+        self.assertIn("prep", out.attempts[0].note)
 
 
 class InspectTest(unittest.TestCase):

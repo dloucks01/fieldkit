@@ -44,12 +44,19 @@ WIN_OUT = {
     "services": ("Name     PathName                          StartMode\n"
                  "MyApp    C:\\Program Files\\My App\\svc.exe   Auto\n"
                  "Spooler  C:\\Windows\\System32\\spoolsv.exe   Auto\n"),
-    # per-service SDDL: MyApp grants Authenticated Users change-config (DC); Spooler doesn't.
+    # per-service SDDL + icacls. MyApp: Authenticated Users get change-config (DC) AND the
+    # binary/dir are writable by Users. Spooler: neither.
     "svcperms": (
         "SVC|MyApp|C:\\Program Files\\My App\\svc.exe|"
         "O:SYG:SYD:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;AU)(A;;CCLCSWRPWPDTLOCRRC;;;BU)\n"
+        "ACL|MyApp|C:\\Program Files\\My App\\svc.exe|C:\\Program Files\\My App\\svc.exe "
+        "BUILTIN\\Users:(F);NT AUTHORITY\\SYSTEM:(F);Successfully processed 1 files.\n"
+        "DIR|MyApp|C:\\Program Files\\My App|C:\\Program Files\\My App "
+        "BUILTIN\\Users:(M);Successfully processed 1 files.\n"
         "SVC|Spooler|C:\\Windows\\System32\\spoolsv.exe|"
-        "O:SYG:SYD:(A;;CCLCSWLOCRRC;;;AU)\n"),
+        "O:SYG:SYD:(A;;CCLCSWLOCRRC;;;AU)\n"
+        "ACL|Spooler|C:\\Windows\\System32\\spoolsv.exe|C:\\Windows\\System32\\spoolsv.exe "
+        "BUILTIN\\Administrators:(F);BUILTIN\\Users:(RX);Successfully processed 1 files.\n"),
 }
 
 
@@ -130,6 +137,10 @@ class WindowsFactsTest(EnumTestCase):
         # MyApp's ACL grants Authenticated Users change-config; Spooler's does not
         self.assertIn("MyApp", f.reconfigurable_services)
         self.assertNotIn("Spooler", f.reconfigurable_services)
+        # MyApp's binary + directory are writable by Users; Spooler's (RX) are not
+        self.assertIn("MyApp", f.writable_service_bins)
+        self.assertIn("MyApp", f.writable_service_dirs)
+        self.assertNotIn("Spooler", f.writable_service_bins)
 
     def test_aie_needs_both_keys(self):
         host, cred, hid = self.windows_host()
@@ -161,6 +172,27 @@ class SvcPermsParseTest(unittest.TestCase):
 
     def test_broad_sid_without_change_config_ignored(self):
         self.assertFalse(self.parse("D:(A;;CCLCSWRPWPLOCRRC;;;AU)"))  # start/stop, not DC
+
+
+class IcaclsWritableTest(unittest.TestCase):
+    """The icacls heuristic — a broad principal with a write-capable mask, despite the
+    drive-letter colon in the leading path."""
+
+    def w(self, acl):
+        from fieldkit.hostenum import _icacls_writable
+        return _icacls_writable(acl)
+
+    def test_users_full_is_writable(self):
+        self.assertTrue(self.w("C:\\svc.exe BUILTIN\\Users:(F);NT AUTHORITY\\SYSTEM:(F)"))
+
+    def test_everyone_modify_is_writable(self):
+        self.assertTrue(self.w("C:\\a\\svc.exe Everyone:(M)"))
+
+    def test_users_read_exec_is_not_writable(self):
+        self.assertFalse(self.w("C:\\svc.exe BUILTIN\\Users:(RX);BUILTIN\\Administrators:(F)"))
+
+    def test_admins_full_is_not_broad(self):
+        self.assertFalse(self.w("C:\\svc.exe BUILTIN\\Administrators:(F);NT SERVICE\\X:(F)"))
 
 
 class GuardTest(EnumTestCase):
