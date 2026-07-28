@@ -341,6 +341,13 @@ class FullFunnelTest(unittest.TestCase):
         md = open(os.path.join(self.dir, "rpt.md")).read()
         self.assertIn("SeImpersonate", md)
         self.assertIn("nt authority\\system", md)        # the captured PoC output
+        # the DEFAULT report now includes Observations (delegation/ADCS were not exploited)
+        self.assertIn("# Observations (identified, not exploited)", md)
+        self.assertIn("delegation", md.lower())
+        # --proven-only drops them for the tight deliverable
+        self.cli("report", "--proven-only", "--formats", "md", "-o", os.path.join(self.dir, "po"))
+        po = open(os.path.join(self.dir, "po.md")).read()
+        self.assertNotIn("# Observations (identified, not exploited)", po)
         self.cli("report", "--cleanup", "-o", os.path.join(self.dir, "rpt"))
         cleanup = open(os.path.join(self.dir, "rpt.cleanup.md")).read()
         self.assertIn("INTERNAL", cleanup)
