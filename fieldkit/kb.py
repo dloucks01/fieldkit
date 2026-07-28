@@ -151,6 +151,24 @@ def _mssql_exec(store):
                        "(`sp_configure 'xp_cmdshell',0`) — nxc restores the prior state.")
 
 
+def _mssql_privesc(store):
+    for r in store.mssql_nonadmin_footholds():
+        who = f"{r['domain']}\\{r['username']}" if r["domain"] else r["username"]
+        where = r["hostname"] or r["ip"]
+        yield Opportunity(
+            key="mssql-privesc",
+            title=f"MSSQL login (not sysadmin) on {where} — try SQL privilege escalation",
+            exploitability="medium", safety="config-change", detection="loud",
+            host=r["ip"],
+            detail="a non-sysadmin SQL login can often reach sysadmin via EXECUTE AS "
+                   "impersonation (IMPERSONATE on sa) or a linked-server hop — then "
+                   "xp_cmdshell → SYSTEM.",
+            evidence=f"valid MSSQL login on {r['ip']} as {who} (not sysadmin)",
+            next_step=f"fieldkit mssql escalate {r['ip']} --allow config-change",
+            safe_proof="impersonation is proven read-only first (EXECUTE AS + "
+                       "IS_SRVROLEMEMBER); the role grant is reversible (sp_dropsrvrolemember).")
+
+
 def _foothold_enum(store):
     for r in store.footholds_without_admin():
         who = f"{r['domain']}\\{r['username']}" if r["domain"] else r["username"]
@@ -253,6 +271,7 @@ PREDICATES = (
     _pth_local_admin,
     _loot_admin_host,
     _mssql_exec,
+    _mssql_privesc,
     _foothold_enum,
     _roastable_loot,
     _adcs_templates,

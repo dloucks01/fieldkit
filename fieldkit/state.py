@@ -752,6 +752,17 @@ class Store:
             "JOIN credential c ON c.id = a.cred_id "
             "WHERE a.method = 'mssql' AND a.admin = 1 ORDER BY h.id").fetchall()
 
+    def mssql_nonadmin_footholds(self):
+        """Hosts where a credential has an MSSQL login but is NOT sysadmin — a candidate for
+        SQL-layer privilege escalation (impersonation / linked servers)."""
+        return self.conn.execute(
+            "SELECT h.ip, h.hostname, c.domain, c.username "
+            "FROM access a JOIN host h ON h.id = a.host_id "
+            "JOIN credential c ON c.id = a.cred_id "
+            "WHERE a.method = 'mssql' AND a.admin = 0 AND NOT EXISTS "
+            "(SELECT 1 FROM access a2 WHERE a2.host_id = h.id AND a2.method='mssql' AND a2.admin=1) "
+            "ORDER BY h.id").fetchall()
+
     def footholds_without_admin(self):
         """Hosts where a credential is valid but not admin — a foothold needing local
         privilege escalation (shell + enum)."""

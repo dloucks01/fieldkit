@@ -306,9 +306,9 @@ class FullFunnelTest(unittest.TestCase):
         self.assertIn("SeImpersonate", analyze)
 
         # 5) fire the privesc vector through the safety gate (config-change -> --allow)
-        gated = self.cli("run", "10.0.0.7", "seimpersonate:native", "--yes", expect=2)
+        gated = self.cli("run", "10.0.0.7", "seimpersonate:godpotato", "--yes", expect=2)
         self.assertIn("safety gate", gated)              # blocked without --allow
-        run = self.cli("run", "10.0.0.7", "seimpersonate:native",
+        run = self.cli("run", "10.0.0.7", "seimpersonate:godpotato",
                        "--allow", "config-change", "--yes")
         self.assertIn("PROVEN", run)
         self.assertEqual(self.store().counts()["proven_findings"], 1)
