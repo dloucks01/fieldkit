@@ -10,7 +10,7 @@ tools it drives are the operator's existing kit. Authorized engagements only.
 
 ```bash
 bin/fieldkit <command>          # shim for `python3 -m fieldkit` (run from a clone)
-python3 -m pytest -q            # 495 tests, ~1.9s, no network/subprocess/tools needed
+python3 -m pytest -q            # 501 tests, ~1.9s, no network/subprocess/tools needed
 python3 -m pyflakes fieldkit/ tests/   # keep clean before committing
 ```
 

