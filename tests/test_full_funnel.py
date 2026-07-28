@@ -94,10 +94,10 @@ def val(f): return a[a.index(f) + 1] if f in a else None
 flag = "-x" if "-x" in a else ("-X" if "-X" in a else None)
 if flag:
     cmd = a[a.index(flag) + 1]
-    if "GodPotato" in cmd:
-        print("This script contains malicious content and has been blocked by your antivirus")
-    elif "loader.exe" in cmd:
+    if "IEX" in cmd or "Invoke-GodPotato" in cmd:      # the in-memory IEX rung evades AV
         print("nt authority\\system")
+    elif "Potato" in cmd:                              # any native .exe Potato is caught
+        print("This script contains malicious content and has been blocked by your antivirus")
     elif "whoami /priv" in cmd:
         print("SeImpersonatePrivilege        Enabled")
     sys.exit(0)
@@ -438,10 +438,19 @@ class FullFunnelTest(unittest.TestCase):
         os.chmod(p, os.stat(p).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
     def test_escalate_redelivers_when_delivery_is_caught(self):
-        # Phase 7: the on-disk potato is caught -> the loop climbs to the in-memory
-        # delivery, proves there, and records native-exe as caught (live evidence).
+        # the on-disk Potatoes are caught -> the loop climbs to the in-memory IEX rung,
+        # serves Invoke-GodPotato.ps1 over HTTP, proves there, records native-exe caught.
         self._install_nxc(FAKE_NXC_CAUGHT)
+        arsenal = os.path.join(self.dir, "arsenal")
+        os.makedirs(os.path.join(arsenal, "win-potato"))
+        open(os.path.join(arsenal, "win-potato", "Invoke-GodPotato.ps1"), "w").close()
+        old = os.environ.get("FIELDKIT_ARSENAL")
+        os.environ["FIELDKIT_ARSENAL"] = arsenal
+        self.addCleanup(lambda: os.environ.__setitem__("FIELDKIT_ARSENAL", old) if old
+                        else os.environ.pop("FIELDKIT_ARSENAL", None))
+
         self.cli("init", "ACME Corp")
+        self.cli("config", "set", "lhost=127.0.0.1")       # served-payload callback
         self.cli("add", "hosts", "10.0.0.7 WS02")
         self.cli("add", "cred", "corp.local/jdoe:Winter2025!", "--yes")
         self.cli("spray", "smb", "--yes")
@@ -450,8 +459,8 @@ class FullFunnelTest(unittest.TestCase):
         run = self.cli("escalate", "10.0.0.7", "--allow", "config-change", "--yes")
         self.assertIn("caught", run)                       # the native delivery tripped AMSI
         self.assertIn("marked 'native-exe' red", run)      # it was learned red, live
+        self.assertIn("serving Invoke-GodPotato.ps1", run)  # in-memory IEX delivery
         self.assertIn("PROVEN", run)                       # then re-delivered to a win
-        self.assertIn("in-memory", run)                    # the winning alternate's title
         self.assertEqual(self.store().counts()["proven_findings"], 1)
 
         # the live catch persisted: native-exe is now caught in the evasion matrix,

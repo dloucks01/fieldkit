@@ -238,6 +238,13 @@ and re-fires — once per vector, within budget:
 
 `--no-stage` disables all of it (advance on a miss instead).
 
+In-memory delivery (evasion): a vector may `serves=(script,)` instead of staging a
+binary — the loop serves it over HTTP and the target IEX-loads it in memory (nothing on
+disk). The SeImpersonate ladder's in-memory rung is `Invoke-GodPotato.ps1` via a
+`powershell -ep bypass` IEX download-cradle, so when the native `.exe` Potatoes are AV-caught
+the loop climbs to a fileless delivery that sidesteps the on-disk signature entirely. Needs
+`config set lhost=<ip>`.
+
 ## 12. Evasion (assume-caught + the delivery ladder)
 
 ```bash
