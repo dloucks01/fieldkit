@@ -118,6 +118,7 @@ class WindowsFactsTest(EnumTestCase):
         self.assertIn("Remote Management Users", f.win_groups)
         self.assertTrue(f.always_install_elevated)
         self.assertEqual(len(f.unquoted_services), 1)  # MyApp, not the C:\Windows Spooler
+        self.assertEqual(f.unquoted_services[0][0], "MyApp")  # the service name is captured
 
     def test_aie_needs_both_keys(self):
         host, cred, hid = self.windows_host()

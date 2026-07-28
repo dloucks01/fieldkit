@@ -527,7 +527,7 @@ def cmd_escalate(args):
             for name, _ in v.stages:
                 have = "in arsenal" if arsenal_mod.find(name) else "NOT staged"
                 marks.append(f"auto-stage {name} ({have})")
-            for fmt, _ in v.builds:
+            for fmt, _, _ in v.builds:
                 have = f"{poc_mod.BUILDER.get(fmt, '?')} ready" if poc_mod.have(fmt) \
                     else f"needs {poc_mod.BUILDER.get(fmt, 'a builder')}"
                 marks.append(f"auto-build {fmt} ({have})")
@@ -588,11 +588,11 @@ def cmd_escalate(args):
 
         def build(vector, corrected):
             done = []
-            for fmt, remote in vector.builds:
+            for fmt, remote, bcmd in vector.builds:
                 use_arch = "x86" if (corrected and arch == "x64") else \
                     ("x64" if corrected else arch)
                 out = os.path.join(_build_dir(), f"{vector.key.replace(':', '_')}.{fmt}")
-                bres = poc_mod.build(fmt, out, arch=use_arch,
+                bres = poc_mod.build(fmt, out, arch=use_arch, command=bcmd,
                                      lhost=cfg.get("lhost"), lport=cfg.get("lport"))
                 if not bres.ok:
                     return escalate_mod.StageResult(False, bres.detail)

