@@ -93,6 +93,22 @@ class SelectTest(unittest.TestCase):
         self.assertEqual(t.name, "ssh")
 
 
+class MssqlTest(unittest.TestCase):
+    def test_sysadmin_gets_the_mssql_exec_transport(self):
+        # xp_cmdshell exec needs sysadmin (Pwn3d!); it ranks below smb when both exist.
+        self.assertEqual(select("windows", {"mssql"}, is_admin=True).name, "mssql")
+        self.assertIsNone(select("windows", {"mssql"}, is_admin=False))
+        self.assertEqual(select("windows", {"smb", "mssql"}, is_admin=True).name, "smb")
+
+    def test_render_mssql_exec_uses_mssql_proto(self):
+        t = by_name("mssql")
+        r = render_exec(t, Credential("sa", "pw"), "10.0.0.9", "whoami")
+        self.assertEqual(r.argv[0], "nxc")
+        self.assertEqual(r.argv[1], "mssql")
+        self.assertIn("-x", r.argv)
+        self.assertIn("whoami", r.argv)
+
+
 class PutTest(unittest.TestCase):
     def test_smb_put_needs_admin(self):
         self.assertIsNone(select_put("windows", {"smb"}, is_admin=False))

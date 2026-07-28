@@ -131,6 +131,26 @@ def _loot_admin_host(store):
             safe_proof="SAM/LSA reads are read-only; no persistence is written.")
 
 
+def _mssql_exec(store):
+    for r in store.mssql_admin_footholds():
+        who = f"{r['domain']}\\{r['username']}" if r["domain"] else r["username"]
+        where = r["hostname"] or r["ip"]
+        yield Opportunity(
+            key="mssql-exec",
+            title=f"MSSQL sysadmin → OS command execution on {where}",
+            exploitability="high", safety="config-change", detection="loud",
+            host=r["ip"],
+            detail="a sysadmin MSSQL login runs OS commands via xp_cmdshell as the SQL "
+                   "service account — commonly a service account holding SeImpersonate, so "
+                   "`enum` then `escalate` chains straight to SYSTEM (Potato).",
+            evidence=f"MSSQL (Pwn3d!) on {r['ip']} as {who}",
+            next_step=f"fieldkit enum {r['ip']}   then   "
+                      f"fieldkit escalate {r['ip']} --allow config-change   "
+                      "(runs over xp_cmdshell)",
+            safe_proof="xp_cmdshell running `whoami` proves exec; disable it after "
+                       "(`sp_configure 'xp_cmdshell',0`) — nxc restores the prior state.")
+
+
 def _foothold_enum(store):
     for r in store.footholds_without_admin():
         who = f"{r['domain']}\\{r['username']}" if r["domain"] else r["username"]
@@ -232,6 +252,7 @@ PREDICATES = (
     _password_reuse,
     _pth_local_admin,
     _loot_admin_host,
+    _mssql_exec,
     _foothold_enum,
     _roastable_loot,
     _adcs_templates,

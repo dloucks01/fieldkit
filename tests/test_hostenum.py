@@ -148,6 +148,25 @@ class WindowsFactsTest(EnumTestCase):
         self.assertFalse(facts_for(self.store, hid).always_install_elevated)
 
 
+class MssqlEnumTest(EnumTestCase):
+    def mssql_host(self):
+        hid, _ = self.store.add_host("10.0.0.9", os_name="windows")
+        cid, _ = self.store.add_credential(Credential("sa", "pw", local_auth=True))
+        self.store.add_access(hid, cid, "mssql", admin=True)   # sysadmin (Pwn3d!)
+        return self.store.host_by_ip("10.0.0.9"), self.store.credential_by_id(cid), hid
+
+    def test_enum_over_mssql_skips_powershell_check_without_aborting(self):
+        host, cred, hid = self.mssql_host()
+        report = run_enum(self.store, host, cred, run=make_runner(WIN_OUT))
+        # the cmd-shell checks run over xp_cmdshell; svcperms is powershell and MSSQL has
+        # no powershell transport, so it's skipped — not fatal.
+        self.assertIn("priv", report.ran)
+        self.assertIn("services", report.ran)
+        self.assertNotIn("svcperms", report.ran)
+        self.assertIsNone(report.blocked)          # enum did NOT abort on the blocked check
+        self.assertIn("SeImpersonatePrivilege", facts_for(self.store, hid).privs)
+
+
 class SvcPermsParseTest(unittest.TestCase):
     """The SDDL change-config heuristic — a broad principal with DC/GA/mask is a hijack."""
 

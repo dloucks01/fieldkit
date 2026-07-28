@@ -122,12 +122,17 @@ def run_enum(store, host, cred, *, run=None, on_event=None, allow="read-only"):
                         shell=check.shell)
         res = execute(store, action, run=run, allow=allow, on_event=on_event)
         if res.blocked:
-            report.blocked = res.blocked      # a transport problem hits every check equally
-            return report
+            # a check whose shell has no proven transport (e.g. the powershell svcperms
+            # check over an MSSQL/xp_cmdshell-only foothold) is skipped, not fatal — other
+            # checks still run. Only if nothing at all runs is it a real transport problem.
+            report.failed.append((check.category, res.blocked))
+            continue
         if res.ok:
             report.ran.append(check.category)
         else:
             report.failed.append((check.category, res.run.error if res.run else "no result"))
+    if not report.ran:
+        report.blocked = report.failed[0][1] if report.failed else "no checks ran"
     return report
 
 
