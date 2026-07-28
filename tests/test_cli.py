@@ -16,7 +16,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fieldkit.cli import main  # noqa: E402
-from fieldkit.creds import EMPTY_LM  # noqa: E402
+from fieldkit.creds import EMPTY_LM, Credential  # noqa: E402
 from fieldkit.state import Store  # noqa: E402
 
 NT = "31d6cfe0d16ae931b73c59d7e0c089c0"
@@ -361,6 +361,45 @@ SMB   10.0.0.7   445   WS02   [+] corp.local\\jdoe:Winter2025! (Pwn3d!)
         self.assertIn("Password reuse", out)
         self.assertIn("safe proof:", out)
         self.assertIn("high/read-only", out)
+
+
+class RunCliTest(CliTestCase):
+    """The analyze->run wiring around the executor (execution itself is covered with
+    injected runners in test_executor/test_hostenum)."""
+
+    def setUp(self):
+        super().setUp()
+        self.init()
+        store = self.store()
+        self.hid, _ = store.add_host("10.0.0.8", os_name="linux")
+        cid, _ = store.add_credential(Credential("svc", "s3cret", domain="corp"))
+        store.add_access(self.hid, cid, "ssh", admin=False)
+        # captured enum: a read-only SUID vector + a config-change capability vector
+        store.add_step(cmd="find", output="/usr/bin/find\n", host_id=self.hid, label="enum:suid")
+        store.add_step(cmd="getcap", output="/usr/bin/tar = cap_dac_override+ep\n",
+                       host_id=self.hid, label="enum:caps")
+
+    def test_analyze_lists_privesc_vector_with_run_hint(self):
+        out = self.run_cli("analyze")
+        self.assertIn("SUID find", out)
+        self.assertIn("run: fieldkit run 10.0.0.8 suid:find", out)
+
+    def test_run_unknown_vector_lists_available(self):
+        out = self.run_cli("run", "10.0.0.8", "sudo:nope", "--yes", expect=2)
+        self.assertIn("no vector", out)
+        self.assertIn("suid:find", out)  # suggests what is available
+
+    def test_safety_gate_blocks_config_change_without_allow(self):
+        out = self.run_cli("run", "10.0.0.8", "cap:tar", "--yes", expect=2)
+        self.assertIn("safety gate", out)
+        self.assertIn("--allow config-change", out)
+        # nothing executed, so no step for the vector and no finding proven
+        store = self.store()
+        self.assertEqual(store.counts()["proven_findings"], 0)
+
+    def test_run_on_host_not_in_scope(self):
+        out = self.run_cli("run", "10.9.9.9", "suid:find", "--yes", expect=2)
+        self.assertIn("not in scope", out)
 
 
 if __name__ == "__main__":

@@ -14,12 +14,13 @@ Phase 0 surface:
 """
 import argparse
 import os
+import re
 import sqlite3
 import sys
 
 from . import (__version__, config as config_mod, creds as creds_mod,
-               hostenum as hostenum_mod, ingest as ingest_mod, kb as kb_mod,
-               scope as scope_mod, spray as spray_mod)
+               executor as executor_mod, hostenum as hostenum_mod, ingest as ingest_mod,
+               kb as kb_mod, privesc as privesc_mod, scope as scope_mod, spray as spray_mod)
 from .errors import ConfirmationError, FieldkitError
 from .state import DB_ENV_VAR, Store, default_db_path
 
@@ -290,30 +291,43 @@ def cmd_spray(args):
     return 0
 
 
+def _stage_dirs(cfg):
+    return dict(stage_win=cfg.get("stage_win"), stage_lin=cfg.get("stage_lin"))
+
+
 def cmd_analyze(args):
     with _open_store(args) as store:
         store.require_engagement()
-        opportunities = kb_mod.analyze(store)
-    if not opportunities:
-        counts = None
-        with _open_store(args) as store:
-            counts = store.counts()
+        cfg = config_mod.load(store)
+        items = list(kb_mod.analyze(store))
+        items += privesc_mod.vectors_from_state(store, **_stage_dirs(cfg))
+        counts = store.counts()
+    items.sort(key=lambda x: -x.score)
+
+    if not items:
         if not counts["access"]:
             print("nothing to analyze yet — no access proven. Run `fieldkit spray` first.")
         else:
-            print("no ranked opportunities from the current state.")
+            print("no ranked opportunities from the current state — "
+                  "`fieldkit enum <host>` to unlock privesc vectors.")
         return 0
 
-    print(f"{_plural(len(opportunities), 'opportunity')}, best first "
+    print(f"{_plural(len(items), 'move')}, best first "
           "(exploitability/safety/detection):\n")
-    for i, opp in enumerate(opportunities, 1):
-        where = f"  [{opp.host}]" if opp.host else ""
-        print(f"{i}. {opp.title}{where}")
-        print(f"     rank: {opp.axes}")
-        print(f"     {opp.detail}")
-        print(f"     next: {opp.next_step}")
-        if args.proof and opp.safe_proof:
-            print(f"     safe proof: {opp.safe_proof}")
+    for i, item in enumerate(items, 1):
+        where = f"  [{item.host}]" if item.host else ""
+        print(f"{i}. {item.title}{where}")
+        print(f"     rank: {item.axes}")
+        print(f"     {item.detail}")
+        if isinstance(item, privesc_mod.Vector):
+            print(f"     command: {item.command}")
+            print(f"     run: {PROG} run {item.host} {item.key}")
+            if item.cleanup:
+                print(f"     cleanup: {item.cleanup}")
+        else:
+            print(f"     next: {item.next_step}")
+        if args.proof and item.safe_proof:
+            print(f"     safe proof: {item.safe_proof}")
         print()
     return 0
 
@@ -386,6 +400,78 @@ def cmd_enum(args):
     if summary:
         print("\n".join(summary))
     print(f"\nnext: {PROG} analyze   (ranks the privesc vectors this enum unlocked)")
+    return 0
+
+
+def _looks_elevated(output, os_name):
+    low = (output or "").lower()
+    if os_name == hostenum_mod.WINDOWS:
+        return "nt authority\\system" in low or "\\administrator" in low
+    return "uid=0(" in low or bool(re.search(r"\buid=0\b", low))
+
+
+def cmd_run(args):
+    with _open_store(args) as store:
+        store.require_engagement()
+        cfg = config_mod.load(store)
+        host, cred, err = _resolve_target(store, args.host)
+        if err:
+            _err(err)
+            return 2
+        vector = privesc_mod.find_vector(store, args.host, args.vector, **_stage_dirs(cfg))
+        if vector is None:
+            available = [v.key for v in privesc_mod.vectors_from_state(store, **_stage_dirs(cfg))
+                         if v.host == args.host]
+            _err(f"no vector {args.vector!r} on {args.host}"
+                 + (f" — available: {', '.join(available)}" if available
+                    else " — run `fieldkit enum` then `fieldkit analyze` first"))
+            return 2
+
+        allow = ["read-only"] + list(args.allow or [])
+        gated = not executor_mod.gate(vector.safety, allow)
+        print(f"vector: {vector.title}")
+        print(f"  host {args.host}  rank {vector.axes}  safety {vector.safety}")
+        print(f"  command: {vector.command}")
+        if vector.cleanup:
+            print(f"  cleanup: {vector.cleanup}")
+        if gated:
+            _err(f"{vector.safety} action blocked by the safety gate — re-run with "
+                 f"--allow {vector.safety}")
+            return 2
+        if not _confirm(f"run this on {args.host}? (executes on the target)", args.yes):
+            print("aborted — nothing ran")
+            return 1
+
+        finding_id, _ = store.add_finding(
+            vector.key.split(":", 1)[0], vector.title, host_id=host["id"],
+            risk=vector.detection)
+        creates = [(f"{vector.title} (artifact)", vector.cleanup)] if vector.cleanup else ()
+        action = executor_mod.Action(
+            host=host, cred=cred, command=vector.command, label=f"vector:{vector.key}",
+            safety=vector.safety, shell=vector.shell, finding_id=finding_id, creates=creates)
+        res = executor_mod.execute(store, action, allow=allow, on_event=lambda m: print(m))
+
+        if res.blocked:
+            _err(res.blocked)
+            return 2
+        if not res.ok:
+            _err(f"the vector did not complete: {res.run.error if res.run else 'no output'}")
+            return 1
+        elevated = _looks_elevated(res.output, host["os"])
+        if elevated:
+            store.add_finding(vector.key.split(":", 1)[0], vector.title,
+                              host_id=host["id"], proven=True,
+                              evidence=(res.output or "").strip()[:500])
+
+    print("\n--- output ---")
+    print((res.output or "").rstrip() or "(no output)")
+    print("---")
+    if elevated:
+        print("PROVEN: the command returned an elevated context. Captured as a finding.")
+    else:
+        print("ran, but the output does not clearly show elevation — check it above.")
+    if vector.cleanup:
+        print(f"cleanup recorded: {vector.cleanup}")
     return 0
 
 
@@ -558,6 +644,19 @@ def build_parser():
     p_enum.add_argument("host", metavar="IP", help="a host you already have access on")
     p_enum.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
     p_enum.set_defaults(func=cmd_enum)
+
+    p_run = sub.add_parser(
+        "run", help="fire a privesc vector on a host, captured, through the safety gate",
+        description="Runs one vector from `analyze` on a host. read-only vectors run "
+                    "after a confirm; config-change/crash-risk vectors need an explicit "
+                    "--allow. Output, the finding and any cleanup artifact are recorded.")
+    p_run.add_argument("host", metavar="IP", help="the host to escalate on")
+    p_run.add_argument("vector", help="the vector key from `analyze` (e.g. sudo:find)")
+    p_run.add_argument("--allow", action="append",
+                       choices=["config-change", "crash-risk"], metavar="LEVEL",
+                       help="permit a riskier vector (repeatable)")
+    p_run.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
+    p_run.set_defaults(func=cmd_run)
 
     p_status = sub.add_parser("status", help="the engagement board")
     p_status.add_argument("--hosts", action="store_true", help="list every host")

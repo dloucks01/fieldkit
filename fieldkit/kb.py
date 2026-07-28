@@ -27,6 +27,16 @@ _SAFETY = {"read-only": 3, "config-change": 2, "crash-risk": 1}
 _DETECTION = {"quiet": 3, "moderate": 2, "loud": 1}
 
 
+def score(exploitability, safety, detection):
+    """The three-axis rank, shared by loop opportunities and privesc vectors.
+
+    Exploitability dominates (a met precondition that ends the engagement beats a
+    quieter half-step); safety breaks ties ahead of detection, per the design — so the
+    quiet, safe, high-impact, precondition-met path floats to the top.
+    """
+    return (_EXPLOIT[exploitability] * 100 + _SAFETY[safety] * 10 + _DETECTION[detection])
+
+
 @dataclass(frozen=True)
 class Opportunity:
     """One ranked next move, with the evidence and the command behind it."""
@@ -44,11 +54,7 @@ class Opportunity:
 
     @property
     def score(self):
-        # Exploitability dominates (a met precondition that ends the engagement beats a
-        # quieter half-step); safety breaks ties ahead of detection, per the design.
-        return (_EXPLOIT[self.exploitability] * 100
-                + _SAFETY[self.safety] * 10
-                + _DETECTION[self.detection])
+        return score(self.exploitability, self.safety, self.detection)
 
     @property
     def axes(self):

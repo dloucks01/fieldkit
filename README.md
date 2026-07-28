@@ -23,7 +23,7 @@ your existing kit).
 | **0** | state store, engagement config, credential model, `init`/`config`/`add`/`status` | **done** |
 | **1** | nxc `spray` + `(Pwn3d!)` parsing, `ingest`, loot → creds, the credential loop, `analyze` + KB detect predicates | **done** |
 | 1.5 | Defender lab harness, `evasion.py`, technique green/red matrix, `posture` | planned |
-| 2 | transports, executor with capture + safety gate, per-vector privesc drivers | planned |
+| **2** | transports, executor with capture + safety gate, `enum`, per-vector privesc drivers, `run` | **done** |
 | 3 | report (`--check`, md/docx/pdf, cleanup manifest) + recce bridge | planned |
 | 4 | Kerberos/delegation/ADCS/BloodHound depth | planned |
 
@@ -54,12 +54,19 @@ bin/fieldkit add hosts scope.txt                       # IPs, CIDRs, or 'IP host
 bin/fieldkit spray smb                                  # reads the lockout policy first
 bin/fieldkit ingest nxc capture.txt                     # or fold in a spray you ran by hand
 
-# 4) rank the next moves from what the loop proved
-bin/fieldkit analyze --proof
+# 4) escalate a foothold: enumerate it, rank the vectors, fire one (captured)
+bin/fieldkit enum 10.0.0.7                              # read-only, feeds analyze
+bin/fieldkit analyze --proof                            # loop opportunities + privesc vectors
+bin/fieldkit run 10.0.0.7 sudo:find                     # read-only vector; --allow for riskier
 
 # the board
 bin/fieldkit status --hosts --creds
 ```
+
+Everything `run` does to a target goes through the executor: the command is
+captured verbatim as evidence, the **safety gate** refuses a `config-change` /
+`crash-risk` vector unless you pass `--allow`, and anything a vector changes is
+recorded in a cleanup manifest.
 
 `spray` reuses each account's own proven secret, so it cannot lock a domain
 account; it still reads the domain password policy up front and surfaces it. The
@@ -108,7 +115,7 @@ A wrong-format credential is caught at input, not forty hosts into a spray. Pass
 
 | Path | What |
 |---|---|
-| `fieldkit/` | the v2 package — `state.py`, `config.py`, `creds.py`, `scope.py`, `cli.py` |
+| `fieldkit/` | the v2 package — state/config/creds/scope, the loop (`netexec`, `ingest`, `spray`, `dump`, `kb`), and execution (`transport`, `executor`, `runner`, `hostenum`, `privesc`) |
 | `bin/fieldkit` | run it from a clone without installing |
 | `tests/` | unit tests + the recce integration contract |
 | `report/` | v1 findings → Markdown + DOCX + PDF (ported in Phase 3) |
