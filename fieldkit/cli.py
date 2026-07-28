@@ -22,8 +22,9 @@ from datetime import datetime, timezone
 
 from . import (__version__, config as config_mod, creds as creds_mod,
                evasion as evasion_mod, executor as executor_mod, hostenum as hostenum_mod,
-               ingest as ingest_mod, kb as kb_mod, lab as lab_mod, privesc as privesc_mod,
-               scope as scope_mod, spray as spray_mod)
+               bridge as bridge_mod, ingest as ingest_mod, kb as kb_mod, lab as lab_mod,
+               privesc as privesc_mod, report as report_mod, scope as scope_mod,
+               spray as spray_mod)
 from .errors import ConfirmationError, FieldkitError
 from .state import DB_ENV_VAR, Store, default_db_path
 
@@ -445,9 +446,9 @@ def cmd_run(args):
             print("aborted — nothing ran")
             return 1
 
+        vtype = vector.report_type or vector.key.split(":", 1)[0]
         finding_id, _ = store.add_finding(
-            vector.key.split(":", 1)[0], vector.title, host_id=host["id"],
-            risk=vector.detection)
+            vtype, vector.title, host_id=host["id"], risk=vector.detection)
         creates = [(f"{vector.title} (artifact)", vector.cleanup)] if vector.cleanup else ()
         action = executor_mod.Action(
             host=host, cred=cred, command=vector.command, label=f"vector:{vector.key}",
@@ -462,8 +463,7 @@ def cmd_run(args):
             return 1
         elevated = _looks_elevated(res.output, host["os"])
         if elevated:
-            store.add_finding(vector.key.split(":", 1)[0], vector.title,
-                              host_id=host["id"], proven=True,
+            store.add_finding(vtype, vector.title, host_id=host["id"], proven=True,
                               evidence=(res.output or "").strip()[:500])
 
     print("\n--- output ---")
@@ -545,6 +545,71 @@ def cmd_posture(args):
     print(f"recommended delivery order (Windows, current knowledge):\n  {order}")
     if not proven:
         print(f"\nnothing is lab-proven — run `{PROG} lab test` against a Defender host to earn a green.")
+    return 0
+
+
+def cmd_report(args):
+    with _open_store(args) as store:
+        store.require_engagement()
+        cfg = config_mod.load(store)
+        engagement, findings = report_mod.build(store, cfg, proven_only=not args.all)
+
+    errors, warns = report_mod.check(findings)
+    if args.check:
+        for tag, m in errors:
+            print(f"  ERROR  [{tag}] {m}")
+        for tag, m in warns:
+            print(f"  warn   [{tag}] {m}")
+        if errors:
+            print(f"CHECK FAILED: {len(errors)} error(s), {len(warns)} warning(s).")
+            return 2
+        print(f"CHECK OK: {_plural(len(findings), 'finding')}, "
+              f"{len(warns)} warning(s) — every step has a command + captured output.")
+        return 0
+
+    if args.cleanup:
+        path = f"{args.out}.cleanup.md"
+        with open(path, "w") as fh:
+            fh.write(report_mod.cleanup_manifest(engagement, findings))
+        print(f"wrote {path}  (INTERNAL cleanup manifest — do not send to the client)")
+        return 0
+
+    if errors and not args.force:
+        for tag, m in errors:
+            print(f"  ERROR  [{tag}] {m}")
+        _err(f"refusing to render: {_plural(len(errors), 'anti-fabrication error')} "
+             "(a finding without captured proof). Fix them, or pass --force.")
+        return 2
+
+    formats = [x.strip() for x in args.formats.split(",") if x.strip()]
+    md = report_mod.render_markdown(engagement, findings)
+    md_path = f"{args.out}.md"
+    with open(md_path, "w") as fh:
+        fh.write(md)
+    print(f"wrote {md_path}  ({_plural(len(findings), 'finding')})")
+    for line in report_mod.export(md_path, args.out, formats):
+        print(line)
+    if not findings:
+        print("note: no proven findings yet — run `fieldkit run` to prove vectors first.")
+    return 0
+
+
+def cmd_export_recce(args):
+    import json
+    with _open_store(args) as store:
+        store.require_engagement()
+        cfg = config_mod.load(store)
+        engagement, findings = report_mod.build(store, cfg, proven_only=not args.all)
+    if not findings:
+        _err("no proven findings to export — run `fieldkit run` to prove vectors first "
+             "(or --all to include unproven)")
+        return 2
+    payload = bridge_mod.export_payload(engagement, findings)
+    dest = args.out or "recce_findings.json"
+    with open(dest, "w") as fh:
+        json.dump(payload, fh, indent=2)
+    print(f"wrote {dest}  ({_plural(len(findings), 'finding')}, KB-enriched for recce)")
+    print(f"  fold into the recce workbook + report:  recce fieldkit-import {dest} -o <engagement>")
     return 0
 
 
@@ -749,6 +814,36 @@ def build_parser():
         description="Shows every technique's status under assume-caught (red until a "
                     "fresh lab result proves it clean) and the recommended delivery order.")
     p_posture.set_defaults(func=cmd_posture)
+
+    p_report = sub.add_parser(
+        "report", help="render the customer report from proven findings in state",
+        description="Projects the engagement database into a report: exec summary + "
+                    "per-finding writeup with the captured PoC trail, severity/CWE/"
+                    "remediation from the KB. --check gates on anti-fabrication; "
+                    "--cleanup writes the internal artifact-removal manifest.")
+    p_report.add_argument("-o", "--out", default="report", metavar="BASENAME",
+                          help="output basename (default: report)")
+    p_report.add_argument("--formats", default="md,docx,pdf",
+                          help="which to emit: md,docx,pdf (default: all)")
+    p_report.add_argument("--check", action="store_true",
+                          help="anti-fabrication gate only (exit 2 on errors)")
+    p_report.add_argument("--cleanup", action="store_true",
+                          help="write the INTERNAL cleanup manifest instead of the report")
+    p_report.add_argument("--all", action="store_true",
+                          help="include unproven findings (default: proven only)")
+    p_report.add_argument("--force", action="store_true",
+                          help="render even if the anti-fabrication check has errors")
+    p_report.set_defaults(func=cmd_report)
+
+    p_recce = sub.add_parser(
+        "export-recce", help="fold proven findings back into recce (fieldkit-import JSON)",
+        description="Emits the KB-enriched JSON recce imports with `recce "
+                    "fieldkit-import`, so every proven finding lands back in recce's "
+                    "workbook + report.")
+    p_recce.add_argument("out", nargs="?", help="output file (default: recce_findings.json)")
+    p_recce.add_argument("--all", action="store_true",
+                         help="include unproven findings (default: proven only)")
+    p_recce.set_defaults(func=cmd_export_recce)
 
     p_status = sub.add_parser("status", help="the engagement board")
     p_status.add_argument("--hosts", action="store_true", help="list every host")

