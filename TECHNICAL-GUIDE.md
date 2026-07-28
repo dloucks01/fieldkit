@@ -129,13 +129,29 @@ sinks loud ones). File push (`--put-file`, used by auto-stage/build) rides **smb
 
 ### The MSSQL path
 
-A sysadmin MSSQL login (`spray mssql` → `Pwn3d!`) is a real foothold: the `mssql` transport
+A **sysadmin** MSSQL login (`spray mssql` → `Pwn3d!`) is a real foothold: the `mssql` transport
 runs OS commands via **xp_cmdshell** as the SQL service account — commonly a service account
-holding **SeImpersonate**. So `enum` then `escalate` chain straight to SYSTEM (Potato). It's
-loud (enables xp_cmdshell, event-logged) so it ranks below SMB. `analyze` surfaces it as the
-`mssql-exec` opportunity. *Getting* sysadmin from a low-privileged login (linked-server hops,
-`EXECUTE AS` impersonation) is a further increment not yet automated — it needs an MSSQL-instance
-enum to drive.
+holding **SeImpersonate**. So `enum` then `escalate` chain toward SYSTEM (Potato). It's loud
+(enables xp_cmdshell, event-logged) so it ranks below SMB. `analyze` surfaces it as `mssql-exec`.
+
+From a **non-sysadmin** login, `fieldkit mssql escalate <ip>` drives the SQL-layer escalation
+(`mssql.py`, queries via `nxc mssql -q` with an `FK:` result sentinel):
+
+```bash
+fieldkit mssql escalate 10.0.0.9 --allow config-change
+```
+
+It enumerates **impersonatable sysadmin logins** (`IMPERSONATE` on `sa`) and **RPC-out linked
+servers**. With `--allow config-change` it `EXECUTE AS` the sysadmin login and adds your login
+to the `sysadmin` role (verified) — a proven finding with a captured step, your access upgraded
+to admin, and a reversible cleanup (`sp_dropsrvrolemember`) recorded. It's read-only without
+`--allow` (surfaces the paths). Linked servers are recorded as observations (`EXEC ('…') AT
+[server]` is a per-host hop the operator drives). `analyze` surfaces `mssql-privesc` on a
+non-sysadmin mssql login.
+
+> **Staging caveat.** Auto-stage (`--put-file`) rides smb/ssh. On a *pure-MSSQL* foothold there
+> is no file-transfer path, so a Potato can't be auto-staged — stage it via smb if reachable, or
+> pre-stage it. (Autonomous mssql→SYSTEM would need xp_cmdshell download-staging.)
 
 ## 8. enum
 
@@ -145,9 +161,11 @@ fieldkit enum 10.0.0.7            # runs the OS-appropriate read-only plan, capt
 
 Picks a Windows or Linux plan from the host OS and runs each check over the proven transport:
 
-- **Windows:** `whoami /priv` (privileges), `whoami /groups`, AlwaysInstallElevated reg
-  query, `wmic service` (unquoted paths + names), and a `svcperms` PowerShell check
-  (`sc sdshow` + `icacls` → reconfigurable / writable service binaries and dirs).
+- **Windows:** `whoami /priv` (privileges — SeImpersonate unlocks the **Potato ladder**:
+  GodPotato → PrintSpoofer → JuicyPotatoNG → SweetPotato → SharpEfsPotato, each a different
+  tool/technique/OS-span the loop tries in turn, then fileless → script), `whoami /groups`,
+  AlwaysInstallElevated reg query, `wmic service` (unquoted paths + names), and a `svcperms`
+  PowerShell check (`sc sdshow` + `icacls` → reconfigurable / writable service binaries/dirs).
 - **Linux:** `id`, `sudo -n -l`, SUID sweep, `getcap`, `uname`.
 
 A check whose shell has no proven transport (e.g. the PowerShell `svcperms` check over an
@@ -354,8 +372,9 @@ triage tool — `recce fieldkit-export` seeds triage, `recce fieldkit-import` fo
 
 ## 22. Known limitations
 
-- MSSQL is a **sysadmin → OS-exec** path; low-priv→sysadmin (linked-server / impersonation)
-  isn't automated yet.
+- MSSQL: sysadmin → OS-exec and non-sysadmin → sysadmin (EXECUTE AS impersonation, auto) are
+  done; **linked-server hops** are surfaced, not auto-exploited, and **auto-staging a Potato
+  over a pure-MSSQL foothold** needs xp_cmdshell download-staging (see §7).
 - `rdp` / `ldap` / `ftp` protocols **validate creds** but aren't execution transports.
 - DLL-hijack `prep` needs you to supply the hijackable DLL name (Procmon).
 - `poc` orchestrates external builders — it does **not** embed shellcode / AMSI-bypass /
