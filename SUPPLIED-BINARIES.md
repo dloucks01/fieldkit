@@ -51,7 +51,7 @@ Name each source file `<exploit>.c` (or the binary `<exploit>` with `--prebuilt`
 | `stackrot` (CVE-2023-3269) | github.com/lrh2000/StackRot |
 | `gameoverlay` (CVE-2023-2640) | **pure shell — no binary needed** (built into `gen_exploit`) |
 
-## Initial access — public-service exploit PoCs (`access/network/gen_exploit`)
+## Initial access — public-service exploit PoCs (`archive/access/network/gen_exploit`)
 Metasploit-backed entries need only `msfconsole`; these need a **supplied public PoC** (version-match first):
 | Exploit | Source |
 |---|---|
@@ -62,7 +62,7 @@ Metasploit-backed entries need only `msfconsole`; these need a **supplied public
 | `vcenter` (CVE-2021-21972) | public PoC (vROps webshell upload) |
 | `zerologon` (CVE-2020-1472) ⚠ | github.com/dirkjanm/CVE-2020-1472 + impacket secretsdump — **intrusive, can break the DC** |
 | `printnightmare` (CVE-2021-34527) | Invoke-Nightmare / CVE-2021-1675 (also in the Windows privesc list) |
-Also: `sqlmap`, `nuclei`, `ysoserial`(.jar), `phpggc`, `tplmap`, `ysoserial.net` for the `access/web/` module.
+Also: `sqlmap`, `nuclei`, `ysoserial`(.jar), `phpggc`, `tplmap`, `ysoserial.net` for the `archive/access/web/` module.
 
 ## Linux — recon (`gen_recon`)
 | Binary | Source |

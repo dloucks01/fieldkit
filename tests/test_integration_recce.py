@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Smoke tests for the recce <-> fieldkit integration seams.
 
-fieldkit's generators are print-only scripts (no importable API), so these drive them
+The v1 generators are print-only scripts (no importable API), so these drive them
 the way an operator does — via subprocess — and assert on exit code + printed output.
-Covers the two integration points plus a regression check on the classic paths:
+They now live under archive/ (v2 migration); the recce JSON contract they define is
+the compatibility surface v2 must keep green, so these tests stay as-is until
+report.py/bridge.py port them (Phase 3).
 
-  * report/gen_report.py --export-recce   (fieldkit findings -> recce_findings.json)
-  * report/gen_report.py --check          (anti-fabrication gate still gates)
-  * access/network/sweep.py triage --recce (recce bridge -> ranked scoreboard)
-  * access/network/sweep.py triage --nmap  (classic greppable path unbroken)
-  * access/network/sweep.py plan           (classic plan path unbroken)
+  * report/gen_report.py --export-recce            (fieldkit findings -> recce_findings.json)
+  * report/gen_report.py --check                   (anti-fabrication gate still gates)
+  * archive/access/network/sweep.py triage --recce (recce bridge -> ranked scoreboard)
+  * archive/access/network/sweep.py triage --nmap  (classic greppable path unbroken)
+  * archive/access/network/sweep.py plan           (classic plan path unbroken)
 
 Stdlib only; no pandoc/nmap/network needed (both flags run before any of that).
 
@@ -25,7 +27,7 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GEN_REPORT = os.path.join(ROOT, "report", "gen_report.py")
-SWEEP = os.path.join(ROOT, "access", "network", "sweep.py")
+SWEEP = os.path.join(ROOT, "archive", "access", "network", "sweep.py")
 
 
 def run(script, *args):

@@ -31,7 +31,7 @@ That folder is the handoff. Copy it next to your fieldkit checkout and feed **th
 mass triage:
 
 ```bash
-python3 access/network/sweep.py triage --recce eng/fieldkit/recce-bridge.json
+python3 archive/access/network/sweep.py triage --recce eng/fieldkit/recce-bridge.json
 ```
 
 `--recce` uses recce's open ports **and the vulnerabilities it already confirmed**, so the
@@ -39,7 +39,7 @@ scoreboard floats proven quick-wins to the very top and annotates each host with
 (`CONFIRM [CRITICAL] …`) plus the exact generator to run. It composes with the classic inputs:
 
 ```bash
-python3 access/network/sweep.py triage --nmap eng/fieldkit/ports.gnmap --nxc eng/fieldkit/smb-null.txt
+python3 archive/access/network/sweep.py triage --nmap eng/fieldkit/ports.gnmap --nxc eng/fieldkit/smb-null.txt
 ```
 
 | File in `eng/fieldkit/` | What it is | Consumed by |
@@ -59,7 +59,7 @@ python3 access/network/sweep.py triage --nmap eng/fieldkit/ports.gnmap --nxc eng
 - **`cred`** — `gen_shell.py …` for each known credential that applies to the host, plus a
   `gen_spray.py --users users.txt …` line — the `users.txt` / `creds.txt` above are the material they use.
 
-Run the named generator per host (`services/gen_smb.py`, `access/gen_shell.py`,
+Run the named generator per host (`archive/access/services/gen_smb.py`, `archive/access/network/gen_shell.py`,
 `services/gen_db.py --db redis`, …) as usual — the recce lines just pre-fill the target, service,
 version, and credentials so you paste instead of retype.
 
@@ -92,7 +92,7 @@ prove each finding.
 
 ## Feed host topology back for a real reachability map
 
-fieldkit's on-target triage scripts (`linpriv/enum.sh`, `winpriv/enum.bat`) emit a machine
+fieldkit's on-target triage scripts (`archive/linpriv/enum.sh`, `archive/winpriv/enum.bat`) emit a machine
 `NETWORK` block — this host's interfaces, routes, ARP neighbours and live TCP peers:
 
 ```
