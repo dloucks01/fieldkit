@@ -63,6 +63,31 @@ def render_exec(transport, cred, host, command):
                       extra=[transport.flag, command])
 
 
+#: protocols whose nxc driver can push a file to the target (``--put-file``). WinRM
+#: exec works but has no file transfer, so it is not here — staging rides smb/ssh.
+PUT_PROTOS = frozenset({"smb", "ssh"})
+
+
+def render_put(transport, cred, host, local, remote):
+    """Render the argv that uploads ``local`` to ``remote`` on ``host`` (nxc --put-file)."""
+    return render_nxc(cred, transport.proto, target=host,
+                      extra=["--put-file", local, remote])
+
+
+def select_put(os_name, methods, is_admin):
+    """The best proven transport that can push a file onto the host, or ``None``.
+
+    Independent of any command shell — staging only needs a file-transfer-capable proto
+    (smb needs admin; ssh a valid login), so this is how :func:`select` differs for a
+    stage step vs an exec step.
+    """
+    methods = set(methods)
+    candidates = [t for t in TRANSPORTS
+                  if t.proto in PUT_PROTOS and applicable(t, os_name, methods, is_admin)]
+    candidates.sort(key=lambda t: (t.rank, t.name))
+    return candidates[0] if candidates else None
+
+
 def applicable(transport, os_name, methods, is_admin):
     """Can this transport run on a host with the given proven access?
 

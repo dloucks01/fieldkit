@@ -111,6 +111,39 @@ if "--continue-on-success" in a:
 sys.exit(0)
 '''
 
+# a stateful variant: GodPotato isn't on the box until --put-file stages it. On the
+# first fire the target reports it missing; after the loop auto-stages it, the re-fire
+# lands SYSTEM. A sentinel file under $FK_STAGED models the target's disk.
+FAKE_NXC_STAGE = r'''#!/usr/bin/env python3
+import os, sys
+a = sys.argv[1:]
+sentinel = os.path.join(os.environ.get("FK_STAGED", "/tmp"), "godpotato.present")
+if "--put-file" in a:
+    i = a.index("--put-file")
+    local, remote = a[i + 1], a[i + 2]
+    if "GodPotato" in remote or "GodPotato" in local:
+        open(sentinel, "w").close()
+    print(f"[+] uploaded {local} to {remote}")
+    sys.exit(0)
+flag = "-x" if "-x" in a else ("-X" if "-X" in a else None)
+if flag:
+    cmd = a[a.index(flag) + 1]
+    if "GodPotato" in cmd:
+        if os.path.exists(sentinel):
+            print("nt authority\\system")
+        else:
+            print("'GodPotato.exe' is not recognized as an internal or external command")
+    elif "whoami /priv" in cmd:
+        print("SeImpersonatePrivilege        Enabled")
+    sys.exit(0)
+if "--continue-on-success" in a:
+    print("SMB 10.0.0.7 445 WS02 [*] Windows 10 Build 19041 x64 (name:WS02) "
+          "(domain:corp.local) (signing:False) (SMBv1:False)")
+    print("SMB 10.0.0.7 445 WS02 [+] corp.local\\jdoe:Winter2025! (Pwn3d!)")
+    sys.exit(0)
+sys.exit(0)
+'''
+
 FAKE_CERTIPY = r'''#!/usr/bin/env python3
 print("""Certipy v4.8.2
 Certificate Templates
@@ -306,6 +339,52 @@ class FullFunnelTest(unittest.TestCase):
         self.assertEqual(rec["verdict"], "caught")
         posture = self.cli("posture")
         self.assertIn("native", posture)
+
+
+    def test_escalate_auto_stages_a_missing_tool(self):
+        # Phase 8: the potato isn't on the box -> the loop stages it from the arsenal
+        # over smb (--put-file), then re-fires to SYSTEM.
+        self._install_nxc(FAKE_NXC_STAGE)
+
+        # a fake arsenal holding GodPotato, and a "target disk" for the sentinel
+        arsenal = os.path.join(self.dir, "arsenal")
+        os.makedirs(os.path.join(arsenal, "win-postex"))
+        open(os.path.join(arsenal, "win-postex", "GodPotato.exe"), "w").close()
+        staged = os.path.join(self.dir, "staged")
+        os.makedirs(staged)
+        for k, v in (("FIELDKIT_ARSENAL", arsenal), ("FK_STAGED", staged)):
+            old = os.environ.get(k)
+            os.environ[k] = v
+            self.addCleanup(lambda k=k, old=old:
+                            os.environ.__setitem__(k, old) if old is not None
+                            else os.environ.pop(k, None))
+
+        self.cli("init", "ACME Corp")
+        self.cli("add", "hosts", "10.0.0.7 WS02")
+        self.cli("add", "cred", "corp.local/jdoe:Winter2025!", "--yes")
+        self.cli("spray", "smb", "--yes")
+        self.cli("enum", "10.0.0.7", "--yes")
+
+        # the plan shows GodPotato resolvable in the arsenal
+        plan = self.cli("escalate", "10.0.0.7", "--allow", "config-change", "--dry-run")
+        self.assertIn("auto-stage GodPotato (in arsenal)", plan)
+
+        run = self.cli("escalate", "10.0.0.7", "--allow", "config-change", "--yes")
+        self.assertIn("staging from the arsenal", run)
+        self.assertIn("PROVEN", run)
+        self.assertEqual(self.store().counts()["proven_findings"], 1)
+        # the staged binary is on the cleanup manifest
+        self.assertTrue(any("GodPotato" in (art["description"] or "")
+                            for art in self.store().artifacts()))
+
+        # --no-stage refuses to stage: with a fresh disk the potato stays missing and the
+        # native delivery can't prove (it falls through to the other alternates)
+        staged2 = os.path.join(self.dir, "staged2")
+        os.makedirs(staged2)
+        os.environ["FK_STAGED"] = staged2
+        nostage = self.cli("escalate", "10.0.0.7", "--allow", "config-change",
+                           "--no-stage", "--yes", expect=1)
+        self.assertNotIn("staging from the arsenal", nostage)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -127,5 +127,73 @@ class ExecuteTest(ExecutorTestCase):
         self.assertEqual(len(self.store.steps(finding_id=fid)), 1)
 
 
+class UploadTest(ExecutorTestCase):
+    """A stage step uploads a file via a put-capable transport, captured + cleaned up."""
+
+    def capture(self):
+        seen = {}
+
+        def run(argv, env=None):
+            seen["argv"] = argv
+            return RunResult(argv, exit_code=0, stdout="[+] uploaded")
+        return run, seen
+
+    def test_upload_renders_put_file_over_ssh(self):
+        run, seen = self.capture()
+        res = execute(self.store,
+                      self.action(command=None, label="stage:tool", safety="config-change",
+                                  upload=("/arsenal/tool", "/tmp/tool"),
+                                  creates=[("staged tool", "rm -f /tmp/tool")]),
+                      run=run, allow="config-change")
+        self.assertTrue(res.ok)
+        self.assertEqual(res.transport, "ssh")             # ssh can put; picked automatically
+        self.assertIn("--put-file", seen["argv"])
+        self.assertIn("/arsenal/tool", seen["argv"])
+        self.assertIn("/tmp/tool", seen["argv"])
+
+    def test_upload_is_captured_as_a_step(self):
+        run, _ = self.capture()
+        res = execute(self.store,
+                      self.action(command=None, label="stage:tool", safety="config-change",
+                                  upload=("/arsenal/tool", "/tmp/tool")),
+                      run=run, allow="config-change")
+        step = self.store.steps()[-1]
+        self.assertIn("put-file", step["cmd"])
+        self.assertIn("/tmp/tool", step["cmd"])
+        self.assertEqual(step["id"], res.step_id)
+
+    def test_upload_records_cleanup_artifact(self):
+        run, _ = self.capture()
+        execute(self.store,
+                self.action(command=None, label="stage:tool", safety="config-change",
+                            upload=("/arsenal/tool", "/tmp/tool"),
+                            creates=[("staged tool at /tmp/tool", "rm -f /tmp/tool")]),
+                run=run, allow="config-change")
+        arts = self.store.artifacts()
+        self.assertEqual(arts[-1]["cleanup_cmd"], "rm -f /tmp/tool")
+
+    def test_upload_gated_like_any_config_change(self):
+        run, seen = self.capture()
+        res = execute(self.store,
+                      self.action(command=None, safety="config-change",
+                                  upload=("/a", "/b")),
+                      run=run)  # no allow -> blocked
+        self.assertIsNotNone(res.blocked)
+        self.assertNotIn("argv", seen)                     # nothing ran
+
+    def test_upload_blocked_without_put_capable_transport(self):
+        # a windows host proven only on winrm has no file-transfer path.
+        wid, _ = self.store.add_host("10.0.0.9", os_name="windows")
+        self.store.add_access(wid, self.cid, "winrm", admin=False)
+        win = self.store.host_by_ip("10.0.0.9")
+        run, seen = self.capture()
+        res = execute(self.store,
+                      self.action(host=win, command=None, safety="config-change",
+                                  upload=("/a", "C:\\b")),
+                      run=run, allow="config-change")
+        self.assertIn("file-transfer", res.blocked)
+        self.assertNotIn("argv", seen)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

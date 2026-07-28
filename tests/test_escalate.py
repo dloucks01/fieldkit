@@ -25,7 +25,7 @@ from fieldkit.runner import RunResult  # noqa: E402
 class _Vector:
     """The slice of privesc.Vector the orchestrator reads."""
 
-    def __init__(self, key, safety="read-only", family=None, delivery=None):
+    def __init__(self, key, safety="read-only", family=None, delivery=None, stages=()):
         self.key = key
         self.title = key
         self.safety = safety
@@ -37,6 +37,7 @@ class _Vector:
         self.report_type = ""
         self.family = family
         self.delivery = delivery
+        self.stages = stages
 
 
 class _Exec:
@@ -316,6 +317,93 @@ class OrderDeliveriesTest(unittest.TestCase):
         got = [v.key for v in esc.order_deliveries(vs, order)]
         # x stays first; the imp block reorders native-first at its anchor slot
         self.assertEqual(got, ["x", "imp:native", "imp:inmem"])
+
+
+# missing-artifact outputs: windows phrasing (delivery axis) + linux phrasing (stage axis)
+WIN_MISSING = run("'GodPotato.exe' is not recognized as an internal or external command")
+LIN_MISSING = run("bash: tool: command not found")
+
+
+class AutoStageTest(unittest.TestCase):
+    """The stage axis: push a missing artifact from the arsenal, then re-fire."""
+
+    def _staged_fire(self, miss, hit):
+        """Return (fire, state): fire yields `miss` until state['ok'], then `hit`."""
+        state = {"ok": False, "calls": 0}
+
+        def fire(vector):
+            state["calls"] += 1
+            return _Exec(hit) if state["ok"] else _Exec(miss)
+        return fire, state
+
+    def _stager(self, result, flips=None):
+        calls = []
+
+        def stage(vector):
+            calls.append(vector.key)
+            if flips is not None:
+                flips["ok"] = True
+            return result
+        stage.calls = calls
+        return stage
+
+    def test_stage_then_retry_proves(self):
+        v = _Vector("imp:native", "config-change",
+                    stages=(("GodPotato", "C:\\t\\GodPotato.exe"),))
+        fire, state = self._staged_fire(WIN_MISSING, WIN_ROOT)
+        stage = self._stager(esc.StageResult(True, "staged GodPotato"), flips=state)
+        out = esc.escalate([v], fire=fire, allow=["read-only", "config-change"],
+                           os_name="windows", stage=stage)
+        self.assertTrue(out.ok)
+        self.assertEqual(stage.calls, ["imp:native"])
+        self.assertEqual(state["calls"], 2)               # miss, then hit after staging
+        self.assertEqual([a.action for a in out.attempts], [esc.STAGED, esc.STOP])
+
+    def test_stage_triggers_on_linux_no_tool_axis(self):
+        v = _Vector("v", "read-only", stages=(("tool", "/tmp/tool"),))
+        fire, state = self._staged_fire(LIN_MISSING, ROOT)
+        stage = self._stager(esc.StageResult(True, "staged tool"), flips=state)
+        out = esc.escalate([v], fire=fire, os_name="linux", stage=stage)
+        self.assertTrue(out.ok)
+        self.assertEqual(stage.calls, ["v"])
+
+    def test_stage_failure_advances_with_reason(self):
+        v1 = _Vector("imp:native", "config-change", stages=(("GodPotato", "C:\\t\\g.exe"),))
+        v2 = _Vector("imp:inmem", "config-change")
+        fire = scripted({"imp:native": _Exec(WIN_MISSING), "imp:inmem": _Exec(WIN_ROOT)})
+        stage = self._stager(esc.StageResult(False, "GodPotato not in the arsenal"))
+        out = esc.escalate([v1, v2], fire=fire, allow=["read-only", "config-change"],
+                           os_name="windows", stage=stage)
+        self.assertIs(out.proven, v2)                     # couldn't stage -> next delivery
+        self.assertEqual(out.attempts[0].action, esc.ADVANCE)
+        self.assertIn("stage failed", out.attempts[0].note)
+
+    def test_stage_attempted_once_per_vector(self):
+        # arsenal claims success but the artifact still doesn't land -> don't loop.
+        v = _Vector("imp:native", "config-change", stages=(("GodPotato", "C:\\t\\g.exe"),))
+        fire = scripted({"imp:native": _Exec(WIN_MISSING)})   # always missing
+        stage = self._stager(esc.StageResult(True, "staged"))  # claims ok, no flip
+        out = esc.escalate([v], fire=fire, allow=["read-only", "config-change"],
+                           os_name="windows", stage=stage)
+        self.assertFalse(out.ok)
+        self.assertEqual(len(stage.calls), 1)              # staged once, not forever
+        self.assertEqual(len(out.fired), 2)               # initial + one post-stage re-fire
+
+    def test_no_stages_does_not_invoke_stager(self):
+        v = _Vector("v")                                   # no stageable artifacts
+        fire = scripted({"v": _Exec(LIN_MISSING)})
+        stage = self._stager(esc.StageResult(True, "x"))
+        out = esc.escalate([v], fire=fire, os_name="linux", stage=stage)
+        self.assertEqual(stage.calls, [])                  # nothing declared -> never called
+        self.assertEqual(out.stopped, "exhausted")
+
+    def test_stage_none_is_backward_compatible(self):
+        v = _Vector("imp:native", "config-change", stages=(("GodPotato", "C:\\t\\g.exe"),))
+        fire = scripted({"imp:native": _Exec(WIN_MISSING)})
+        out = esc.escalate([v], fire=fire, allow=["read-only", "config-change"],
+                           os_name="windows", stage=None)  # no stager -> plain advance
+        self.assertEqual(out.attempts[0].action, esc.ADVANCE)
+        self.assertEqual(len(out.fired), 1)
 
 
 class InspectTest(unittest.TestCase):
