@@ -987,11 +987,14 @@ def cmd_adcs_find(args):
 
 
 def cmd_report(args):
+    # Observations are in the report by default now; --proven-only drops them. (--all is a
+    # retired no-op alias — it used to be the way to include observations.)
     with _open_store(args) as store:
         store.require_engagement()
         cfg = config_mod.load(store)
-        engagement, findings = report_mod.build(store, cfg, proven_only=not args.all)
+        engagement, findings = report_mod.build(store, cfg, proven_only=args.proven_only)
 
+    proven = [f for f in findings if f.get("proven", True)]
     errors, warns = report_mod.check(findings)
     if args.check:
         for tag, m in errors:
@@ -1001,14 +1004,15 @@ def cmd_report(args):
         if errors:
             print(f"CHECK FAILED: {len(errors)} error(s), {len(warns)} warning(s).")
             return 2
-        print(f"CHECK OK: {_plural(len(findings), 'finding')}, "
-              f"{len(warns)} warning(s) — every step has a command + captured output.")
+        print(f"CHECK OK: {_plural(len(proven), 'proven finding')}, "
+              f"{len(warns)} warning(s) — every proven finding carries its captured proof.")
         return 0
 
     if args.cleanup:
+        # only proven findings made changes to a target — observations weren't exploited.
         path = f"{args.out}.cleanup.md"
         with open(path, "w") as fh:
-            fh.write(report_mod.cleanup_manifest(engagement, findings))
+            fh.write(report_mod.cleanup_manifest(engagement, proven))
         print(f"wrote {path}  (INTERNAL cleanup manifest — do not send to the client)")
         return 0
 
@@ -1016,7 +1020,7 @@ def cmd_report(args):
         for tag, m in errors:
             print(f"  ERROR  [{tag}] {m}")
         _err(f"refusing to render: {_plural(len(errors), 'anti-fabrication error')} "
-             "(a finding without captured proof). Fix them, or pass --force.")
+             "(a proven finding without captured proof). Fix them, or pass --force.")
         return 2
 
     formats = [x.strip() for x in args.formats.split(",") if x.strip()]
@@ -1024,11 +1028,16 @@ def cmd_report(args):
     md_path = f"{args.out}.md"
     with open(md_path, "w") as fh:
         fh.write(md)
-    print(f"wrote {md_path}  ({_plural(len(findings), 'finding')})")
+    obs = len(findings) - len(proven)
+    tally = _plural(len(proven), "finding") + (f" + {_plural(obs, 'observation')}" if obs else "")
+    print(f"wrote {md_path}  ({tally})")
     for line in report_mod.export(md_path, args.out, formats):
         print(line)
-    if not findings:
-        print("note: no proven findings yet — run `fieldkit run` to prove vectors first.")
+    if not proven:
+        print("note: no proven findings yet — run `fieldkit run`/`escalate` to prove vectors "
+              "(the report currently holds only observations)."
+              if findings else
+              "note: nothing to report yet — spray/enum/escalate first.")
     return 0
 
 
@@ -1402,11 +1411,12 @@ def build_parser():
     p_adcs.set_defaults(func=lambda a: _missing(p_adcs))
 
     p_report = sub.add_parser(
-        "report", help="render the customer report from proven findings in state",
+        "report", help="render the customer report (proven Findings + Observations)",
         description="Projects the engagement database into a report: exec summary + "
-                    "per-finding writeup with the captured PoC trail, severity/CWE/"
-                    "remediation from the KB. --check gates on anti-fabrication; "
-                    "--cleanup writes the internal artifact-removal manifest.")
+                    "proven Findings (with the captured PoC trail) and clearly-labelled "
+                    "Observations (seen, not exploited), severity/CWE/remediation from the "
+                    "KB. --proven-only drops the Observations; --check gates on "
+                    "anti-fabrication; --cleanup writes the internal artifact manifest.")
     p_report.add_argument("-o", "--out", default="report", metavar="BASENAME",
                           help="output basename (default: report)")
     p_report.add_argument("--formats", default="md,docx,pdf",
@@ -1415,8 +1425,11 @@ def build_parser():
                           help="anti-fabrication gate only (exit 2 on errors)")
     p_report.add_argument("--cleanup", action="store_true",
                           help="write the INTERNAL cleanup manifest instead of the report")
-    p_report.add_argument("--all", action="store_true",
-                          help="include unproven findings (default: proven only)")
+    p_report.add_argument("--proven-only", action="store_true",
+                          help="only demonstrated compromises — omit the Observations")
+    # retired: --all (observations are now in the report by default). Kept as a hidden,
+    # no-op alias so existing scripts don't break — it was the old way to include them.
+    p_report.add_argument("--all", action="store_true", help=argparse.SUPPRESS)
     p_report.add_argument("--force", action="store_true",
                           help="render even if the anti-fabrication check has errors")
     p_report.set_defaults(func=cmd_report)
