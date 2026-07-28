@@ -267,6 +267,29 @@ KB = {
              "an AS-REP and crack the account's password offline.",
         rem="Enable Kerberos pre-authentication on all accounts; enforce strong passwords; monitor for AS-REP "
             "requests."),
+    "unconstrained_delegation": dict(sev="Critical", cwe="CWE-266", os="win",
+        name="Unconstrained Kerberos delegation permits full impersonation",
+        desc="A computer or account is trusted for unconstrained delegation, so any authenticated "
+             "principal (including a Domain Admin, or a DC coerced via PetitPotam/PrinterBug) that "
+             "connects to it leaves a usable TGT in its memory — captured, this impersonates that "
+             "principal domain-wide, typically yielding Domain Admin.",
+        rem="Remove unconstrained delegation (set no TRUSTED_FOR_DELEGATION); use constrained or "
+            "resource-based delegation instead; mark privileged accounts 'sensitive and cannot be "
+            "delegated' / add them to Protected Users; patch the coercion vectors."),
+    "constrained_delegation": dict(sev="High", cwe="CWE-266", os="win",
+        name="Constrained delegation (S4U) allows service impersonation",
+        desc="An account is configured for constrained delegation (msDS-AllowedToDelegateTo). Control of "
+             "that account lets it use S4U2Self/S4U2Proxy to impersonate any user — including a Domain "
+             "Admin — to the allowed service (and, via alternate SPNs, often others).",
+        rem="Minimize delegation rights to the exact services required; prefer resource-based delegation "
+            "scoped on the target; mark privileged accounts as non-delegatable (Protected Users)."),
+    "rbcd": dict(sev="High", cwe="CWE-266", os="win",
+        name="Resource-based constrained delegation write permits takeover",
+        desc="A principal can write msDS-AllowedToActOnBehalfOfOtherIdentity on a target computer, letting "
+             "an attacker-controlled account impersonate any user (e.g. a Domain Admin) to that host via "
+             "S4U — full compromise of the target.",
+        rem="Restrict write access to computer objects' msDS-AllowedToActOnBehalfOfOtherIdentity; audit who "
+            "holds GenericWrite/GenericAll over computers; remove stale delegation entries."),
     "kerberoast": dict(sev="High", cwe="CWE-522", os="win",
         name="Kerberoastable service account yields a crackable credential",
         desc="A domain account with a Service Principal Name (SPN) is requestable by any authenticated user; the "
@@ -539,6 +562,8 @@ RISK = {
     "password_spray": "reversible",               # no target change, BUT lockout/DoS risk — see the finding
     "anon_access": "read-only", "exposed_secret": "read-only", "asrep_roast": "read-only",
     "kerberoast": "read-only",
+    "unconstrained_delegation": "reversible", "constrained_delegation": "reversible",
+    "rbcd": "config-edit",
     "sqli": "reversible", "webshell": "reversible", "rce_web": "reversible",
     "path_traversal": "read-only", "ssti": "reversible", "command_injection": "reversible",
     "deserialization": "reversible", "ssrf": "read-only", "xxe": "read-only",

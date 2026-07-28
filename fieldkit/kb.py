@@ -186,6 +186,30 @@ def _adcs_templates(store):
                        "track and revoke it.")
 
 
+_DELEGATION_TYPES = {"unconstrained_delegation", "constrained_delegation", "rbcd"}
+
+
+def _delegation(store):
+    for f in store.findings():
+        if f["vector_type"] not in _DELEGATION_TYPES or f["proven"]:
+            continue
+        host = store.host_by_id(f["host_id"]) if f["host_id"] else None
+        yield Opportunity(
+            key=f"deleg:{f['id']}",
+            title=f["title"],
+            exploitability="high",
+            safety="config-change" if f["vector_type"] == "rbcd" else "read-only",
+            detection="moderate",
+            host=host["ip"] if host else None,
+            detail=(f["evidence"] or "") + " — delegation impersonation (S4U / coerce + "
+                   "capture a TGT) typically yields Domain Admin.",
+            evidence=f["evidence"] or "",
+            next_step="impacket getST / Rubeus S4U for constrained/RBCD, or coerce a DC "
+                      "(PetitPotam) to an unconstrained host and capture its TGT.",
+            safe_proof="enumeration is read-only; the abuse writes an artifact (an added "
+                       "SPN, computer, or ACL entry) — track and revert it.")
+
+
 #: The registry. Append a predicate to extend the KB; order here does not matter —
 #: output is sorted by score.
 PREDICATES = (
@@ -196,6 +220,7 @@ PREDICATES = (
     _foothold_enum,
     _roastable_loot,
     _adcs_templates,
+    _delegation,
 )
 
 
