@@ -173,7 +173,6 @@ def _foothold_enum(store):
     for r in store.footholds_without_admin():
         who = f"{r['domain']}\\{r['username']}" if r["domain"] else r["username"]
         osname = r["os"] or "unknown-OS"
-        module = "winpriv" if r["os"] == "windows" else ("linpriv" if r["os"] == "linux" else "winpriv/linpriv")
         yield Opportunity(
             key="foothold-enum",
             title=f"Foothold — {who} valid on {r['hostname'] or r['ip']} (not admin)",
@@ -182,7 +181,8 @@ def _foothold_enum(store):
             detail=f"a non-admin foothold on a {osname} host — local privilege "
                    "escalation is the next step.",
             evidence=f"valid non-admin access on {r['ip']}",
-            next_step=f"get a shell, then run the {module} enum (it names the route).",
+            next_step=f"fieldkit enum {r['ip']}  →  fieldkit analyze  →  "
+                      f"fieldkit escalate {r['ip']} (ranks + fires the privesc route).",
             safe_proof="the foothold is already proven by the valid auth; enum is "
                        "read-only.")
 

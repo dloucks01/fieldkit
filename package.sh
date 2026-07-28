@@ -2,7 +2,7 @@
 # package.sh — bundle the whole kit (source + staged exploits) into one archive to
 # carry to an air-gapped engagement. Run on the connected staging box.
 #
-# What goes in: everything git tracks (the fieldkit package, bin/, report/, archive/,
+# What goes in: everything git tracks (the fieldkit package, bin/, docs,
 # tests/, docs, and the exploits/ fetcher+manifest) PLUS whatever you've fetched into
 # exploits/. What stays out (via .gitignore + git ls-files): .git history, __pycache__/
 # *.pyc, engagement.db (loot!), prior *.tar.gz, venvs, and the nested .git dirs of any
@@ -91,8 +91,9 @@ fi
 echo ""
 echo "carry it over, then on the air-gapped box:"
 echo "  tar xzf $(basename "$OUT") && cd fieldkit"
-echo "  sh report/preflight.sh          # confirm the OS TOOLS are present on this box"
-echo "  bin/fieldkit init 'engagement'  # you're ready"
+echo "  python3 -m pytest -q             # sanity: the engine runs (no tools needed)"
+echo "  bin/fieldkit poc --check         # confirm the build toolchain is present"
+echo "  bin/fieldkit init 'engagement'   # you're ready"
 echo ""
 echo "note: package.sh bundles source + PoCs, NOT the OS tools (nxc/impacket/certipy/"
-echo "mingw/…). Install those on the attacker box while connected; preflight verifies them."
+echo "mingw/…). Install those on the attacker box while connected."

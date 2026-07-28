@@ -1237,7 +1237,7 @@ def build_parser():
     p_init.add_argument("name", nargs="?", help="engagement name (default: directory name)")
     p_init.set_defaults(func=cmd_init)
 
-    p_config = sub.add_parser("config", help="engagement config (replaces configure.sh)")
+    p_config = sub.add_parser("config", help="engagement config (lhost/lport/domain/…)")
     config_sub = p_config.add_subparsers(dest="config_command", metavar="<action>")
 
     c_show = config_sub.add_parser("show", help="print every key")

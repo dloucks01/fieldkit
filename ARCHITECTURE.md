@@ -112,12 +112,12 @@ description, risk, confidence: "confirmed", ids}}]}`. Pinned by `tests/test_brid
 (v2) and `tests/test_integration_recce.py` (v1). Pairs with the recce tool
 (`recce fieldkit-export` seeds triage; `recce fieldkit-import` folds findings back).
 
-## v1 relationship
+## Lineage
 
-`archive/` holds the v1 print-only generator tree (~5,600 lines) — kept for reference and
-as the knowledge source being ported phase by phase. `report/gen_report.py` (v1) still
-runs and its recce test stays green. Don't add features to `archive/`; port knowledge into
-the package (as `reportkb.py`, `privesc.py`, `evasion.py` already did).
+fieldkit v2 is the whole product. The v1 print-only generator tree (`archive/`, `report/`)
+and its guide (`START-HERE.md`) were removed once their knowledge was fully ported into the
+package (`reportkb.py`, `privesc.py`, `evasion.py`, …); they live in git history if ever
+needed. The recce contract is pinned by `tests/test_bridge.py`.
 
 ## Conventions
 

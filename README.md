@@ -3,169 +3,128 @@
 The field kit for the hours between first contact and full compromise.
 
 fieldkit is a **stateful internal-AD execution engine** for **authorized** penetration
-testing. From a credential or a foothold it ingests what you know (creds, hosts,
-service maps, tool output), drives proven external tools (netexec, impacket,
-evil-winrm) against the scope, finds the privilege-escalation opportunity on Windows
-and Linux, and reports only what it actually proved. **Standalone — clones to a base
-Kali box and runs with no install** (Python 3 stdlib only; the tools it drives are
-your existing kit).
+testing. From a credential or a foothold it ingests what you know (creds, hosts, tool
+output), drives your proven tools (netexec, impacket, evil-winrm, certipy) against the
+scope, runs the credential loop, escalates to SYSTEM/root, and reports only what it
+actually proved. **Standalone — clones to a base Kali box and runs with no install**
+(Python 3 stdlib only; the tools it drives are your existing kit).
 
-> **v2 rebuild in progress.** v1 was a print-only cheatsheet: ~5,600 lines of
-> generators that printed commands but held no state, parsed no tool output and could
-> not be imported. That whole tree is preserved under [`archive/`](archive/) and still
-> runs; the v2 engine is being built alongside it, phase by phase. `configure.sh` is
-> gone — engagement config now lives in the engagement database (see below).
+**New here?** → the one-page runbook is **[`QUICKSTART.md`](QUICKSTART.md)**, the visual
+map is **[`WORKFLOW.md`](WORKFLOW.md)**, the deep reference is
+**[`TECHNICAL-GUIDE.md`](TECHNICAL-GUIDE.md)**.
 
-## Status
+## What it does
 
-| Phase | What it adds | State |
-|---|---|---|
-| **0** | state store, engagement config, credential model, `init`/`config`/`add`/`status` | **done** |
-| **1** | nxc `spray` + `(Pwn3d!)` parsing, `ingest`, loot → creds, the credential loop, `analyze` + KB detect predicates | **done** |
-| **1.5** | Defender lab harness (`lab test`), `evasion.py`, technique green/red matrix, `posture` | **done** |
-| **2** | transports, executor with capture + safety gate, `enum`, per-vector privesc drivers, `run` | **done** |
-| **3** | `report` (`--check`, md/docx/pdf, cleanup manifest) + recce bridge (`export-recce`) | **done** |
-| **4** | Kerberos (`roast`), `delegation`, ADCS (`adcs find`), BloodHound (`bloodhound import`) | **done** |
+```
+add cred/hosts → spray (loop: loot → promote → re-spray) → enum → analyze
+      → escalate (auto: stage/build/prep, evasion re-delivery, Potato variants)
+      → roast / delegation / adcs / bloodhound → report (Findings + Observations)
+```
 
-Reporting now runs from the engagement database (`fieldkit report` / `export-recce`);
-the v1 `report/gen_report.py` is kept for reference and its recce contract stays green.
+- **The credential loop is the spine.** `spray → parse (Pwn3d!) → loot SAM/LSA/NTDS →
+  promote recovered secrets → spray again`, until dry. Lockout-safe by construction: it
+  reads the domain password policy first and replays only each account's own proven secret.
+- **The orchestrator escalates for you.** `escalate` walks the ranked vectors and follows a
+  fallback axis — advance, retry, stop on proof, halt on the unknown; on a miss it
+  **auto-stages** a tool from the arsenal, **auto-builds** a payload (`poc`), or
+  **download-stages** it over the exec transport when there's no `--put-file` path; on an AV
+  catch it **climbs the delivery ladder**; for SeImpersonate it tries the **Potato variants**
+  (GodPotato / PrintSpoofer / JuicyPotatoNG / SweetPotato / SharpEfsPotato). Routes it can't
+  one-shot (overwrite a running binary, plant a DLL) are handed to `prep`.
+- **MSSQL is a real path.** Sysadmin → xp_cmdshell → SYSTEM; and a non-sysadmin login →
+  sysadmin via `EXECUTE AS` impersonation (`fieldkit mssql escalate`).
+- **Everything that runs is captured**, so the report's anti-fabrication `--check` passes by
+  construction — a finding can't render without the command + output that proved it.
+- **Assume-caught.** Evasion is a ranking axis: every technique is red until a Defender lab
+  proves it clean; a live catch marks it red and the loop falls back.
 
 ## Quick start
 
 ```bash
-# 0) attacker box: verify tooling + pre-stage supplied binaries before an (air-gapped) engagement
-sh report/preflight.sh          # checks TOOLS
-sh report/avcheck.sh            # static-signature FLOOR test (ClamAV) — never a Defender verdict
-#   + work through SUPPLIED-BINARIES.md (Potato exes, CVE PoCs, PEAS — the kit doesn't ship these)
-
-bin/fieldkit config set lab_host=10.13.13.5    # a Defender-on lab VM
-bin/fieldkit lab test           # prove which delivery paths evade the real Defender
-bin/fieldkit posture            # the green/red matrix — everything is red until lab-proven
-
-# 1) one engagement = one database in the working directory
+# one engagement = one database in the working directory
 bin/fieldkit init 'ACME internal'
 bin/fieldkit config set lhost=10.10.14.7 lport=443 domain=corp.local
-bin/fieldkit config set lhost=192.168.56.10 --subnet 10.0.5.0/24   # segment that can't route to lhost
 
-# 2) tell it what you know — creds in whatever form you have them
-bin/fieldkit add cred 'CORP/jdoe:Winter2025!'         # or DOMAIN\user, user@corp.local, user:LM:NT,
-bin/fieldkit add cred --user Administrator --hash <NT> --local   #  :NT, a secretsdump line, a ccache
-bin/fieldkit add cred --from-file creds.txt
-bin/fieldkit add hosts scope.txt                       # IPs, CIDRs, or 'IP hostname' lines
+# tell it what you know (creds in whatever form you have them)
+bin/fieldkit add cred 'CORP/jdoe:Winter2025!'      # DOMAIN\user, user@corp.local, user:LM:NT, …
+bin/fieldkit add hosts scope.txt                   # a single IP, a CIDR, or a file of them
 
-# 3) run the credential loop: spray every cred across the scope, parse (Pwn3d!),
-#    loot owned hosts, promote what it recovers, re-spray until dry
-bin/fieldkit spray smb                                  # reads the lockout policy first
-bin/fieldkit ingest nxc capture.txt                     # or fold in a spray you ran by hand
+# run the loop, then escalate a foothold
+bin/fieldkit spray smb                             # reads the lockout policy first
+bin/fieldkit enum 10.0.0.7
+bin/fieldkit analyze
+bin/fieldkit escalate 10.0.0.7 --allow config-change
 
-# 4) escalate a foothold: enumerate it, rank the vectors, fire one (captured)
-bin/fieldkit enum 10.0.0.7                              # read-only, feeds analyze
-bin/fieldkit analyze --proof                            # loop opportunities + privesc vectors
-bin/fieldkit run 10.0.0.7 sudo:find                     # read-only vector; --allow for riskier
+# go wide in AD (any order)
+bin/fieldkit roast --dc 10.0.0.10
+bin/fieldkit delegation --dc 10.0.0.10
+bin/fieldkit adcs find --dc 10.0.0.10
+bin/fieldkit bloodhound import ./bh/
 
-# 4b) go wide in AD — each records findings that analyze ranks and report writes up
-bin/fieldkit roast --dc 10.0.0.10                       # kerberoast + AS-REP -> crackable loot
-bin/fieldkit delegation --dc 10.0.0.10                  # unconstrained/constrained/RBCD
-bin/fieldkit adcs find --dc 10.0.0.10                   # vulnerable cert templates (ESC1-16)
-bin/fieldkit bloodhound import loot.zip                 # owned-principal -> Domain Admin paths
+# write it up (Findings + Observations, straight from captured evidence)
+bin/fieldkit report --check                        # anti-fabrication gate
+bin/fieldkit report -o report                      # report.md (+ .docx/.pdf via pandoc)
+bin/fieldkit report --cleanup -o report            # internal artifact-removal manifest
+bin/fieldkit export-recce recce.json               # fold proven findings into recce
 
-# 5) write it up — straight from the captured evidence in state
-bin/fieldkit report --check                             # anti-fabrication gate
-bin/fieldkit report -o report                           # report.md (+ .docx/.pdf via pandoc)
-bin/fieldkit report --cleanup -o report                 # internal artifact-removal manifest
-bin/fieldkit export-recce                               # fold proven findings back into recce
-
-# the board
-bin/fieldkit status --hosts --creds
+bin/fieldkit status                                # the board, any time
 ```
 
-Everything `run` does to a target goes through the executor: the command is
-captured verbatim as evidence, the **safety gate** refuses a `config-change` /
-`crash-risk` vector unless you pass `--allow`, and anything a vector changes is
-recorded in a cleanup manifest. The report is a projection of that captured
-evidence, so its anti-fabrication `--check` passes by construction — a finding
-cannot render without the command + output that proved it.
-
-`spray` reuses each account's own proven secret, so it cannot lock a domain
-account; it still reads the domain password policy up front and surfaces it. The
-loop stops when a round adds no new access and no new credential.
-
-`bin/fieldkit` is a shim for `python3 -m fieldkit`; either works from a clone. The
-database defaults to `./engagement.db` (override with `--db` or `$FIELDKIT_DB`).
-
-**Every `add cred` echoes its interpretation before storing anything:**
-
-```
-$ fieldkit add cred 'CORP/jdoe:Winter2025!'
-parsed as → domain=CORP  user=jdoe  secret='Winter2025!' (password)  local_auth=no
-add 1 credential? [y/N]
-```
-
-A wrong-format credential is caught at input, not forty hosts into a spray. Pass
-`--yes` when scripting.
+Riskier vectors need `--allow config-change` (or `crash-risk`); read-only runs freely.
+`bin/fieldkit` is a shim for `python3 -m fieldkit`; the DB defaults to `./engagement.db`
+(`--db` / `$FIELDKIT_DB`). Every `add cred` echoes its interpretation before storing —
+a wrong-format credential is caught at input, not forty hosts into a spray (`--yes` to skip).
 
 ## Design
 
-- **The credential loop is the spine.** `ingest → spray → parse (Pwn3d!) → dump on
-  admin hosts → recover creds → spray again`, until it goes dry. Lockout-safe by
-  construction: read the domain password policy before any spray, throttle to it.
-- **Orchestrate, don't reimplement.** fieldkit is the brain — state, the loop,
-  credential normalization, privesc analysis, reporting. netexec/impacket own the
-  protocols.
-- **One canonical credential model.** Liberal ingest, strict output: renderers emit
-  `subprocess` arg-lists, never shell strings, so a password containing quotes or
-  backslashes reaches the tool intact.
-- **Everything that runs is captured.** Verbatim stdout/stderr/exit for every executed
-  command lands in state as evidence, so the report's anti-fabrication gate passes by
-  construction.
-- **Three-axis ranking.** Vectors are ranked by exploitability × safety
-  (`read-only`→`crash-risk`) × detection risk, so the quiet, safe, precondition-met
-  path floats to the top. Each vector carries a `safe_proof` that demonstrates it
-  without detonating it, and every change lands in a cleanup manifest.
-- **Assume-caught.** Defender is on. Evasion is a ranking axis, not a bolt-on: prefer
-  native paths with no AMSI surface, treat every evasion technique as caught until
-  lab-proven, detect a runtime catch and fall back instead of re-firing.
-- **Config in state, never in source.** v1's `configure.sh` `sed`-edited LHOST into
-  tracked files — a dirty tree plus a `git checkout` could point a payload at the
-  *previous* client. Config now travels with the engagement database.
+- **Orchestrate, don't reimplement.** fieldkit is the brain — state, the loop, credential
+  normalization, escalation, reporting. netexec/impacket/certipy own the protocols; msfvenom/
+  wixl/gcc own the payload bytes.
+- **One store, everything is a projection.** All state is one SQLite DB; `analyze` ranks what
+  it proves, `report` renders the captured evidence. Stop and resume anywhere.
+- **One canonical credential model.** Liberal ingest, strict output: renderers emit argv
+  lists, never shell strings, so quotes/backslashes reach the tool intact.
+- **Three-axis ranking** (exploitability × safety × detection) orders every move, so the
+  quiet, safe, precondition-met path floats up.
+- **Findings vs Observations.** The report proves what it exploited (Findings, with the full
+  captured walkthrough) and clearly labels what it only identified (Observations).
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `fieldkit/` | the v2 package — state/config/creds/scope, the loop (`netexec`, `ingest`, `spray`, `dump`, `kb`), execution (`transport`, `executor`, `runner`, `hostenum`, `privesc`), AD depth (`kerberos`, `delegation`, `adcs`, `bloodhound`), evasion (`evasion`, `lab`), and reporting (`report`, `reportkb`, `bridge`) |
+| `fieldkit/` | the engine — state/config/creds/scope, the loop (`netexec`, `ingest`, `spray`, `dump`, `kb`), execution (`transport`, `executor`, `runner`, `hostenum`, `privesc`, `poc`, `classify`, `escalate`, `staging`, `mssql`), AD depth (`kerberos`, `delegation`, `adcs`, `bloodhound`), evasion (`evasion`, `lab`), reporting (`report`, `reportkb`, `bridge`), and the thin `cli` |
 | `bin/fieldkit` | run it from a clone without installing |
-| `tests/` | unit tests + the recce integration contract |
-| `report/` | v1 findings → Markdown + DOCX + PDF (ported in Phase 3) |
+| `tests/` | the test suite (~490, ~2s, no network/tools needed) |
 | `exploits/` | operator-staged binaries/PoCs (air-gap); see `SUPPLIED-BINARIES.md` |
-| `archive/` | the v1 print-only tree: `access/`, `winpriv/`, `linpriv/`, `novelre/` |
+| `QUICKSTART.md` · `WORKFLOW.md` · `TECHNICAL-GUIDE.md` | operator docs; `CLAUDE.md` = architecture notes |
+| `package.sh` | bundle source + staged exploits into one archive for an air-gapped box |
 
-The engagement database holds client credentials **in the clear**. Treat it as loot:
-encrypted storage, destroyed with the rest of the evidence. It is gitignored.
+The engagement database holds client credentials **in the clear** — treat it as loot
+(encrypted storage, destroyed with the rest of the evidence). It is gitignored.
 
-## Companion: recce (enumeration + reporting)
+## Companion: recce
 
-Pairs with [**recce**](https://github.com/dloucks01/recce), which does the
-enumeration/reporting half of the engagement. `recce fieldkit-export` seeds fieldkit's
-mass triage with the hosts it already found *and confirmed vulnerable*;
-`fieldkit export-recce` → `recce fieldkit-import` folds your
-proven findings back into recce's workbook + report. See
+Pairs with [**recce**](https://github.com/dloucks01/recce), the enumeration/reporting half.
+`recce fieldkit-export` seeds triage with confirmed-vulnerable hosts; `fieldkit export-recce`
+→ `recce fieldkit-import` folds your proven findings back into recce's workbook + report. See
 **[`INTEGRATION.md`](INTEGRATION.md)**.
 
 ## Scope
 
-Internal-network engagements from a credential or foothold through lateral movement
-and local privilege escalation to reporting. **Deliberately out of scope:** phishing /
-AiTM session-stealing, persistence, physical/wireless, and beacon/BOF-grade evasion
-(fieldkit states a path's detection risk rather than promising invisibility).
-**Authorized engagements only** — every component assumes you have permission for the
-target.
+Internal-network engagements from a credential or foothold through lateral movement and local
+privilege escalation to reporting. **Out of scope by design:** phishing / AiTM, persistence,
+physical/wireless, and beacon/BOF-grade evasion (fieldkit states a path's detection risk
+rather than promising invisibility). **Authorized engagements only** — every component assumes
+you have permission for the target.
 
 ```mermaid
 flowchart LR
-  I[add cred / add hosts<br/>ingest tool output] --> S[spray<br/>nxc]
-  S -->|Pwn3d!| L[loot<br/>SAM/LSA/GPP/NTDS] --> S
-  S -->|valid, not admin| F[foothold + enum] --> A[analyze<br/>rank privesc]
-  A --> R[run vector<br/>captured evidence] --> L
-  A --> RP[report -> md/docx/pdf<br/>+ cleanup manifest]
+  I["add cred / hosts<br/>ingest"] --> S["spray (loop)"]
+  S -->|Pwn3d!| L["loot → promote"] --> S
+  S -->|foothold| E["enum → analyze"]
+  E --> X["escalate<br/>stage/build/prep · evasion · potatoes"] --> L
+  E --> AD["roast · delegation · adcs · bloodhound"] --> E
+  X --> RP["report<br/>Findings + Observations"]
+  AD --> RP
 ```
