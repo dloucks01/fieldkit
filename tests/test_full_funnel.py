@@ -144,6 +144,45 @@ if "--continue-on-success" in a:
 sys.exit(0)
 '''
 
+# AlwaysInstallElevated: the SYSTEM .msi doesn't exist until the loop BUILDS it (wixl)
+# and stages it. enum reports AIE from the registry; msiexec proves once the msi lands.
+FAKE_NXC_BUILD = r'''#!/usr/bin/env python3
+import os, sys
+a = sys.argv[1:]
+sentinel = os.path.join(os.environ.get("FK_STAGED", "/tmp"), "evil.msi.present")
+if "--put-file" in a:
+    i = a.index("--put-file")
+    local, remote = a[i + 1], a[i + 2]
+    if "evil.msi" in remote:
+        open(sentinel, "w").close()
+    print(f"[+] uploaded {local} to {remote}")
+    sys.exit(0)
+flag = "-x" if "-x" in a else ("-X" if "-X" in a else None)
+if flag:
+    cmd = a[a.index(flag) + 1]
+    if "AlwaysInstallElevated" in cmd:
+        print("    AlwaysInstallElevated    REG_DWORD    0x1")
+        print("    AlwaysInstallElevated    REG_DWORD    0x1")
+    elif "msiexec" in cmd:
+        print("nt authority\\system" if os.path.exists(sentinel)
+              else "The system cannot find the file specified.")
+    sys.exit(0)
+if "--continue-on-success" in a:
+    print("SMB 10.0.0.7 445 WS02 [*] Windows 10 Build 19041 x64 (name:WS02) "
+          "(domain:corp.local) (signing:False) (SMBv1:False)")
+    print("SMB 10.0.0.7 445 WS02 [+] corp.local\\jdoe:Winter2025! (Pwn3d!)")
+    sys.exit(0)
+sys.exit(0)
+'''
+
+# a fake wixl that just creates its -o output (a real build isn't the point here).
+FAKE_WIXL = r'''#!/usr/bin/env python3
+import sys
+a = sys.argv[1:]
+open(a[a.index("-o") + 1], "w").close()
+print("wixl: wrote installer")
+'''
+
 FAKE_CERTIPY = r'''#!/usr/bin/env python3
 print("""Certipy v4.8.2
 Certificate Templates
@@ -370,7 +409,8 @@ class FullFunnelTest(unittest.TestCase):
         self.assertIn("auto-stage GodPotato (in arsenal)", plan)
 
         run = self.cli("escalate", "10.0.0.7", "--allow", "config-change", "--yes")
-        self.assertIn("staging from the arsenal", run)
+        self.assertIn("stage then retry", run)
+        self.assertIn("staged GodPotato", run)
         self.assertIn("PROVEN", run)
         self.assertEqual(self.store().counts()["proven_findings"], 1)
         # the staged binary is on the cleanup manifest
@@ -385,6 +425,54 @@ class FullFunnelTest(unittest.TestCase):
         nostage = self.cli("escalate", "10.0.0.7", "--allow", "config-change",
                            "--no-stage", "--yes", expect=1)
         self.assertNotIn("staging from the arsenal", nostage)
+
+
+    def _install(self, name, body):
+        p = os.path.join(self.bindir, name)
+        with open(p, "w") as fh:
+            fh.write(body)
+        os.chmod(p, os.stat(p).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    def test_escalate_auto_builds_a_missing_msi(self):
+        # Phase 9: no SYSTEM msi exists -> the loop builds one (wixl), stages it, and
+        # msiexec proves. The build/rebuild axis, closed.
+        self._install("nxc", FAKE_NXC_BUILD)
+        self._install("wixl", FAKE_WIXL)             # a builder on PATH -> poc.have('msi')
+
+        staged = os.path.join(self.dir, "staged")
+        build = os.path.join(self.dir, "build")
+        os.makedirs(staged)
+        os.makedirs(build)
+        for k, v in (("FK_STAGED", staged), ("FIELDKIT_BUILD", build)):
+            old = os.environ.get(k)
+            os.environ[k] = v
+            self.addCleanup(lambda k=k, old=old:
+                            os.environ.__setitem__(k, old) if old is not None
+                            else os.environ.pop(k, None))
+
+        self.cli("init", "ACME Corp")
+        self.cli("add", "hosts", "10.0.0.7 WS02")
+        self.cli("add", "cred", "corp.local/jdoe:Winter2025!", "--yes")
+        self.cli("spray", "smb", "--yes")
+        self.cli("enum", "10.0.0.7", "--yes")
+
+        # `poc --check` sees the (fake) wixl; the plan says the msi is buildable
+        self.assertIn("wixl", self.cli("poc", "--check"))
+        plan = self.cli("escalate", "10.0.0.7", "--allow", "config-change", "--dry-run")
+        self.assertIn("auto-build msi (wixl ready)", plan)
+
+        run = self.cli("escalate", "10.0.0.7", "--allow", "config-change", "--yes")
+        self.assertIn("build then retry", run)
+        self.assertIn("built+staged", run)
+        self.assertIn("PROVEN", run)
+        self.assertEqual(self.store().counts()["proven_findings"], 1)
+        # the built artifact is on the cleanup manifest
+        self.assertTrue(any("evil.msi" in (art["cleanup_cmd"] or "")
+                            for art in self.store().artifacts()))
+
+    def test_poc_check_runs_without_an_engagement(self):
+        out = self.cli("poc", "--check")
+        self.assertIn("build toolchain", out)
 
 
 if __name__ == "__main__":  # pragma: no cover

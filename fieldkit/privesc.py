@@ -46,6 +46,9 @@ class Vector:
     #: (arsenal_name, remote_path) artifacts this vector needs on the target — the loop
     #: auto-stages these from the arsenal and retries when the target reports them missing.
     stages: tuple = ()
+    #: (format, remote_path) artifacts fieldkit *builds* (see fieldkit.poc) then stages —
+    #: the loop builds+pushes these on a miss, and rebuilds corrected on a BAD_BUILD.
+    builds: tuple = ()
 
     @property
     def score(self):
@@ -392,7 +395,8 @@ def _d_win_aie(facts, ctx):
             detail="both AlwaysInstallElevated keys are set — any .msi installs as SYSTEM.",
             evidence="AlwaysInstallElevated=0x1 in HKLM and HKCU",
             safe_proof="build the msi to run `whoami`/add an admin; a SYSTEM whoami proves it.",
-            cleanup=f"del {stage}\\evil.msi")
+            cleanup=f"del {stage}\\evil.msi", report_type="alwaysinstallelevated",
+            builds=(("msi", f"{stage}\\evil.msi"),))
 
 
 def _d_win_unquoted(facts, ctx):

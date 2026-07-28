@@ -19,6 +19,8 @@ right PoC for the target OS + service.
 import os
 from dataclasses import dataclass
 
+from . import poc
+
 # resolution kinds
 BUILTIN, STAGED, BUILD, SUPPLIED = "builtin", "staged", "build", "supplied"
 
@@ -171,8 +173,14 @@ def resolve(key, need, root=None):
     if need.kind == BUILTIN:
         return Resolution(key, need, True, "native target command — nothing to stage")
     if need.kind == BUILD:
-        fmt = need.options[0] if need.options else "?"
-        return Resolution(key, need, True, f"fieldkit builds this ({fmt}) — `fieldkit poc`")
+        fmt = need.options[0] if need.options else None
+        if fmt and poc.have(fmt):
+            return Resolution(key, need, True,
+                              f"fieldkit builds this ({fmt}) via {poc.BUILDER[fmt]} — "
+                              f"`fieldkit poc {fmt}`")
+        builder = poc.BUILDER.get(fmt, "a builder")
+        return Resolution(key, need, False,
+                          f"build needs {builder} — not installed (`fieldkit poc --check`)")
     if need.kind == SUPPLIED:
         return Resolution(key, need, False, "operator-supplied — not in the manifest")
     # STAGED: present if any acceptable option is on disk...

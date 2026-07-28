@@ -138,6 +138,14 @@ class WindowsDriverTest(unittest.TestCase):
         v = [x for x in vectors_for(f, "10.0.0.7") if x.key == "aie"][0]
         self.assertIn("msiexec", v.command)
 
+    def test_aie_declares_a_buildable_msi(self):
+        # the loop reads Vector.builds to auto-build a missing artifact (Phase 9).
+        f = HostFacts(os="windows", always_install_elevated=True)
+        v = [x for x in vectors_for(f, "10.0.0.7", stage_win="C:\\stage")
+             if x.key == "aie"][0]
+        self.assertEqual(v.builds, (("msi", "C:\\stage\\evil.msi"),))
+        self.assertEqual(v.report_type, "alwaysinstallelevated")  # a real reportkb key
+
     def test_unquoted_service(self):
         f = HostFacts(os="windows",
                       unquoted_services=[(None, "C:\\Program Files\\My App\\svc.exe")])

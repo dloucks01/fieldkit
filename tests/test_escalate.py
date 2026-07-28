@@ -25,7 +25,8 @@ from fieldkit.runner import RunResult  # noqa: E402
 class _Vector:
     """The slice of privesc.Vector the orchestrator reads."""
 
-    def __init__(self, key, safety="read-only", family=None, delivery=None, stages=()):
+    def __init__(self, key, safety="read-only", family=None, delivery=None, stages=(),
+                 builds=()):
         self.key = key
         self.title = key
         self.safety = safety
@@ -38,6 +39,7 @@ class _Vector:
         self.family = family
         self.delivery = delivery
         self.stages = stages
+        self.builds = builds
 
 
 class _Exec:
@@ -322,6 +324,7 @@ class OrderDeliveriesTest(unittest.TestCase):
 # missing-artifact outputs: windows phrasing (delivery axis) + linux phrasing (stage axis)
 WIN_MISSING = run("'GodPotato.exe' is not recognized as an internal or external command")
 LIN_MISSING = run("bash: tool: command not found")
+BAD_IMAGE = run("%1 is not a valid Win32 application")   # -> bad_build -> rebuild axis
 
 
 class AutoStageTest(unittest.TestCase):
@@ -404,6 +407,75 @@ class AutoStageTest(unittest.TestCase):
                            os_name="windows", stage=None)  # no stager -> plain advance
         self.assertEqual(out.attempts[0].action, esc.ADVANCE)
         self.assertEqual(len(out.fired), 1)
+
+
+class AutoBuildTest(unittest.TestCase):
+    """The build/rebuild axes: build a missing artifact (or rebuild a bad one), then re-fire."""
+
+    def _building_fire(self, miss, hit, flag):
+        def fire(vector):
+            return _Exec(hit) if flag["ok"] else _Exec(miss)
+        return fire
+
+    def _builder(self, result, flag=None):
+        calls = []
+
+        def build(vector, corrected):
+            calls.append((vector.key, corrected))
+            if flag is not None:
+                flag["ok"] = True
+            return result
+        build.calls = calls
+        return build
+
+    def test_build_missing_artifact_then_prove(self):
+        v = _Vector("aie", "config-change", builds=(("msi", "C:\\t\\e.msi"),))
+        flag = {"ok": False}
+        fire = self._building_fire(WIN_MISSING, WIN_ROOT, flag)
+        build = self._builder(esc.StageResult(True, "built+staged msi"), flag)
+        out = esc.escalate([v], fire=fire, allow=["read-only", "config-change"],
+                           os_name="windows", build=build)
+        self.assertTrue(out.ok)
+        self.assertEqual(build.calls, [("aie", False)])   # built, not corrected
+        self.assertEqual([a.action for a in out.attempts], [esc.STAGED, esc.STOP])
+
+    def test_build_failure_advances(self):
+        v1 = _Vector("aie", "config-change", builds=(("msi", "C:\\t\\e.msi"),))
+        v2 = _Vector("other", "config-change")
+        fire = scripted({"aie": _Exec(WIN_MISSING), "other": _Exec(WIN_ROOT)})
+        build = self._builder(esc.StageResult(False, "wixl not installed"))
+        out = esc.escalate([v1, v2], fire=fire, allow=["read-only", "config-change"],
+                           os_name="windows", build=build)
+        self.assertIs(out.proven, v2)
+        self.assertIn("build failed", out.attempts[0].note)
+
+    def test_bad_build_rebuilds_corrected_then_proves(self):
+        v = _Vector("aie", "config-change", builds=(("exe", "C:\\t\\e.exe"),))
+        flag = {"ok": False}
+        fire = self._building_fire(BAD_IMAGE, WIN_ROOT, flag)
+        build = self._builder(esc.StageResult(True, "rebuilt x86"), flag)
+        out = esc.escalate([v], fire=fire, allow=["read-only", "config-change"],
+                           os_name="windows", build=build)
+        self.assertTrue(out.ok)
+        self.assertEqual(build.calls, [("aie", True)])    # corrected=True on BAD_BUILD
+        self.assertEqual(out.attempts[0].verdict.outcome, "bad_build")
+
+    def test_build_none_advances(self):
+        v = _Vector("aie", "config-change", builds=(("msi", "C:\\t\\e.msi"),))
+        fire = scripted({"aie": _Exec(WIN_MISSING)})
+        out = esc.escalate([v], fire=fire, allow=["read-only", "config-change"],
+                           os_name="windows", build=None)
+        self.assertEqual(out.attempts[0].action, esc.ADVANCE)
+        self.assertEqual(len(out.fired), 1)
+
+    def test_build_attempted_once_even_if_still_missing(self):
+        v = _Vector("aie", "config-change", builds=(("msi", "C:\\t\\e.msi"),))
+        fire = scripted({"aie": _Exec(WIN_MISSING)})       # never lands
+        build = self._builder(esc.StageResult(True, "built"))  # claims ok, no flip
+        out = esc.escalate([v], fire=fire, allow=["read-only", "config-change"],
+                           os_name="windows", build=build)
+        self.assertFalse(out.ok)
+        self.assertEqual(len(build.calls), 1)              # built once, not forever
 
 
 class InspectTest(unittest.TestCase):
