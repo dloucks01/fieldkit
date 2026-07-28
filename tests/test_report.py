@@ -91,6 +91,16 @@ class CheckTest(ReportTestCase):
         errors, _ = check(findings)
         self.assertTrue(any("no proof-of-concept" in m for _, m in errors))
 
+    def test_observation_without_steps_is_not_an_error(self):
+        # an unproven finding (observation) is not a claim of compromise, so a missing
+        # PoC is a note, not an anti-fabrication error — this is what lets --all render.
+        self.store.add_finding("unconstrained_delegation", "Unconstrained delegation",
+                               host_id=self.hid)  # proven defaults False
+        _, findings = build(self.store, self.cfg, proven_only=False)
+        errors, warns = check(findings)
+        self.assertEqual(errors, [])
+        self.assertTrue(any("observation" in m for _, m in warns))
+
 
 class RenderTest(ReportTestCase):
     def test_markdown_has_writeup_and_kb_content(self):
@@ -104,6 +114,28 @@ class RenderTest(ReportTestCase):
         self.assertIn("nt authority\\system", md)        # the captured PoC output
         self.assertIn("Changes made during testing", md)  # artifact section
         self.assertIn("Remediation", md)
+        # proven finding: labelled a FINDING, with a walkthrough + screenshot placeholder
+        self.assertIn("FINDING — proven", md)
+        self.assertIn("Technical walkthrough", md)
+        self.assertIn("Screenshot for the report", md)
+        self.assertIn("Proof of compromise", md)
+
+    def test_observations_render_distinctly_from_findings(self):
+        self.proven_finding()
+        self.store.add_finding("unconstrained_delegation", "Unconstrained delegation on WEB01$",
+                               host_id=self.hid, evidence="LDAP: WEB01$ Unconstrained")
+        eng, findings = build(self.store, self.cfg, proven_only=False)
+        md = render_markdown(eng, findings)
+        # the two are separated and defined, and the observation is clearly not a finding
+        self.assertIn("How to read this report", md)
+        self.assertIn("# Findings (proven)", md)
+        self.assertIn("# Observations (identified, not exploited)", md)
+        self.assertIn("OBSERVATION — identified, not exploited", md)
+        self.assertIn("Potential impact (if exploited)", md)
+        self.assertIn("Observations at a glance", md)
+        # the observation is NOT dressed up with a proven-style money shot
+        obs = md.split("# Observations (identified")[1]
+        self.assertNotIn("Proof of compromise", obs)
 
     def test_empty_report_is_honest(self):
         eng, findings = build(self.store, self.cfg)
