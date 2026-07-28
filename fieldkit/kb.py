@@ -149,6 +149,24 @@ def _foothold_enum(store):
                        "read-only.")
 
 
+def _roastable_loot(store):
+    for kind, mode, label in (("kerberoast", 13100, "Kerberoastable"),
+                              ("asrep_roast", 18200, "AS-REP roastable")):
+        rows = store.loot(kind=kind)
+        if rows:
+            yield Opportunity(
+                key=f"roast-{kind}",
+                title=f"{label} hashes recovered — crack for domain credentials",
+                exploitability="high", safety="read-only", detection="quiet",
+                detail=f"{len(rows)} {kind} hash(es) in loot — service/preauth-off accounts "
+                       "are often over-privileged and rarely rotate their passwords.",
+                evidence=f"{len(rows)} {kind} loot row(s)",
+                next_step=f"hashcat -m {mode} <hashes> <wordlist>, then feed a crack back with "
+                          "`fieldkit add cred 'DOMAIN/<user>:<password>'` to re-spray.",
+                safe_proof="the ticket request is a normal Kerberos operation; cracking is "
+                           "offline and touches nothing on the target.")
+
+
 #: The registry. Append a predicate to extend the KB; order here does not matter —
 #: output is sorted by score.
 PREDICATES = (
@@ -157,6 +175,7 @@ PREDICATES = (
     _pth_local_admin,
     _loot_admin_host,
     _foothold_enum,
+    _roastable_loot,
 )
 
 

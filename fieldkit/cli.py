@@ -22,9 +22,9 @@ from datetime import datetime, timezone
 
 from . import (__version__, config as config_mod, creds as creds_mod,
                evasion as evasion_mod, executor as executor_mod, hostenum as hostenum_mod,
-               bridge as bridge_mod, ingest as ingest_mod, kb as kb_mod, lab as lab_mod,
-               privesc as privesc_mod, report as report_mod, scope as scope_mod,
-               spray as spray_mod)
+               bridge as bridge_mod, ingest as ingest_mod, kb as kb_mod,
+               kerberos as kerberos_mod, lab as lab_mod, privesc as privesc_mod,
+               report as report_mod, scope as scope_mod, spray as spray_mod)
 from .errors import ConfirmationError, FieldkitError
 from .state import DB_ENV_VAR, Store, default_db_path
 
@@ -548,6 +548,47 @@ def cmd_posture(args):
     return 0
 
 
+def _domain_credential(store):
+    for row in store.credentials():
+        if row["domain"] and not row["local_auth"]:
+            return row
+    return None
+
+
+def cmd_roast(args):
+    with _open_store(args) as store:
+        store.require_engagement()
+        dcs = [h for h in store.hosts() if h["is_dc"]]
+        dc_ip = args.dc or (dcs[0]["ip"] if dcs else None)
+        if not dc_ip:
+            _err("no DC known — mark one with `add hosts --dc`, or pass --dc <ip>")
+            return 2
+        dc_host = store.host_by_ip(dc_ip)
+        if dc_host is None:
+            _err(f"{dc_ip} is not in scope — add it with `fieldkit add hosts`")
+            return 2
+        cred = _domain_credential(store)
+        if cred is None:
+            _err("roasting needs a domain credential — add one with `fieldkit add cred`")
+            return 2
+        kinds = {"both": ("kerberoast", "asrep_roast"), "kerberoast": ("kerberoast",),
+                 "asrep": ("asrep_roast",)}[args.kind]
+        principal = creds_mod.Credential.from_row(cred).principal
+        if not _confirm(f"roast {', '.join(kinds)} against {dc_ip} as {principal}? "
+                        "(read-only Kerberos requests)", args.yes):
+            print("aborted — nothing ran")
+            return 1
+        report = kerberos_mod.run_roast(store, dc_host, cred, kinds=kinds,
+                                        on_event=lambda m: print(m))
+    if report.aborted:
+        _err(report.aborted)
+        return 2
+    print(f"\nrecovered {_plural(report.recovered, 'roast hash')} into loot"
+          + (" — crack offline, then `fieldkit add cred` to re-spray"
+             if report.recovered else ""))
+    return 0
+
+
 def cmd_report(args):
     with _open_store(args) as store:
         store.require_engagement()
@@ -814,6 +855,17 @@ def build_parser():
         description="Shows every technique's status under assume-caught (red until a "
                     "fresh lab result proves it clean) and the recommended delivery order.")
     p_posture.set_defaults(func=cmd_posture)
+
+    p_roast = sub.add_parser(
+        "roast", help="Kerberoast / AS-REP roast a DC into crackable loot",
+        description="Drives nxc's Kerberos roasting against a DC with a domain "
+                    "credential, stores the $krb5tgs$/$krb5asrep$ hashes as loot, and "
+                    "feeds the loop — crack offline, then `add cred` the result.")
+    p_roast.add_argument("--dc", metavar="IP", help="DC to roast (default: a host marked --dc)")
+    p_roast.add_argument("--kind", choices=["both", "kerberoast", "asrep"], default="both",
+                         help="which roast (default: both)")
+    p_roast.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
+    p_roast.set_defaults(func=cmd_roast)
 
     p_report = sub.add_parser(
         "report", help="render the customer report from proven findings in state",

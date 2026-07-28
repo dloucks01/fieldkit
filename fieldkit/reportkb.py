@@ -267,6 +267,14 @@ KB = {
              "an AS-REP and crack the account's password offline.",
         rem="Enable Kerberos pre-authentication on all accounts; enforce strong passwords; monitor for AS-REP "
             "requests."),
+    "kerberoast": dict(sev="High", cwe="CWE-522", os="win",
+        name="Kerberoastable service account yields a crackable credential",
+        desc="A domain account with a Service Principal Name (SPN) is requestable by any authenticated user; the "
+             "returned service ticket is encrypted with the account's password hash, allowing an offline crack. "
+             "Service accounts are frequently over-privileged and their passwords rarely rotate.",
+        rem="Use group Managed Service Accounts (gMSA) or machine accounts for services; where a user SPN is "
+            "unavoidable, enforce a long (25+ char) random password; remove unused SPNs; monitor for anomalous "
+            "TGS-REQ volume (event 4769)."),
     "path_traversal": dict(sev="High", cwe="CWE-22", os="",
         name="Path traversal / local file inclusion",
         desc="A file/path parameter was not validated, allowing traversal outside the intended directory to read "
@@ -530,6 +538,7 @@ RISK = {
     "exposed_service_cve": "crash-risk",          # exploiting a live service can crash it
     "password_spray": "reversible",               # no target change, BUT lockout/DoS risk — see the finding
     "anon_access": "read-only", "exposed_secret": "read-only", "asrep_roast": "read-only",
+    "kerberoast": "read-only",
     "sqli": "reversible", "webshell": "reversible", "rce_web": "reversible",
     "path_traversal": "read-only", "ssti": "reversible", "command_injection": "reversible",
     "deserialization": "reversible", "ssrf": "read-only", "xxe": "read-only",
