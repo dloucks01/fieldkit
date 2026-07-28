@@ -55,9 +55,13 @@ trap cleanup EXIT
 
 ( cd "$ROOT" && git ls-files ) > "$FILELIST"
 if [ "$INCLUDE_EXPLOITS" = 1 ]; then
-    # every real file under exploits/, minus any nested clone histories + pyc noise
+    # every real file under exploits/, minus nested clone histories, pyc, and the demo
+    # media/doc bloat that ships in tool repos (never functional) — keep bundles slim.
     ( cd "$ROOT" && find exploits -type f \
-        -not -path '*/.git/*' -not -name '*.pyc' -not -path '*/__pycache__/*' ) >> "$FILELIST"
+        -not -path '*/.git/*' -not -name '*.pyc' -not -path '*/__pycache__/*' \
+        -not -iname '*.mp4' -not -iname '*.webm' -not -iname '*.mov' -not -iname '*.gif' \
+        -not -path '*/screenshots/*' -not -path '*/presentations/*' \
+        -not -path '*/documentation/*' ) >> "$FILELIST"
 fi
 # de-dup, drop empties
 sort -u "$FILELIST" | sed '/^$/d' > "$FILELIST.u" && mv "$FILELIST.u" "$FILELIST"
