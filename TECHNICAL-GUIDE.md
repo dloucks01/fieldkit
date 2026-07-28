@@ -40,6 +40,10 @@ The DB is `./engagement.db` by default; override with `--db <path>` or `$FIELDKI
 Other env: `$FIELDKIT_ARSENAL` (staged tools dir, default `<repo>/exploits`),
 `$FIELDKIT_BUILD` (where `poc` writes, default `~/.fieldkit/build`).
 
+On a fresh box, **`fieldkit preflight`** lists which tools fieldkit drives are on PATH
+(netexec + impacket are the spine and required; certipy/evil-winrm/msfvenom/wixl/gcc/mingw/
+pandoc are per-feature) and exits non-zero if a required one is missing.
+
 ## 3. Setup & config
 
 ```bash
@@ -149,9 +153,9 @@ to admin, and a reversible cleanup (`sp_dropsrvrolemember`) recorded. It's read-
 [server]` is a per-host hop the operator drives). `analyze` surfaces `mssql-privesc` on a
 non-sysadmin mssql login.
 
-> **Staging caveat.** Auto-stage (`--put-file`) rides smb/ssh. On a *pure-MSSQL* foothold there
-> is no file-transfer path, so a Potato can't be auto-staged — stage it via smb if reachable, or
-> pre-stage it. (Autonomous mssql→SYSTEM would need xp_cmdshell download-staging.)
+On a *pure-MSSQL* foothold there's no `--put-file` path — the loop **download-stages**
+instead (serves the artifact and the target fetches it via certutil over xp_cmdshell), so
+mssql→SYSTEM is autonomous when `config lhost` is set (§11).
 
 ## 8. enum
 
@@ -224,7 +228,8 @@ When a vector fails because the artifact it needs isn't on the target, the loop 
 and re-fires — once per vector, within budget:
 
 - **auto-stage** — the vector declares an arsenal artifact (e.g. `GodPotato`); the loop pushes
-  it via `--put-file` and retries.
+  it via `--put-file` (smb/ssh), or **download-stages** it (serve over HTTP, target fetches with
+  certutil/curl over the exec transport) when there's no put-file path (e.g. MSSQL-only), then retries.
 - **auto-build** — the vector declares a built artifact (e.g. an AlwaysInstallElevated `.msi`);
   the loop builds it with `poc` (§14), stages it, retries.
 - **rebuild** — a `bad_build` (wrong arch/.NET) rebuilds corrected once.
@@ -259,7 +264,8 @@ fieldkit prep 10.0.0.7 writablesvc:Spooler --stage  # also upload it to the stag
 
 `escalate` surfaces these (never fires them) and points at `prep`. The output is: the built
 artifact's local path, where to place it on the target, the ordered operator steps, and the
-restore command.
+restore command. `--stage` uploads it via the same put-file-or-download-stage path as
+`escalate` (so it works over an MSSQL-only foothold too).
 
 ## 14. poc (the build layer)
 
@@ -372,9 +378,8 @@ triage tool — `recce fieldkit-export` seeds triage, `recce fieldkit-import` fo
 
 ## 22. Known limitations
 
-- MSSQL: sysadmin → OS-exec and non-sysadmin → sysadmin (EXECUTE AS impersonation, auto) are
-  done; **linked-server hops** are surfaced, not auto-exploited, and **auto-staging a Potato
-  over a pure-MSSQL foothold** needs xp_cmdshell download-staging (see §7).
+- MSSQL: sysadmin → OS-exec, non-sysadmin → sysadmin (EXECUTE AS, auto), and download-staging
+  over xp_cmdshell are done; **linked-server hops** are surfaced, not auto-exploited.
 - `rdp` / `ldap` / `ftp` protocols **validate creds** but aren't execution transports.
 - DLL-hijack `prep` needs you to supply the hijackable DLL name (Procmon).
 - `poc` orchestrates external builders — it does **not** embed shellcode / AMSI-bypass /

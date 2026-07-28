@@ -26,9 +26,9 @@ from . import (__version__, adcs as adcs_mod, arsenal as arsenal_mod,
                evasion as evasion_mod,
                executor as executor_mod, hostenum as hostenum_mod, ingest as ingest_mod,
                kb as kb_mod, kerberos as kerberos_mod, lab as lab_mod,
-               mssql as mssql_mod, poc as poc_mod, privesc as privesc_mod,
-               report as report_mod, scope as scope_mod, spray as spray_mod,
-               staging as staging_mod)
+               mssql as mssql_mod, poc as poc_mod, preflight as preflight_mod,
+               privesc as privesc_mod, report as report_mod, scope as scope_mod,
+               spray as spray_mod, staging as staging_mod)
 from .errors import ConfirmationError, FieldkitError
 from .state import DB_ENV_VAR, Store, default_db_path
 
@@ -479,6 +479,35 @@ def _host_vectors(store, cfg, host_ip):
             if v.host == host_ip]
 
 
+def _provision_to_target(store, host, cred, local, remote, label, allow, cfg):
+    """Get ``local`` onto the target at ``remote``: try smb/ssh ``--put-file`` first, then
+    fall back to download-staging (serve it, target fetches over the exec transport — e.g.
+    certutil over MSSQL xp_cmdshell). Returns ``(ok, note)``. Shared by escalate + prep."""
+    creates = [(f"{label} at {remote}", f"del {remote}")]
+    res = executor_mod.execute(
+        store, executor_mod.Action(
+            host=host, cred=cred, command=None, label=label,
+            safety="config-change", upload=(local, remote), creates=creates),
+        allow=allow, on_event=lambda m: print(m))
+    if not res.blocked and res.ok:
+        return True, "put-file"
+
+    def _exec(command):
+        return executor_mod.execute(
+            store, executor_mod.Action(
+                host=host, cred=cred, command=command, label=label,
+                safety="config-change", creates=creates),
+            allow=allow, on_event=lambda m: print(m))
+    dres = staging_mod.download_stage(host, local, remote, lhost=cfg.get("lhost"),
+                                      execute=_exec, on_event=lambda m: print(m))
+    if dres is None:
+        return False, (res.blocked or "no file-transfer path") + \
+            " — set `config set lhost=<ip>` to download-stage over the exec transport"
+    if dres.blocked or not dres.ok:
+        return False, dres.blocked or "download-staging failed"
+    return True, "download"
+
+
 def _build_dir():
     """A scratch dir for artifacts fieldkit builds mid-loop (attacker-side)."""
     d = os.path.join(os.environ.get("FIELDKIT_BUILD", os.path.join(
@@ -582,32 +611,7 @@ def cmd_escalate(args):
                                         f"({now.date().isoformat()})")
 
         def put_file(local, remote, label):
-            """Get `local` onto the target at `remote`. Tries --put-file (smb/ssh) first,
-            then falls back to download-staging (serve it, target fetches over the exec
-            transport — e.g. certutil over MSSQL xp_cmdshell). Returns (ok, note)."""
-            creates = [(f"{label} at {remote}", f"del {remote}")]
-            res = executor_mod.execute(
-                store, executor_mod.Action(
-                    host=host, cred=cred, command=None, label=label,
-                    safety="config-change", upload=(local, remote), creates=creates),
-                allow=allow, on_event=lambda m: print(m))
-            if not res.blocked and res.ok:
-                return True, "put-file"
-
-            def _exec(command):
-                return executor_mod.execute(
-                    store, executor_mod.Action(
-                        host=host, cred=cred, command=command, label=label,
-                        safety="config-change", creates=creates),
-                    allow=allow, on_event=lambda m: print(m))
-            dres = staging_mod.download_stage(host, local, remote, lhost=cfg.get("lhost"),
-                                              execute=_exec, on_event=lambda m: print(m))
-            if dres is None:
-                return False, (res.blocked or "no file-transfer path") + \
-                    " — set `config set lhost=<ip>` to download-stage over the exec transport"
-            if dres.blocked or not dres.ok:
-                return False, dres.blocked or "download-staging failed"
-            return True, "download"
+            return _provision_to_target(store, host, cred, local, remote, label, allow, cfg)
 
         def stage(vector):
             done = []
@@ -735,16 +739,14 @@ def cmd_prep(args):
             else:
                 for entry in built:
                     fmt, out, remote = entry[0], entry[1], entry[2]
-                    act = executor_mod.Action(
-                        host=host, cred=cred, command=None, label=f"prep:{fmt}",
-                        safety="config-change", upload=(out, remote),
-                        creates=[(f"prepped {fmt} at {remote}", f"del {remote}")])
-                    res = executor_mod.execute(store, act, allow=["read-only", "config-change"],
-                                               on_event=lambda m: print(m))
-                    if res.blocked or not res.ok:
-                        _err(f"stage failed: {res.blocked or 'upload error'}")
+                    # put-file, or download-stage over the exec transport (e.g. MSSQL-only).
+                    ok, how = _provision_to_target(
+                        store, host, cred, out, remote, f"prep:{fmt}",
+                        ["read-only", "config-change"], cfg)
+                    if not ok:
+                        _err(f"stage failed: {how}")
                         return 1
-                    entry[4] = remote
+                    entry[4] = f"{remote} ({how})"
 
     _render_prep(vector, built)
     return 0
@@ -770,6 +772,28 @@ def _render_prep(vector, built):
         print(f"  {i}. {step}")
     if pb.restore:
         print(f"\nrestore/cleanup: {pb.restore}")
+
+
+def cmd_preflight(args):
+    rows = preflight_mod.check()
+    print("preflight — external tools fieldkit drives:\n")
+    for label, found, alts, required in rows:
+        if found:
+            mark, val = "OK ", found
+        elif required:
+            mark, val = "!! ", "MISSING — required"
+        else:
+            mark, val = "-- ", "not installed"
+        alt = f"   (any of: {', '.join(alts)})" if not found and len(alts) > 1 else ""
+        print(f"  {mark} {label:<40} {val}{alt}")
+    missing = preflight_mod.missing_required(rows)
+    print("\nbuild toolchain detail: `fieldkit poc --check`   ·   "
+          "staged exploits: `fieldkit arsenal check`")
+    if missing:
+        print(f"\n{_plural(len(missing), 'required tool')} missing — the credential loop "
+              "needs netexec + impacket.")
+        return 1
+    return 0
 
 
 def cmd_poc(args):
@@ -1400,6 +1424,14 @@ def build_parser():
     p_poc.add_argument("--source", metavar="FILE", help="compile this .c with mingw (exe/dll)")
     p_poc.add_argument("--check", action="store_true", help="report which builders are installed")
     p_poc.set_defaults(func=cmd_poc)
+
+    p_preflight = sub.add_parser(
+        "preflight", help="check which tools fieldkit drives are installed on PATH",
+        description="Lists the external tools fieldkit drives (netexec + impacket are the "
+                    "spine; certipy/evil-winrm/msfvenom/wixl/gcc/mingw/pandoc are "
+                    "per-feature) and whether each is on PATH. Exits non-zero if a required "
+                    "tool is missing.")
+    p_preflight.set_defaults(func=cmd_preflight)
 
     p_prep = sub.add_parser(
         "prep", help="build a manual route's artifact + print where to place it and the steps",

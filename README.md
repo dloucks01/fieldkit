@@ -41,6 +41,8 @@ add cred/hosts → spray (loop: loot → promote → re-spray) → enum → anal
 ## Quick start
 
 ```bash
+bin/fieldkit preflight                             # optional: are the tools it drives on PATH?
+
 # one engagement = one database in the working directory
 bin/fieldkit init 'ACME internal'
 bin/fieldkit config set lhost=10.10.14.7 lport=443 domain=corp.local
