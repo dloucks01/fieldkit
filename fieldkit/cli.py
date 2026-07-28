@@ -22,10 +22,10 @@ from datetime import datetime, timezone
 
 from . import (__version__, config as config_mod, creds as creds_mod,
                evasion as evasion_mod, executor as executor_mod, hostenum as hostenum_mod,
-               adcs as adcs_mod, bridge as bridge_mod, delegation as delegation_mod,
-               ingest as ingest_mod, kb as kb_mod, kerberos as kerberos_mod, lab as lab_mod,
-               privesc as privesc_mod, report as report_mod, scope as scope_mod,
-               spray as spray_mod)
+               adcs as adcs_mod, bloodhound as bloodhound_mod, bridge as bridge_mod,
+               delegation as delegation_mod, ingest as ingest_mod, kb as kb_mod,
+               kerberos as kerberos_mod, lab as lab_mod, privesc as privesc_mod,
+               report as report_mod, scope as scope_mod, spray as spray_mod)
 from .errors import ConfirmationError, FieldkitError
 from .state import DB_ENV_VAR, Store, default_db_path
 
@@ -590,6 +590,31 @@ def cmd_roast(args):
     return 0
 
 
+def cmd_bloodhound_import(args):
+    if not os.path.exists(args.path):
+        _err(f"{args.path}: no such file or directory")
+        return 2
+    with _open_store(args) as store:
+        store.require_engagement()
+        try:
+            counts = bloodhound_mod.import_graph(store, args.path)
+        except ValueError as exc:
+            _err(str(exc))
+            return 2
+        paths = bloodhound_mod.owned_paths(store)
+    print(f"imported {counts['nodes']} nodes, {counts['edges']} edges "
+          f"({counts['high_value']} high-value)")
+    if paths:
+        print(f"\n{_plural(len(paths), 'owned principal')} reach a high-value target:")
+        for p in paths[:10]:
+            print(f"  {p['path']}")
+        print("\n`fieldkit analyze` ranks these among the next moves.")
+    else:
+        print("no owned principal reaches a high-value target yet — "
+              "own more credentials (spray/roast) and re-check with `fieldkit analyze`.")
+    return 0
+
+
 def cmd_delegation(args):
     with _open_store(args) as store:
         store.require_engagement()
@@ -927,6 +952,16 @@ def build_parser():
                          help="which roast (default: both)")
     p_roast.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
     p_roast.set_defaults(func=cmd_roast)
+
+    p_bh = sub.add_parser("bloodhound", help="ingest SharpHound data + find owned→DA paths")
+    bh_sub = p_bh.add_subparsers(dest="bloodhound_command", metavar="<action>")
+    b_import = bh_sub.add_parser(
+        "import", help="load SharpHound JSON (zip/dir) and path-find from owned creds",
+        description="Stores the AD control graph (MemberOf/AdminTo/dangerous ACEs) and "
+                    "reports which owned principals reach a high-value target.")
+    b_import.add_argument("path", help="SharpHound .zip, a directory of JSON, or a .json")
+    b_import.set_defaults(func=cmd_bloodhound_import)
+    p_bh.set_defaults(func=lambda a: _missing(p_bh))
 
     p_deleg = sub.add_parser(
         "delegation", help="find Kerberos delegation (unconstrained/constrained/RBCD)",

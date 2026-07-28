@@ -210,6 +210,21 @@ def _delegation(store):
                        "SPN, computer, or ACL entry) — track and revert it.")
 
 
+def _bloodhound_paths(store):
+    from . import bloodhound  # lazy — only when a graph is loaded
+    for p in bloodhound.owned_paths(store):
+        yield Opportunity(
+            key=f"bh:{p['cred_id']}:{p['target']}",
+            title=f"BloodHound path — {p['owned']} → {p['target']} ({p['hops']} hops)",
+            exploitability="high", safety="read-only", detection="quiet",
+            detail=f"an owned principal reaches a high-value target: {p['path']}",
+            evidence=p["path"],
+            next_step="walk the edges — MemberOf is automatic, AdminTo → dump the host, "
+                      "an ACL edge → grant yourself / add a shadow credential.",
+            safe_proof="the path is read from collected graph data; each edge is proven "
+                       "before you act on it.")
+
+
 #: The registry. Append a predicate to extend the KB; order here does not matter —
 #: output is sorted by score.
 PREDICATES = (
@@ -221,6 +236,7 @@ PREDICATES = (
     _roastable_loot,
     _adcs_templates,
     _delegation,
+    _bloodhound_paths,
 )
 
 

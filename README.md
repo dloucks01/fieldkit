@@ -25,7 +25,7 @@ your existing kit).
 | **1.5** | Defender lab harness (`lab test`), `evasion.py`, technique green/red matrix, `posture` | **done** |
 | **2** | transports, executor with capture + safety gate, `enum`, per-vector privesc drivers, `run` | **done** |
 | **3** | `report` (`--check`, md/docx/pdf, cleanup manifest) + recce bridge (`export-recce`) | **done** |
-| 4 | Kerberos/delegation/ADCS/BloodHound depth | planned |
+| **4** | Kerberos (`roast`), `delegation`, ADCS (`adcs find`), BloodHound (`bloodhound import`) | **done** |
 
 Reporting now runs from the engagement database (`fieldkit report` / `export-recce`);
 the v1 `report/gen_report.py` is kept for reference and its recce contract stays green.
@@ -62,6 +62,12 @@ bin/fieldkit ingest nxc capture.txt                     # or fold in a spray you
 bin/fieldkit enum 10.0.0.7                              # read-only, feeds analyze
 bin/fieldkit analyze --proof                            # loop opportunities + privesc vectors
 bin/fieldkit run 10.0.0.7 sudo:find                     # read-only vector; --allow for riskier
+
+# 4b) go wide in AD — each records findings that analyze ranks and report writes up
+bin/fieldkit roast --dc 10.0.0.10                       # kerberoast + AS-REP -> crackable loot
+bin/fieldkit delegation --dc 10.0.0.10                  # unconstrained/constrained/RBCD
+bin/fieldkit adcs find --dc 10.0.0.10                   # vulnerable cert templates (ESC1-16)
+bin/fieldkit bloodhound import loot.zip                 # owned-principal -> Domain Admin paths
 
 # 5) write it up — straight from the captured evidence in state
 bin/fieldkit report --check                             # anti-fabrication gate
@@ -127,7 +133,7 @@ A wrong-format credential is caught at input, not forty hosts into a spray. Pass
 
 | Path | What |
 |---|---|
-| `fieldkit/` | the v2 package — state/config/creds/scope, the loop (`netexec`, `ingest`, `spray`, `dump`, `kb`), execution (`transport`, `executor`, `runner`, `hostenum`, `privesc`), evasion (`evasion`, `lab`), and reporting (`report`, `reportkb`, `bridge`) |
+| `fieldkit/` | the v2 package — state/config/creds/scope, the loop (`netexec`, `ingest`, `spray`, `dump`, `kb`), execution (`transport`, `executor`, `runner`, `hostenum`, `privesc`), AD depth (`kerberos`, `delegation`, `adcs`, `bloodhound`), evasion (`evasion`, `lab`), and reporting (`report`, `reportkb`, `bridge`) |
 | `bin/fieldkit` | run it from a clone without installing |
 | `tests/` | unit tests + the recce integration contract |
 | `report/` | v1 findings → Markdown + DOCX + PDF (ported in Phase 3) |

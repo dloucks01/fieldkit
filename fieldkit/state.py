@@ -215,9 +215,34 @@ _V3 = [
     """,
 ]
 
+# v4: a BloodHound graph — nodes (principals) + control edges (MemberOf, AdminTo,
+# dangerous ACEs), so analyze can path-find from an owned principal to a high-value
+# target. Re-import replaces the graph (see bh_reset).
+_V4 = [
+    """
+    CREATE TABLE bh_node (
+        sid        TEXT PRIMARY KEY,
+        name       TEXT,
+        ntype      TEXT,
+        high_value INTEGER NOT NULL DEFAULT 0
+    )
+    """,
+    """
+    CREATE TABLE bh_edge (
+        id   INTEGER PRIMARY KEY,
+        src  TEXT NOT NULL,
+        dst  TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        UNIQUE (src, dst, kind)
+    )
+    """,
+    "CREATE INDEX ix_bh_edge_src ON bh_edge(src)",
+    "CREATE INDEX ix_bh_node_name ON bh_node(name)",
+]
+
 #: (version, [statements]) applied in order; a database records the last applied
 #: version in PRAGMA user_version. Append to migrate; never edit a shipped entry.
-MIGRATIONS = [(1, _V1), (2, _V2), (3, _V3)]
+MIGRATIONS = [(1, _V1), (2, _V2), (3, _V3), (4, _V4)]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -635,6 +660,44 @@ class Store:
 
     def evasion_results(self):
         return self.conn.execute("SELECT * FROM evasion ORDER BY technique").fetchall()
+
+    # -- bloodhound graph ---------------------------------------------------
+
+    def bh_reset(self):
+        """Drop the current graph so a re-import replaces it wholesale."""
+        with self._write():
+            self.conn.execute("DELETE FROM bh_edge")
+            self.conn.execute("DELETE FROM bh_node")
+
+    def bh_add_node(self, sid, name=None, ntype=None, high_value=False):
+        with self._write():
+            self.conn.execute(
+                "INSERT INTO bh_node (sid, name, ntype, high_value) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(sid) DO UPDATE SET name=COALESCE(excluded.name, bh_node.name), "
+                "ntype=COALESCE(excluded.ntype, bh_node.ntype), "
+                "high_value=MAX(bh_node.high_value, excluded.high_value)",
+                (sid, name, ntype, int(bool(high_value))))
+
+    def bh_add_edge(self, src, dst, kind):
+        with self._write():
+            self.conn.execute(
+                "INSERT OR IGNORE INTO bh_edge (src, dst, kind) VALUES (?, ?, ?)",
+                (src, dst, kind))
+
+    def bh_nodes(self):
+        return self.conn.execute("SELECT * FROM bh_node").fetchall()
+
+    def bh_node(self, sid):
+        return self.conn.execute("SELECT * FROM bh_node WHERE sid = ?", (sid,)).fetchone()
+
+    def bh_edges(self):
+        return self.conn.execute("SELECT src, dst, kind FROM bh_edge").fetchall()
+
+    def bh_counts(self):
+        n = self.conn.execute("SELECT COUNT(*) FROM bh_node").fetchone()[0]
+        e = self.conn.execute("SELECT COUNT(*) FROM bh_edge").fetchone()[0]
+        hv = self.conn.execute("SELECT COUNT(*) FROM bh_node WHERE high_value=1").fetchone()[0]
+        return {"nodes": n, "edges": e, "high_value": hv}
 
     # -- analysis (what `analyze` ranks) ------------------------------------
 
