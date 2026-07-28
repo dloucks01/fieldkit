@@ -10,7 +10,7 @@ tools it drives are the operator's existing kit. Authorized engagements only.
 
 ```bash
 bin/fieldkit <command>          # shim for `python3 -m fieldkit` (run from a clone)
-python3 -m pytest -q            # 355 tests, ~0.8s, no network/subprocess/tools needed
+python3 -m pytest -q            # 412 tests, ~1.2s, no network/subprocess/tools needed
 python3 -m pyflakes fieldkit/ tests/   # keep clean before committing
 ```
 
@@ -24,12 +24,13 @@ out to real tools. Nothing in the package does I/O at import time.
 add cred/hosts → spray (nxc) → parse (Pwn3d!) → loot admin hosts (SAM/LSA/NTDS/roast)
       ↑                                                        │
       └──────────────── promote recovered secrets ────────────┘
-              → enum foothold → analyze (rank next moves) → run vector → report
+              → enum foothold → analyze (rank next moves) → run/escalate vector → report
 ```
 
 Everything is a projection of one SQLite store. `spray` reuses each account's *own*
 proven secret (lockout-safe by construction); `analyze` ranks what state proves;
-`report` renders the captured evidence.
+`run` fires one vector while `escalate` walks the whole ranked list along the classifier's
+fallback axis; `report` renders the captured evidence.
 
 ## Module map (`fieldkit/`)
 
@@ -37,7 +38,7 @@ proven secret (lockout-safe by construction); `analyze` ranks what state proves;
 |---|---|---|
 | Foundation | `state.py`, `config.py`, `creds.py`, `scope.py`, `errors.py` | SQLite store (+migrations), engagement config, the canonical credential model + per-tool renderers, scope parsing, one error family |
 | Loop | `netexec.py`, `ingest.py`, `spray.py`, `dump.py`, `kb.py` | parse nxc `(Pwn3d!)`/`--pass-pol`; fold captures into state; the live spray loop; parse SAM/LSA/NTDS → loot→creds; the opportunity KB + three-axis ranking |
-| Execution | `transport.py`, `executor.py`, `runner.py`, `hostenum.py`, `privesc.py` | run a command on a host (nxc `-x`/ssh); the safety gate + evidence capture; the one subprocess spawn; OS enum → `HostFacts`; privesc vectors (GTFOBins/caps/Se*/…) |
+| Execution | `transport.py`, `executor.py`, `runner.py`, `hostenum.py`, `privesc.py`, `classify.py`, `escalate.py` | run a command on a host (nxc `-x`/ssh); the safety gate + evidence capture; the one subprocess spawn; OS enum → `HostFacts`; privesc vectors (GTFOBins/caps/Se*/…); the inspectable failure classifier (output→`Verdict`+fallback axis); the orchestrator that walks that axis over the ranked vectors |
 | AD depth | `kerberos.py`, `delegation.py`, `adcs.py`, `bloodhound.py` | roasting → loot; `--find-delegation`; certipy ESC1-16; SharpHound graph + owned→DA pathfinding |
 | Evasion | `evasion.py`, `lab.py` | technique catalog + assume-caught model; Defender lab harness (EICAR-gated) |
 | Reporting | `report.py`, `reportkb.py`, `bridge.py` | build+render+`--check`+cleanup from state; the remediation KB (~80 vector_types); the recce export contract |

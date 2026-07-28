@@ -22,7 +22,8 @@ from datetime import datetime, timezone
 from . import (__version__, adcs as adcs_mod, arsenal as arsenal_mod,
                bloodhound as bloodhound_mod, bridge as bridge_mod,
                classify as classify_mod, config as config_mod, creds as creds_mod,
-               delegation as delegation_mod, evasion as evasion_mod,
+               delegation as delegation_mod, escalate as escalate_mod,
+               evasion as evasion_mod,
                executor as executor_mod, hostenum as hostenum_mod, ingest as ingest_mod,
                kb as kb_mod, kerberos as kerberos_mod, lab as lab_mod,
                privesc as privesc_mod, report as report_mod, scope as scope_mod,
@@ -469,6 +470,110 @@ def cmd_run(args):
     if vector.cleanup:
         print(f"cleanup recorded: {vector.cleanup}")
     return 0
+
+
+def _host_vectors(store, cfg, host_ip):
+    """The ranked privesc vectors for one host from current enum facts."""
+    return [v for v in privesc_mod.vectors_from_state(store, **_stage_dirs(cfg))
+            if v.host == host_ip]
+
+
+def cmd_escalate(args):
+    if args.rules:
+        print(escalate_mod.describe_policy())
+        return 0
+    if not args.host:
+        _err("an IP is required (or pass --rules to see the policy)")
+        return 2
+    with _open_store(args) as store:
+        store.require_engagement()
+        cfg = config_mod.load(store)
+        host, cred, err = _resolve_target(store, args.host)
+        if err:
+            _err(err)
+            return 2
+        vectors = _host_vectors(store, cfg, args.host)
+        if not vectors:
+            _err(f"no privesc vectors on {args.host} — run `fieldkit enum {args.host}` "
+                 "then `fieldkit analyze` first")
+            return 2
+        allow = ["read-only"] + list(args.allow or [])
+
+        # the plan, before anything runs: what the loop would try, in order.
+        gated = [v for v in vectors if not executor_mod.gate(v.safety, allow)]
+        runnable = [v for v in vectors if executor_mod.gate(v.safety, allow)]
+        print(f"escalation plan for {args.host} — {_plural(len(vectors), 'vector')} ranked, "
+              f"blast radius {'/'.join(allow)}:")
+        for v in vectors:
+            mark = " (gated — needs --allow %s)" % v.safety if v in gated else ""
+            print(f"  {v.key:<24} {v.axes:<18} {v.safety}{mark}")
+        if not runnable:
+            _err("every vector is above the current --allow — re-run with --allow "
+                 "config-change (and/or crash-risk) once you accept the blast radius")
+            return 2
+        if args.dry_run:
+            print(f"\ndry run — nothing fired. {_plural(len(runnable), 'vector')} would run.")
+            return 0
+
+        budget = args.max if args.max is not None else escalate_mod.DEFAULT_BUDGET
+        if not _confirm(
+                f"walk the escalation loop on {args.host}? fires up to "
+                f"{min(budget, len(runnable))} vector(s) on the target, stopping at the "
+                "first proof", args.yes):
+            print("aborted — nothing ran")
+            return 1
+
+        results = {}
+
+        def fire(vector):
+            action = executor_mod.Action(
+                host=host, cred=cred, command=vector.command,
+                label=f"escalate:{vector.key}", safety=vector.safety, shell=vector.shell)
+            res = executor_mod.execute(store, action, allow=allow,
+                                       on_event=lambda m: print(m))
+            results[vector.key] = res
+            return res
+
+        print("\n--- escalating ---")
+        outcome = escalate_mod.escalate(
+            vectors, fire=fire, allow=allow, os_name=host["os"],
+            budget=budget, on_event=lambda m: print(m))
+
+        if outcome.ok:
+            v = outcome.proven
+            vtype = v.report_type or v.key.split(":", 1)[0]
+            evidence = (results[v.key].output or "").strip()[:500]
+            store.add_finding(vtype, v.title, host_id=host["id"], proven=True,
+                              evidence=evidence)
+            if v.cleanup:
+                store.add_artifact(f"{v.title} (artifact)", cleanup_cmd=v.cleanup,
+                                   host_id=host["id"])
+
+    _print_escalation_outcome(outcome)
+    return 0 if outcome.ok else 1
+
+
+def _print_escalation_outcome(outcome):
+    print("\n--- trail ---")
+    for a in outcome.attempts:
+        if a.verdict is not None:
+            print(f"  {a.action:<8} {a.vector.key:<24} {a.verdict.outcome} — {a.note}")
+        else:
+            print(f"  {a.action:<8} {a.vector.key:<24} {a.note}")
+    print("---")
+    if outcome.ok:
+        v = outcome.proven
+        print(f"PROVEN: {v.title} elevated on {v.host}. Recorded as a finding"
+              + (f"; cleanup: {v.cleanup}" if v.cleanup else "") + ".")
+    elif outcome.stopped == "surfaced":
+        print("STOPPED: a result the classifier does not recognise — shown above. "
+              "Inspect it before continuing (`fieldkit arsenal rules`).")
+    elif outcome.stopped == "budget":
+        print("STOPPED: attempt budget reached before proof — raise it with --max or "
+              "narrow the plan.")
+    else:
+        print("no vector proved elevation — every ranked move was tried. See the trail "
+              "for the per-vector verdict and its recommended manual step.")
 
 
 def cmd_lab_test(args):
@@ -967,6 +1072,26 @@ def build_parser():
                        help="permit a riskier vector (repeatable)")
     p_run.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
     p_run.set_defaults(func=cmd_run)
+
+    p_esc = sub.add_parser(
+        "escalate", help="walk the ranked vectors automatically, stopping at first proof",
+        description="The orchestrator: fires the best-ranked vector on a host, classifies "
+                    "the result, and follows the fallback axis — advance to the next "
+                    "vector, retry a timeout, stop on proof, or halt on anything it does "
+                    "not recognise. Vectors above --allow are skipped, never fired. Every "
+                    "step is captured and the winning vector is recorded as a finding.")
+    p_esc.add_argument("host", metavar="IP", nargs="?", help="the host to escalate on")
+    p_esc.add_argument("--allow", action="append",
+                       choices=["config-change", "crash-risk"], metavar="LEVEL",
+                       help="permit riskier vectors in the loop (repeatable)")
+    p_esc.add_argument("--max", type=int, metavar="N",
+                       help=f"cap vectors fired (default {escalate_mod.DEFAULT_BUDGET})")
+    p_esc.add_argument("--dry-run", action="store_true",
+                       help="print the ranked plan and exit without firing")
+    p_esc.add_argument("--rules", action="store_true",
+                       help="print the axis→action policy table and exit")
+    p_esc.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
+    p_esc.set_defaults(func=cmd_escalate)
 
     p_lab = sub.add_parser(
         "lab", help="prove evasion techniques against a Defender lab host")
