@@ -190,6 +190,17 @@ def _clean_host(token):
     return None if token in ("None", "") else token
 
 
+def strip_prefix(line):
+    """Return the message body of an nxc line (everything after PROTO/IP/PORT/HOST).
+
+    A raw secretsdump paste with no nxc prefix is returned unchanged, so ``dump``
+    parses tool output whether it came through nxc or straight from impacket.
+    """
+    clean = _ANSI.sub("", line).rstrip()
+    m = _LINE.match(clean)
+    return m.group("body") if m else clean.strip()
+
+
 def parse_line(line):
     """Parse one nxc output line into a :class:`HostInfo`, :class:`AuthResult`, or
     ``None`` when the line is not one nxc auth/banner line we model."""

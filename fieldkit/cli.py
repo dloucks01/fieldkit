@@ -18,7 +18,7 @@ import sqlite3
 import sys
 
 from . import (__version__, config as config_mod, creds as creds_mod,
-               ingest as ingest_mod, scope as scope_mod)
+               ingest as ingest_mod, scope as scope_mod, spray as spray_mod)
 from .errors import ConfirmationError, FieldkitError
 from .state import DB_ENV_VAR, Store, default_db_path
 
@@ -244,6 +244,47 @@ def cmd_ingest_nxc(args):
     return 0
 
 
+def cmd_spray(args):
+    if args.proto not in spray_mod.PROTOCOLS:
+        _err(f"unknown proto {args.proto!r} — one of {', '.join(spray_mod.PROTOCOLS)}")
+        return 2
+    with _open_store(args) as store:
+        store.require_engagement()
+        cfg = config_mod.load(store)
+        hosts = store.hosts(subnet=args.subnet)
+        creds = store.credentials()
+        if not hosts:
+            _err("no hosts in scope" + (f" for {args.subnet}" if args.subnet else "")
+                 + " — run `fieldkit add hosts` first")
+            return 2
+        if not creds:
+            _err("no credentials to spray — run `fieldkit add cred` first")
+            return 2
+
+        question = (f"validate {_plural(len(creds), 'credential')} across "
+                    f"{_plural(len(hosts), 'host')} on {args.proto}? this runs nxc "
+                    "against the client")
+        if not _confirm(question, args.yes):
+            print("aborted — nothing ran")
+            return 1
+
+        report = spray_mod.spray_loop(
+            store, cfg, proto=args.proto, subnet=args.subnet, loot=not args.no_loot,
+            with_policy=not args.no_policy, dc_ip=args.dc, timeout=args.timeout,
+            on_event=lambda m: print(m))
+
+    if report.aborted:
+        _err(report.aborted)
+        return 2
+    print(f"\ndone in {report.rounds} round(s): "
+          f"{report.valid} valid, {report.admin} admin; "
+          f"looted {_plural(report.hosts_looted, 'host')}, "
+          f"recovered {_plural(report.creds_recovered, 'credential')}")
+    if report.creds_recovered:
+        print("re-run `fieldkit spray` to chase the recovered credentials further")
+    return 0
+
+
 def cmd_status(args):
     with _open_store(args) as store:
         row = store.require_engagement()
@@ -374,6 +415,27 @@ def build_parser():
     i_nxc.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
     i_nxc.set_defaults(func=cmd_ingest_nxc)
     p_ingest.set_defaults(func=lambda a: _missing(p_ingest))
+
+    p_spray = sub.add_parser(
+        "spray", help="validate stored creds across scope and run the credential loop",
+        description="Sprays every stored credential across the scope on one protocol, "
+                    "records who is valid and who is admin ((Pwn3d!)), dumps SAM+LSA on "
+                    "owned hosts, promotes recovered secrets to credentials, and repeats "
+                    "until dry. Reuses each account's own proven secret, so it cannot "
+                    "lock a domain account.")
+    p_spray.add_argument("proto", nargs="?", default="smb",
+                         help=f"protocol: {', '.join(spray_mod.PROTOCOLS)} (default: smb)")
+    p_spray.add_argument("--subnet", metavar="CIDR", help="limit to one segment")
+    p_spray.add_argument("--dc", metavar="IP", help="read the lockout policy from this DC")
+    p_spray.add_argument("--no-loot", action="store_true",
+                         help="do not dump SAM/LSA on owned hosts")
+    p_spray.add_argument("--no-policy", action="store_true",
+                         help="skip reading the domain password policy first")
+    p_spray.add_argument("--timeout", type=int, default=600,
+                         help="per-command timeout in seconds (default: %(default)s)")
+    p_spray.add_argument("-y", "--yes", action="store_true",
+                         help="run without the confirm-back")
+    p_spray.set_defaults(func=cmd_spray)
 
     p_status = sub.add_parser("status", help="the engagement board")
     p_status.add_argument("--hosts", action="store_true", help="list every host")

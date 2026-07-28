@@ -381,6 +381,10 @@ class Store:
         return self.conn.execute(
             "SELECT * FROM credential ORDER BY domain, username, id").fetchall()
 
+    def credential_by_id(self, cred_id):
+        return self.conn.execute(
+            "SELECT * FROM credential WHERE id = ?", (cred_id,)).fetchone()
+
     def find_credential(self, cred):
         """The stored row matching this :class:`~fieldkit.creds.Credential`, or None.
 
@@ -438,6 +442,17 @@ class Store:
         return self.conn.execute(
             "SELECT * FROM access WHERE host_id = ? ORDER BY admin DESC, id",
             (host_id,)).fetchall()
+
+    def admin_credential_for(self, host_id):
+        """A credential that holds admin on this host — the key the loot step uses.
+
+        Prefers a full-secret credential (password/hash both dump fine, but a plain
+        password is the least surprising to see in the captured command)."""
+        return self.conn.execute(
+            "SELECT c.* FROM credential c JOIN access a ON a.cred_id = c.id "
+            "WHERE a.host_id = ? AND a.admin = 1 "
+            "ORDER BY (c.secret_type = 'password') DESC, a.id LIMIT 1",
+            (host_id,)).fetchone()
 
     # -- loot ---------------------------------------------------------------
 
