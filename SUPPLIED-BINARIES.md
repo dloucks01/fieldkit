@@ -5,6 +5,11 @@ does **not** ship (same model as any air-gapped toolkit). **Pre-stage everything
 engagement** — `preflight.sh` checks your *tools*; this checklist covers the *artifacts*. Grab from source,
 verify, and drop into the directory you serve (`python3 -m http.server 80`) or your no-net stager.
 
+> **Automate it:** [`exploits/fetch.sh`](exploits/) pulls this whole list (and more) from
+> [`exploits/manifest.tsv`](exploits/manifest.tsv) on a connected staging box, then `--pack`s it for
+> transfer to the air-gapped host. `sh exploits/fetch.sh --list` to preview. The manifest is the source of
+> truth — this page is the human-readable version of it.
+
 > **AV note:** items marked ⚠ are **flagged by hash** on any modern AV (public tools). **Recompile from source**
 > (fresh hash) or use a maintained fork; do not drop the stock release on a monitored host. See the AV/EDR
 > section in each `CHEATSHEET.md`.
