@@ -17,7 +17,8 @@ import os
 import sqlite3
 import sys
 
-from . import __version__, config as config_mod, creds as creds_mod, scope as scope_mod
+from . import (__version__, config as config_mod, creds as creds_mod,
+               ingest as ingest_mod, scope as scope_mod)
 from .errors import ConfirmationError, FieldkitError
 from .state import DB_ENV_VAR, Store, default_db_path
 
@@ -53,8 +54,12 @@ def _confirm(question, assume_yes=False):
     return answer in ("y", "yes")
 
 
+def _word(n, word):
+    return word if n == 1 else word + "s"
+
+
 def _plural(n, word):
-    return f"{n} {word}{'' if n == 1 else 's'}"
+    return f"{n} {_word(n, word)}"
 
 
 # ------------------------------------------------------------------------ handlers
@@ -200,6 +205,45 @@ def cmd_add_hosts(args):
     return 0 if not errors else 1
 
 
+def cmd_ingest_nxc(args):
+    if args.file and args.file != "-":
+        with open(args.file, "r", errors="replace") as fh:
+            text = fh.read()
+    elif sys.stdin.isatty():
+        _err("no capture given — pass a file or pipe nxc output on stdin")
+        return 2
+    else:
+        text = sys.stdin.read()
+
+    intent = ingest_mod.classify_nxc(text)
+    if not intent.hosts and not intent.creds:
+        _err("nothing recognizable in that capture — no [+] auth lines or [*] banners")
+        return 2
+
+    admin = intent.admin
+    print(f"read {_plural(len(intent.hosts), 'host banner')}, "
+          f"{_plural(len(intent.creds), 'valid credential')}"
+          + (f" ({len(admin)} admin)" if admin else ""))
+    for cred, result in intent.creds:
+        tag = "  (Pwn3d!)" if result.admin else ""
+        print(f"  {result.proto.lower():<5} {result.ip:<15} "
+              f"{cred.principal} → {creds_mod.secret_display(cred)}{tag}")
+
+    if not _confirm("record these into the engagement?", args.yes):
+        print("aborted — nothing was stored")
+        return 1
+
+    with _open_store(args) as store:
+        store.require_engagement()
+        rep = ingest_mod.apply_nxc(store, intent, source=args.source)
+    print(f"stored {_plural(rep.creds_added, 'credential')}"
+          + (f", {rep.creds_reused} already known" if rep.creds_reused else "")
+          + f"; {rep.access_added} new access {_word(rep.access_added, 'record')}"
+          + (f" ({rep.admin_added} admin)" if rep.admin_added else "")
+          + f"; {rep.hosts_added} hosts added, {rep.hosts_enriched} enriched")
+    return 0
+
+
 def cmd_status(args):
     with _open_store(args) as store:
         row = store.require_engagement()
@@ -316,6 +360,20 @@ def build_parser():
                          help="max hosts one CIDR may expand to (default: %(default)s)")
     a_hosts.set_defaults(func=cmd_add_hosts)
     p_add.set_defaults(func=lambda a: _missing(p_add))
+
+    p_ingest = sub.add_parser("ingest", help="fold captured tool output into state")
+    ingest_sub = p_ingest.add_subparsers(dest="ingest_command", metavar="<tool>")
+    i_nxc = ingest_sub.add_parser(
+        "nxc", help="record a saved netexec capture (valid creds + (Pwn3d!) access)",
+        description="Reads nxc output from a file or stdin, records every [+] "
+                    "credential and (Pwn3d!) admin result, and enriches scope from "
+                    "the [*] banners. The offline twin of `fieldkit spray`.")
+    i_nxc.add_argument("file", nargs="?", help="capture file (default: stdin)")
+    i_nxc.add_argument("--source", default="spray",
+                       help="where these results came from (default: spray)")
+    i_nxc.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
+    i_nxc.set_defaults(func=cmd_ingest_nxc)
+    p_ingest.set_defaults(func=lambda a: _missing(p_ingest))
 
     p_status = sub.add_parser("status", help="the engagement board")
     p_status.add_argument("--hosts", action="store_true", help="list every host")

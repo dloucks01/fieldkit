@@ -381,6 +381,90 @@ class Store:
         return self.conn.execute(
             "SELECT * FROM credential ORDER BY domain, username, id").fetchall()
 
+    def find_credential(self, cred):
+        """The stored row matching this :class:`~fieldkit.creds.Credential`, or None.
+
+        Same identity key as :meth:`add_credential`, so ``ingest``/``spray`` can link
+        a parsed result to a credential without risking a duplicate insert.
+        """
+        row = self.conn.execute(
+            "SELECT * FROM credential WHERE domain = ? AND username = ? AND secret = ? "
+            "AND secret_type = ? AND local_auth = ?",
+            (cred.domain or "", cred.username, cred.secret, cred.secret_type,
+             int(bool(cred.local_auth)))).fetchone()
+        return row
+
+    # -- access -------------------------------------------------------------
+
+    def add_access(self, host_id, cred_id, method, admin=False, integrity=None):
+        """Record that a credential authenticates on a host — the ``(Pwn3d!)`` set.
+
+        Keyed on ``(host_id, cred_id, method)``: re-proving the same access is a
+        no-op. An upgrade from non-admin to admin *is* applied (a later WinRM Pwn3d
+        after an SMB foothold), because the loop only ever learns more access, never
+        less. Returns ``(access_id, created)``.
+        """
+        admin = int(bool(admin))
+        with self._write():
+            row = self.conn.execute(
+                "SELECT id, admin, integrity FROM access "
+                "WHERE host_id = ? AND cred_id IS ? AND method = ?",
+                (host_id, cred_id, method)).fetchone()
+            if row is None:
+                cur = self.conn.execute(
+                    "INSERT INTO access (host_id, cred_id, method, admin, integrity, "
+                    "proven_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (host_id, cred_id, method, admin, integrity, utcnow()))
+                return cur.lastrowid, True
+            updates = {}
+            if admin and not row["admin"]:
+                updates["admin"] = admin
+            if integrity is not None and row["integrity"] != integrity:
+                updates["integrity"] = integrity
+            if updates:
+                updates["proven_at"] = utcnow()
+                self.conn.execute(
+                    "UPDATE access SET " + ", ".join(f"{k} = ?" for k in updates)
+                    + " WHERE id = ?", list(updates.values()) + [row["id"]])
+            return row["id"], False
+
+    def admin_hosts(self):
+        """Hosts we hold admin on — where the loop dumps next. Distinct host rows."""
+        return self.conn.execute(
+            "SELECT DISTINCT h.* FROM host h JOIN access a ON a.host_id = h.id "
+            "WHERE a.admin = 1 ORDER BY h.id").fetchall()
+
+    def access_on(self, host_id):
+        return self.conn.execute(
+            "SELECT * FROM access WHERE host_id = ? ORDER BY admin DESC, id",
+            (host_id,)).fetchall()
+
+    # -- loot ---------------------------------------------------------------
+
+    def add_loot(self, host_id, kind, value=None, path=None):
+        """Store a hash/ticket/file recovered from a host, before it becomes a cred.
+
+        Deduplicated on ``(host_id, kind, value)`` so re-dumping the same SAM does not
+        pile up rows. Returns ``(loot_id, created)``.
+        """
+        with self._write():
+            if value is not None:
+                row = self.conn.execute(
+                    "SELECT id FROM loot WHERE host_id IS ? AND kind = ? AND value = ?",
+                    (host_id, kind, value)).fetchone()
+                if row is not None:
+                    return row["id"], False
+            cur = self.conn.execute(
+                "INSERT INTO loot (host_id, kind, value, path, added) VALUES (?, ?, ?, ?, ?)",
+                (host_id, kind, value, path, utcnow()))
+            return cur.lastrowid, True
+
+    def loot(self, kind=None):
+        if kind:
+            return self.conn.execute(
+                "SELECT * FROM loot WHERE kind = ? ORDER BY id", (kind,)).fetchall()
+        return self.conn.execute("SELECT * FROM loot ORDER BY id").fetchall()
+
     # -- board --------------------------------------------------------------
 
     def counts(self):

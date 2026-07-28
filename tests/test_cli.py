@@ -295,5 +295,47 @@ class WorkflowTest(CliTestCase):
         self.assertEqual(cfg.lhost_for("10.0.0.5"), "10.10.14.7")
 
 
+class IngestTest(CliTestCase):
+
+    CAPTURE = f"""\
+SMB   10.0.0.6   445   DC01   [*] Windows Server 2019 Build 17763 x64 (name:DC01) (domain:corp.local) (signing:True) (SMBv1:False)
+SMB   10.0.0.6   445   DC01   [+] corp.local\\jdoe:Winter2025!
+SMB   10.0.0.7   445   WS02   [+] corp.local\\Administrator:{NT} (Pwn3d!)
+SMB   10.0.0.8   445   WS03   [-] corp.local\\jdoe:Winter2025! STATUS_LOGON_FAILURE
+"""
+
+    def test_ingest_records_creds_and_access(self):
+        self.init()
+        cap = self.write("cap.txt", self.CAPTURE)
+        out = self.run_cli("ingest", "nxc", cap, "--yes")
+        self.assertIn("2 valid credentials (1 admin)", out)
+        self.assertIn("(Pwn3d!)", out)
+        counts = self.store().counts()
+        self.assertEqual(counts["credentials"], 2)
+        self.assertEqual(counts["admin_access"], 1)
+        self.assertEqual(counts["admin_hosts"], 1)
+
+    def test_ingest_shows_hash_secret_type(self):
+        self.init()
+        cap = self.write("cap.txt", self.CAPTURE)
+        self.run_cli("ingest", "nxc", cap, "--yes")
+        types = {r["username"]: r["secret_type"] for r in self.store().credentials()}
+        self.assertEqual(types["Administrator"], "nt")
+
+    def test_ingest_empty_capture_errors(self):
+        self.init()
+        cap = self.write("noise.txt", "not an nxc line\n\n")
+        out = self.run_cli("ingest", "nxc", cap, "--yes", expect=2)
+        self.assertIn("nothing recognizable", out)
+
+    def test_ingest_reingest_is_noop(self):
+        self.init()
+        cap = self.write("cap.txt", self.CAPTURE)
+        self.run_cli("ingest", "nxc", cap, "--yes")
+        out = self.run_cli("ingest", "nxc", cap, "--yes")
+        self.assertIn("0 credentials", out)
+        self.assertEqual(self.store().counts()["credentials"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
