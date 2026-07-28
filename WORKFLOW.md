@@ -118,7 +118,7 @@ Observation legitimately has no PoC to check.
 
 | Stage | Command |
 |---|---|
-| set up | `init` · `config set/show/get/unset` |
+| set up | `preflight` · `init` · `config set/show/get/unset` |
 | scope | `add hosts <IP\|CIDR\|file>` `[--dc]` |
 | creds | `add cred <spec>` `[--from-file]` |
 | loop | `spray <proto>` · `ingest nxc <log>` |

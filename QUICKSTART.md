@@ -4,7 +4,8 @@ The short version: run an engagement start to finish. One SQLite store holds eve
 stop and resume anytime. **Authorized engagements only.**
 
 > Prereqs: your usual tools on `$PATH` (netexec/nxc, impacket, certipy, evil-winrm; for
-> `poc`: msfvenom/wixl/gcc/mingw). fieldkit is stdlib-only and drives them.
+> `poc`: msfvenom/wixl/gcc/mingw). fieldkit is stdlib-only and drives them —
+> **`fieldkit preflight`** checks which are installed.
 
 ## The run
 
