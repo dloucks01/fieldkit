@@ -60,7 +60,7 @@ Config keys that matter:
 | `domain` | AD commands (roast/delegation/adcs), cred rendering |
 | `client` / `assessor` | report header |
 | `lab_host` | `lab test` (the Defender lab) |
-| `stage_win` / `stage_lin` | where vectors stage artifacts on the target (default `C:\Windows\Temp` / `/tmp`) |
+| `stage_win` / `stage_lin` | where vectors stage artifacts (default `C:\Windows\Temp` / `/tmp`). **Comma-separated** = try each dir — a "didn't land" miss rolls to the same tool in the next writable dir. |
 | `arch` | `poc` default arch (`x64`/`x86`) |
 
 Per-subnet `lhost` overrides are supported (set/unset a subnet key) so a multi-segment
@@ -145,10 +145,11 @@ From a **non-sysadmin** login, `fieldkit mssql escalate <ip>` drives the SQL-lay
 fieldkit mssql escalate 10.0.0.9 --allow config-change
 ```
 
-It enumerates **impersonatable sysadmin logins** (`IMPERSONATE` on `sa`) and **RPC-out linked
-servers**. With `--allow config-change` it `EXECUTE AS` the sysadmin login and adds your login
-to the `sysadmin` role (verified) — a proven finding with a captured step, your access upgraded
-to admin, and a reversible cleanup (`sp_dropsrvrolemember`) recorded. It's read-only without
+With `--allow config-change` it **tries xp_cmdshell directly first** (enable + run — this works
+whether you're sysadmin *or* merely granted xp_cmdshell rights / it's already enabled), and only
+if that fails does it `EXECUTE AS` a sysadmin login and add your login to the `sysadmin` role. On
+success it records a proven finding with a captured step, upgrades your MSSQL access to admin, and
+records reversible cleanup (disable xp_cmdshell, drop the role member). It's read-only without
 `--allow` (surfaces the paths). Linked servers are recorded as observations (`EXEC ('…') AT
 [server]` is a per-host hop the operator drives). `analyze` surfaces `mssql-privesc` on a
 non-sysadmin mssql login.

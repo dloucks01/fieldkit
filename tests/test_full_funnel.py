@@ -556,6 +556,21 @@ class FullFunnelTest(unittest.TestCase):
         out = self.cli("poc", "--check")
         self.assertIn("build toolchain", out)
 
+    def test_multiple_stage_dirs_expand_into_per_dir_alternates(self):
+        # a comma-separated stage_win → each provisioned tool is tried in each dir, so a
+        # 'didn't land' miss rolls to the same tool in the next writable dir.
+        self.cli("init", "ACME")
+        self.cli("config", "set",
+                 "stage_win=C:\\Windows\\Temp,C:\\Users\\Public,C:\\ProgramData")
+        self.cli("add", "hosts", "10.0.0.7 WS02")
+        self.cli("add", "cred", "corp.local/jdoe:Winter2025!", "--yes")
+        self.cli("spray", "smb", "--yes")
+        self.cli("enum", "10.0.0.7", "--yes")
+        plan = self.cli("escalate", "10.0.0.7", "--allow", "config-change", "--dry-run")
+        for suffix in ("seimpersonate:godpotato@Temp", "seimpersonate:godpotato@Public",
+                       "seimpersonate:godpotato@ProgramData"):
+            self.assertIn(suffix, plan)
+
     def test_escalate_download_stages_a_potato_over_mssql(self):
         # MSSQL-only sysadmin: no --put-file path, so the loop download-stages GodPotato
         # (serve over HTTP, certutil fetches it over xp_cmdshell), then proves SYSTEM.

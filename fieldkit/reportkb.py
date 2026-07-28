@@ -50,6 +50,14 @@ KB = {
              "as SYSTEM.",
         rem="Run services under least-privileged Virtual/Managed Service Accounts and remove SeImpersonate where "
             "not required. Keep the OS patched (RPC/EFSRPC/DCOM hardening). Monitor for named-pipe/token abuse."),
+    "mssql_xpcmdshell": dict(sev="High", cwe="CWE-250", os="win",
+        name="MSSQL xp_cmdshell yields OS command execution as the service account",
+        desc="A SQL login can enable and run xp_cmdshell (as sysadmin, or via a granted EXECUTE / an "
+             "already-enabled procedure), executing arbitrary OS commands as the SQL Server service "
+             "account — a foothold that typically holds SeImpersonate and chains to SYSTEM.",
+        rem="Keep xp_cmdshell disabled and revoke rights to enable/run it; run SQL Server under a "
+            "least-privileged (virtual/managed) service account; restrict sysadmin membership; alert on "
+            "sp_configure changes and xp_cmdshell use."),
     "mssql_impersonation": dict(sev="High", cwe="CWE-269", os="win",
         name="MSSQL EXECUTE AS impersonation escalates a login to sysadmin",
         desc="A low-privileged SQL login holds IMPERSONATE on a sysadmin login (commonly sa). "
@@ -556,6 +564,7 @@ RISK = {
     "mssql_linked_server": "read-only",   # an enumerated observation, not exploited
     # reversible (shell-spawn / minor artifact, easily undone)
     "mssql_impersonation": "reversible",  # add/drop a sysadmin role member
+    "mssql_xpcmdshell": "reversible",     # enable/disable xp_cmdshell
     "gtfobins_suid": "reversible", "gtfobins_sudo": "reversible", "sudo_misconfig": "reversible",
     "capability": "reversible", "docker_group": "reversible", "lxd_group": "reversible", "disk_group": "reversible",
     "screen_root_session": "reversible", "uac_bypass": "reversible", "seimpersonate": "reversible",
