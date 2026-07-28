@@ -2,82 +2,133 @@
 
 The field kit for the hours between first contact and full compromise.
 
-A deterministic, air-gap-friendly toolkit for **authorized** penetration testing and security assessments,
-covering the whole funnel: **initial access → privilege escalation → novel vuln research → reporting**.
-The generators run on your **attacker** box and *print* commands driving best-in-class tools — they never execute
-anything themselves; you paste them into the target. Findings flow into a customer-ready report with PoC command
-trails and auto-filled remediation. **Standalone — clones to a base Kali box and runs with no install.**
+fieldkit is a **stateful internal-AD execution engine** for **authorized** penetration
+testing. From a credential or a foothold it ingests what you know (creds, hosts,
+service maps, tool output), drives proven external tools (netexec, impacket,
+evil-winrm) against the scope, finds the privilege-escalation opportunity on Windows
+and Linux, and reports only what it actually proved. **Standalone — clones to a base
+Kali box and runs with no install** (Python 3 stdlib only; the tools it drives are
+your existing kit).
 
-> **New here / not sure which module? → read [`START-HERE.md`](START-HERE.md)** (a decision guide by what you found).
-> **Config once:** `sh configure.sh <LHOST> <LPORT> [DOMAIN]` sets your callback across every module.
+> **v2 rebuild in progress.** v1 was a print-only cheatsheet: ~5,600 lines of
+> generators that printed commands but held no state, parsed no tool output and could
+> not be imported. That whole tree is preserved under [`archive/`](archive/) and still
+> runs; the v2 engine is being built alongside it, phase by phase. `configure.sh` is
+> gone — engagement config now lives in the engagement database (see below).
 
-## Layout — 5 stages
-| Folder | Kit | Start here |
-|--------|-----|-----------|
-| **`access/`** | **Initial access** — three surfaces; pick by what you found (see `START-HERE.md`): | `START-HERE.md` |
-| &nbsp;&nbsp;↳ **`access/network/`** | recon · spray · cred/hash→shell · service-CVEs(31) · **coercion/relay/poison · ADCS · cloud** | `access/network/CHEATSHEET.md` |
-| &nbsp;&nbsp;↳ **`access/web/`** | app exploitation → shell — SQLi · LFI · RCE(cmdi/SSTI/deserial) · upload · SSRF/XXE · **JWT · smuggling · API/GraphQL** | `access/web/CHEATSHEET.md` |
-| &nbsp;&nbsp;↳ **`access/services/`** | per-service misconfig → shell — SMB/NFS/FTP/SNMP · DBs(8) · Docker/K8s/Tomcat · rsync/VNC/Telnet/SMTP | `access/services/CHEATSHEET.md` |
-| **`winpriv/`** | Windows privesc — Potato/service/DLL/SeBackup/MSI/creds+LSASS/UAC/CVE-bucket/PATH+schtask | `winpriv/CHEATSHEET.md`, `winpriv/enum.bat` |
-| **`linpriv/`** | Linux privesc — GTFOBins/caps/CVE-exploits/sudo/LD_PRELOAD/misc-actioning/loot | `linpriv/CHEATSHEET.md`, `linpriv/enum.sh` |
-| **`novelre/`** | Novel vuln research on a binary — triage · disasm/sinks · AFL++ fuzz · sanitize · angr · crash-triage · exploit-dev · variant analysis | `novelre/CHEATSHEET.md` |
-| **`report/`** | Findings → Markdown + DOCX + PDF (evidence trail, remediation, cleanup manifest) | `report/README.md` |
+## Status
 
-**Funnel:** `access/network/enum_net.py` → `access/network/gen_spray`/`gen_shell` (or `access/web/`, `access/services/`) → **shell** → paste `winpriv/enum.bat` or `linpriv/enum.sh` → privesc → `report/`.
+| Phase | What it adds | State |
+|---|---|---|
+| **0** | state store, engagement config, credential model, `init`/`config`/`add`/`status` | **done** |
+| 1 | nxc spray + `(Pwn3d!)` parsing, loot → creds, the credential loop, `analyze` + KB detect predicates | next |
+| 1.5 | Defender lab harness, `evasion.py`, technique green/red matrix, `posture` | planned |
+| 2 | transports, executor with capture + safety gate, per-vector privesc drivers | planned |
+| 3 | report (`--check`, md/docx/pdf, cleanup manifest) + recce bridge | planned |
+| 4 | Kerberos/delegation/ADCS/BloodHound depth | planned |
+
+Until Phase 3 lands, reporting still runs through `report/gen_report.py` (v1) and the
+recce contract stays green.
 
 ## Quick start
+
 ```bash
-# 0) attacker box: verify your tooling + pre-stage supplied binaries before an (air-gapped) engagement
+# 0) attacker box: verify tooling + pre-stage supplied binaries before an (air-gapped) engagement
 sh report/preflight.sh          # checks TOOLS
-sh report/avcheck.sh            # static-signature FLOOR test of the payloads (ClamAV) — see AV note below
-#   + work through SUPPLIED-BINARIES.md  (Potato exes, CVE PoCs, PEAS, drivers — the kit doesn't ship these)
+sh report/avcheck.sh            # static-signature FLOOR test (ClamAV) — never a Defender verdict
+#   + work through SUPPLIED-BINARIES.md (Potato exes, CVE PoCs, PEAS — the kit doesn't ship these)
 
-# 1) TARGET: triage first (self-recommending — each hit names the generator to run)
-#    Windows:  paste  winpriv/enum.bat        Linux:  sh linpriv/enum.sh
+# 1) one engagement = one database in the working directory
+bin/fieldkit init 'ACME internal'
+bin/fieldkit config set lhost=10.10.14.7 lport=443 domain=corp.local
+bin/fieldkit config set lhost=192.168.56.10 --subnet 10.0.5.0/24   # segment that can't route to lhost
 
-# 2) ATTACKER: run the named generator; it PRINTS commands you paste back into the foothold
-cd winpriv  && python3 gen_winexploit.py map          # Windows: whoami/priv -> route
-cd linpriv  && python3 gtfo.py --scan "$(sudo -l)"    # Linux: sudo rule -> abuse
+# 2) tell it what you know — creds in whatever form you have them
+bin/fieldkit add cred 'CORP/jdoe:Winter2025!'         # or DOMAIN\user, user@corp.local, user:LM:NT,
+bin/fieldkit add cred --user Administrator --hash <NT> --local   #  :NT, a secretsdump line, a ccache
+bin/fieldkit add cred --from-file creds.txt
+bin/fieldkit add hosts scope.txt                       # IPs, CIDRs, or 'IP hostname' lines
 
-# 3) ATTACKER: write up what you proved
-cd report && python3 gen_report.py --init findings.json   # fill it in, then:
-python3 gen_report.py findings.json --check               # anti-fabrication gate
-python3 gen_report.py findings.json                       # -> report.md/.docx/.pdf
-python3 gen_report.py findings.json --cleanup             # INTERNAL artifact-removal manifest
+# 3) the board
+bin/fieldkit status --hosts --creds
 ```
 
-## Execution model — what runs WHERE
-- **ATTACKER box:** every `gen_*.py`/`gtfo.py` (they only print) · payload/MSI build (mingw/gcc/wixl/msfvenom) ·
-  serve/catch (`http.server`, `nc -lvnp`, `smbserver.py`) · offline crack (pypykatz/secretsdump/hashcat/john) ·
-  network actioning (psexec/nxc/evil-winrm) · reporting (pandoc/weasyprint) · the MSSQL channel (`mssqlclient.py`).
-- **TARGET:** `enum.sh`/`enum.bat` · the printed command blocks (deliver/plant/trigger/escapes) · on-target
-  compiles *only if the target has gcc* · the privesc actions themselves.
+`bin/fieldkit` is a shim for `python3 -m fieldkit`; either works from a clone. The
+database defaults to `./engagement.db` (override with `--db` or `$FIELDKIT_DB`).
 
-## Principles
-- **Enumerate and document ALL vectors, not just the first win** — each is an independent finding; the enum
-  scripts print a findings summary and the cheatsheets order routes safest-to-exploit-first.
-- **Safety on production:** each vector is risk-labeled (`read-only`→`crash-risk`) with "prove-without-breaking"
-  guidance; exhaust read-only/reversible before service-restart/config-edit; never fire a kernel exploit on prod
-  without a snapshot + sign-off. Track every change in the cleanup manifest and revert it.
-- **Evidence integrity:** record the session verbatim (`script -q engagement.log`), fill PoC steps from the log,
-  never paraphrase tool output. `gen_report.py --check` gates against empty/placeholder evidence.
-- **Configure once** per engagement in each `_*_common.py` (`LHOST`/`LPORT`/`TOOL`/`STAGE`/`REVTYPE`); hardened
-  targets use `--stagedir` (noexec `/tmp`) and `--revtype` (dash/Constrained-Language-Mode).
+**Every `add cred` echoes its interpretation before storing anything:**
+
+```
+$ fieldkit add cred 'CORP/jdoe:Winter2025!'
+parsed as → domain=CORP  user=jdoe  secret='Winter2025!' (password)  local_auth=no
+add 1 credential? [y/N]
+```
+
+A wrong-format credential is caught at input, not forty hosts into a spray. Pass
+`--yes` when scripting.
+
+## Design
+
+- **The credential loop is the spine.** `ingest → spray → parse (Pwn3d!) → dump on
+  admin hosts → recover creds → spray again`, until it goes dry. Lockout-safe by
+  construction: read the domain password policy before any spray, throttle to it.
+- **Orchestrate, don't reimplement.** fieldkit is the brain — state, the loop,
+  credential normalization, privesc analysis, reporting. netexec/impacket own the
+  protocols.
+- **One canonical credential model.** Liberal ingest, strict output: renderers emit
+  `subprocess` arg-lists, never shell strings, so a password containing quotes or
+  backslashes reaches the tool intact.
+- **Everything that runs is captured.** Verbatim stdout/stderr/exit for every executed
+  command lands in state as evidence, so the report's anti-fabrication gate passes by
+  construction.
+- **Three-axis ranking.** Vectors are ranked by exploitability × safety
+  (`read-only`→`crash-risk`) × detection risk, so the quiet, safe, precondition-met
+  path floats to the top. Each vector carries a `safe_proof` that demonstrates it
+  without detonating it, and every change lands in a cleanup manifest.
+- **Assume-caught.** Defender is on. Evasion is a ranking axis, not a bolt-on: prefer
+  native paths with no AMSI surface, treat every evasion technique as caught until
+  lab-proven, detect a runtime catch and fall back instead of re-firing.
+- **Config in state, never in source.** v1's `configure.sh` `sed`-edited LHOST into
+  tracked files — a dirty tree plus a `git checkout` could point a payload at the
+  *previous* client. Config now travels with the engagement database.
+
+## Layout
+
+| Path | What |
+|---|---|
+| `fieldkit/` | the v2 package — `state.py`, `config.py`, `creds.py`, `scope.py`, `cli.py` |
+| `bin/fieldkit` | run it from a clone without installing |
+| `tests/` | unit tests + the recce integration contract |
+| `report/` | v1 findings → Markdown + DOCX + PDF (ported in Phase 3) |
+| `exploits/` | operator-staged binaries/PoCs (air-gap); see `SUPPLIED-BINARIES.md` |
+| `archive/` | the v1 print-only tree: `access/`, `winpriv/`, `linpriv/`, `novelre/` |
+
+The engagement database holds client credentials **in the clear**. Treat it as loot:
+encrypted storage, destroyed with the rest of the evidence. It is gitignored.
 
 ## Companion: recce (enumeration + reporting)
-Pairs with [**recce**](https://github.com/dloucks01/recce), which does the enumeration/reporting half of the
-engagement. `recce fieldkit-export` seeds fieldkit's mass triage (`sweep.py triage --recce`) with the hosts it already
-found *and confirmed vulnerable*; `gen_report.py findings.json --export-recce` → `recce fieldkit-import` folds your
-proven findings back into recce's workbook + report. See **[`INTEGRATION.md`](INTEGRATION.md)**.
+
+Pairs with [**recce**](https://github.com/dloucks01/recce), which does the
+enumeration/reporting half of the engagement. `recce fieldkit-export` seeds fieldkit's
+mass triage with the hosts it already found *and confirmed vulnerable*;
+`gen_report.py findings.json --export-recce` → `recce fieldkit-import` folds your
+proven findings back into recce's workbook + report. See
+**[`INTEGRATION.md`](INTEGRATION.md)**.
 
 ## Scope
-A full **authorized-pentest** funnel: initial access (network/creds/CVE/AD/cloud · web · services) → foothold →
-novel binary vuln research → local privilege escalation → reporting. **Deliberately out of scope:** phishing /
-AiTM session-stealing (that's phishing infrastructure), persistence (a separate objective), and physical/wireless.
-**Authorized engagements only** — every module assumes you have permission for the target.
+
+Internal-network engagements from a credential or foothold through lateral movement
+and local privilege escalation to reporting. **Deliberately out of scope:** phishing /
+AiTM session-stealing, persistence, physical/wireless, and beacon/BOF-grade evasion
+(fieldkit states a path's detection risk rather than promising invisibility).
+**Authorized engagements only** — every component assumes you have permission for the
+target.
+
 ```mermaid
 flowchart LR
-  E[enum.sh / enum.bat<br/>on TARGET] --> G[gen_*.py<br/>on ATTACKER]
-  G --> P[paste commands<br/>into foothold] --> R[proven privesc]
-  R --> RP[report/ -> md/docx/pdf<br/>+ cleanup manifest]
+  I[add cred / add hosts<br/>ingest tool output] --> S[spray<br/>nxc]
+  S -->|Pwn3d!| L[loot<br/>SAM/LSA/GPP/NTDS] --> S
+  S -->|valid, not admin| F[foothold + enum] --> A[analyze<br/>rank privesc]
+  A --> R[run vector<br/>captured evidence] --> L
+  A --> RP[report -> md/docx/pdf<br/>+ cleanup manifest]
 ```

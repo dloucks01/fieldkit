@@ -1,7 +1,14 @@
 # START HERE — which module, and when
 
+> **v1 guide.** This is the decision guide for the print-only generator tree, which now lives under
+> **`archive/`** — every path below is relative to it (`archive/access/network/…`, `archive/winpriv/…`).
+> The v2 engine (`fieldkit init` / `add cred` / `add hosts` / `status`, with spray/loot/analyze landing in
+> Phase 1) is documented in [`README.md`](README.md); its knowledge is being lifted out of these modules
+> phase by phase. `configure.sh` is gone — set LHOST/LPORT/domain with `fieldkit config set`, or edit the
+> archived `_*_common.py` directly if you are running a v1 generator.
+
 The toolkit is the full engagement funnel: **get in → escalate → report.** Pick a module by **what you found**,
-not by guessing. (Config once for the whole toolkit: `sh configure.sh <LHOST> <LPORT> [DOMAIN]`.)
+not by guessing.
 
 ## 1. Getting IN — `access/` has three surfaces, and they DON'T overlap
 All of initial access lives under **`access/`**. All three surfaces end in a shell, but each attacks a

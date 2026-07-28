@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""Run fieldkit from a clone without installing it: `bin/fieldkit status`.
+
+Equivalent to `python3 -m fieldkit`; put this directory on your PATH (or symlink it
+into ~/.local/bin) and the repo stays a plain clone — no packaging, no venv.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from fieldkit.cli import main  # noqa: E402  (path set up above)
+
+if __name__ == "__main__":
+    sys.exit(main())

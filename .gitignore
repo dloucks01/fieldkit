@@ -6,6 +6,12 @@ __pycache__/
 venv/
 
 # ---- Operator working files (per-engagement, NEVER commit) ----
+# The engagement database holds client credentials in the clear — treat the file as
+# loot: keep it on encrypted storage and destroy it with the rest of the evidence.
+engagement.db
+*.db
+*.db-wal
+*.db-shm
 # Your real findings + rendered client deliverables. findings.example.json IS tracked as the template.
 findings.json
 report.md
