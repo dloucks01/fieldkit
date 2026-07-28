@@ -44,6 +44,10 @@ TRANSPORTS = (
     Transport("ssh", "ssh", LINUX, "sh", False, "-x", rank=10),
     Transport("smb", "smb", WINDOWS, "cmd", True, "-x", rank=30),
     Transport("smb-ps", "smb", WINDOWS, "powershell", True, "-X", rank=31),
+    # MSSQL command exec via xp_cmdshell — needs sysadmin (Pwn3d!); runs as the SQL
+    # service account (commonly SeImpersonate-holding), and is loud (enables xp_cmdshell,
+    # event-logged), so it sinks below SMB.
+    Transport("mssql", "mssql", WINDOWS, "cmd", True, "-x", rank=40),
 )
 
 _BY_NAME = {t.name: t for t in TRANSPORTS}

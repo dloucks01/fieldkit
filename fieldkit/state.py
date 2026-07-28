@@ -743,6 +743,15 @@ class Store:
             "WHERE a.admin = 1 AND NOT EXISTS "
             "(SELECT 1 FROM loot l WHERE l.host_id = h.id) ORDER BY h.id").fetchall()
 
+    def mssql_admin_footholds(self):
+        """Hosts where a credential is MSSQL sysadmin (Pwn3d!) — xp_cmdshell command
+        execution as the SQL service account is available."""
+        return self.conn.execute(
+            "SELECT h.ip, h.hostname, h.os, c.domain, c.username "
+            "FROM access a JOIN host h ON h.id = a.host_id "
+            "JOIN credential c ON c.id = a.cred_id "
+            "WHERE a.method = 'mssql' AND a.admin = 1 ORDER BY h.id").fetchall()
+
     def footholds_without_admin(self):
         """Hosts where a credential is valid but not admin — a foothold needing local
         privilege escalation (shell + enum)."""

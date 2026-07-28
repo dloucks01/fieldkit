@@ -36,7 +36,8 @@ class NxcIntent:
 
 
 #: the OS family a successful auth on a protocol implies, when no banner said otherwise.
-_PROTO_OS = {"SSH": "linux", "SMB": "windows", "WINRM": "windows", "RDP": "windows"}
+_PROTO_OS = {"SSH": "linux", "SMB": "windows", "WINRM": "windows", "RDP": "windows",
+             "MSSQL": "windows"}
 
 
 def _os_from_banner(info):
