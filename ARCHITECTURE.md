@@ -10,7 +10,7 @@ tools it drives are the operator's existing kit. Authorized engagements only.
 
 ```bash
 bin/fieldkit <command>          # shim for `python3 -m fieldkit` (run from a clone)
-python3 -m pytest -q            # 473 tests, ~1.7s, no network/subprocess/tools needed
+python3 -m pytest -q            # 481 tests, ~1.9s, no network/subprocess/tools needed
 python3 -m pyflakes fieldkit/ tests/   # keep clean before committing
 ```
 
@@ -92,9 +92,12 @@ Older DBs upgrade in place on open. SQLite can't drop NOT NULL — rebuild the t
   distinct `delivery` (an `evasion.TECHNIQUES` key), e.g. `privesc.WIN_IMPERSONATION`. The
   loop re-delivers along the family in `evasion.posture` order when one is caught.
 - **An auto-provisioned artifact** → give a `Vector` `stages=((arsenal_name, remote),)` (the
-  loop pushes it from the arsenal) or `builds=((fmt, remote),)` (the loop builds it via
+  loop pushes it from the arsenal) or `builds=((fmt, remote, cmd),)` (the loop builds it via
   `poc.build`, stages it, rebuilds corrected on BAD_BUILD). A new build format → one entry
   in `poc.RECIPES`/`poc.BUILDER` (drive an external builder; template only benign scaffolding).
+- **A manual (prepared) route** → set `Vector.playbook = Playbook(...)` for a route the loop
+  can't one-shot (overwrite/plant into a running service). `escalate` won't fire it; `fieldkit
+  prep <ip> <key>` builds the `builds` artifact and prints the placement + steps (+ `--stage`).
 - **An analyze opportunity** → append a predicate to `kb.PREDICATES` (reads store, yields
   `Opportunity`); AD modules already do this for roast/delegation/ADCS/BH.
 - **An evasion technique** → a row in `evasion.TECHNIQUES` (+ a `lab.PROBES` probe if

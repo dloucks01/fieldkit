@@ -183,6 +183,42 @@ open(a[a.index("-o") + 1], "w").close()
 print("wixl: wrote installer")
 '''
 
+FAKE_MSFVENOM = r'''#!/usr/bin/env python3
+import sys
+a = sys.argv[1:]
+open(a[a.index("-o") + 1], "w").close()
+print("msfvenom: payload written")
+'''
+
+# a service whose binary + dir are writable by Users (but not reconfigurable) -> the
+# manual writable-service-binary route.
+FAKE_NXC_SVC = r'''#!/usr/bin/env python3
+import sys
+a = sys.argv[1:]
+if "--put-file" in a:
+    i = a.index("--put-file")
+    print(f"[+] uploaded {a[i+1]} to {a[i+2]}")
+    sys.exit(0)
+flag = "-x" if "-x" in a else ("-X" if "-X" in a else None)
+if flag:
+    cmd = a[a.index(flag) + 1]
+    if "Win32_Service" in cmd:
+        print("SVC|VulnSvc|C:\\Apps\\vuln.exe|O:SYG:SYD:(A;;CCLCSWRPWPLOCRRC;;;AU)")
+        print("ACL|VulnSvc|C:\\Apps\\vuln.exe|C:\\Apps\\vuln.exe "
+              "BUILTIN\\Users:(F);NT AUTHORITY\\SYSTEM:(F)")
+        print("DIR|VulnSvc|C:\\Apps|C:\\Apps BUILTIN\\Users:(M)")
+    elif "wmic service" in cmd:
+        print("Name      PathName            StartMode")
+        print("VulnSvc   C:\\Apps\\vuln.exe    Auto")
+    sys.exit(0)
+if "--continue-on-success" in a:
+    print("SMB 10.0.0.7 445 WS02 [*] Windows 10 Build 19041 x64 (name:WS02) "
+          "(domain:corp.local) (signing:False) (SMBv1:False)")
+    print("SMB 10.0.0.7 445 WS02 [+] corp.local\\jdoe:Winter2025! (Pwn3d!)")
+    sys.exit(0)
+sys.exit(0)
+'''
+
 FAKE_CERTIPY = r'''#!/usr/bin/env python3
 print("""Certipy v4.8.2
 Certificate Templates
@@ -473,6 +509,40 @@ class FullFunnelTest(unittest.TestCase):
     def test_poc_check_runs_without_an_engagement(self):
         out = self.cli("poc", "--check")
         self.assertIn("build toolchain", out)
+
+    def test_prep_builds_and_playbooks_a_manual_route(self):
+        # a writable service binary can't be one-shot (overwrite a running exe) -> fieldkit
+        # builds the payload and hands over the placement steps.
+        self._install("nxc", FAKE_NXC_SVC)
+        self._install("msfvenom", FAKE_MSFVENOM)
+        build = os.path.join(self.dir, "build")
+        os.makedirs(build)
+        old = os.environ.get("FIELDKIT_BUILD")
+        os.environ["FIELDKIT_BUILD"] = build
+        self.addCleanup(lambda: os.environ.__setitem__("FIELDKIT_BUILD", old) if old
+                        else os.environ.pop("FIELDKIT_BUILD", None))
+
+        self.cli("init", "ACME")
+        self.cli("add", "hosts", "10.0.0.7 WS02")
+        self.cli("add", "cred", "corp.local/jdoe:Winter2025!", "--yes")
+        self.cli("spray", "smb", "--yes")
+        self.cli("enum", "10.0.0.7", "--yes")
+
+        # escalate surfaces the manual route but never fires it
+        plan = self.cli("escalate", "10.0.0.7", "--allow", "config-change", "--dry-run")
+        self.assertIn("writablesvc:VulnSvc", plan)
+        self.assertIn("manual", plan)
+
+        # prep builds the payload and prints where to place it + the steps
+        out = self.cli("prep", "10.0.0.7", "writablesvc:VulnSvc")
+        self.assertIn("built (attacker-side)", out)
+        self.assertIn("place at: C:\\Apps\\vuln.exe", out)
+        self.assertIn("sc stop VulnSvc", out)
+        self.assertIn("restore", out.lower())
+
+        # --stage also uploads it to the target
+        staged = self.cli("prep", "10.0.0.7", "writablesvc:VulnSvc", "--stage", "--yes")
+        self.assertIn("staged on target", staged)
 
 
 if __name__ == "__main__":  # pragma: no cover

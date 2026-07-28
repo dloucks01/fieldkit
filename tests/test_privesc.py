@@ -190,6 +190,31 @@ class WindowsDriverTest(unittest.TestCase):
         self.assertIn("binPath= C:\\Program Files\\App\\svc.exe -k net", v.cleanup)  # restored
         self.assertEqual(v.report_type, "weak_service_perms")
 
+    def test_writable_service_binary_is_a_manual_build_route(self):
+        f = HostFacts(os="windows",
+                      writable_service_bins={"AppMgmt": "C:\\Apps\\svc.exe"})
+        v = [x for x in vectors_for(f, "10.0.0.7", stage_win="C:\\stg")
+             if x.key == "writablesvc:AppMgmt"][0]
+        self.assertTrue(v.manual)                          # not auto-fired
+        self.assertEqual(v.builds[0][0], "exe")            # fieldkit builds the payload
+        self.assertIsNotNone(v.playbook)
+        self.assertEqual(v.playbook.place, "C:\\Apps\\svc.exe")
+        self.assertTrue(any("sc stop AppMgmt" in s for s in v.playbook.steps))
+        self.assertEqual(v.report_type, "writable_service_binary")
+
+    def test_dll_hijack_is_manual_and_yields_to_writable_binary(self):
+        # a writable dir alone → a DLL-hijack manual route...
+        f = HostFacts(os="windows", writable_service_dirs={"AppMgmt": "C:\\Apps"})
+        v = [x for x in vectors_for(f, "10.0.0.7") if x.key == "dllhijack:AppMgmt"][0]
+        self.assertTrue(v.manual)
+        self.assertEqual(v.builds[0][0], "dll")
+        self.assertTrue(any("Procmon" in s for s in v.playbook.steps))
+        # ...but if the binary is ALSO writable, don't offer the weaker dll route
+        f2 = HostFacts(os="windows", writable_service_dirs={"AppMgmt": "C:\\Apps"},
+                       writable_service_bins={"AppMgmt": "C:\\Apps\\svc.exe"})
+        self.assertNotIn("dllhijack:AppMgmt",
+                         {x.key for x in vectors_for(f2, "10.0.0.7")})
+
     def test_unquoted_service(self):
         f = HostFacts(os="windows",
                       unquoted_services=[(None, "C:\\Program Files\\My App\\svc.exe")])

