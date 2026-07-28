@@ -51,7 +51,10 @@ Run `fieldkit status` anytime for the board; `fieldkit analyze` re-ranks after a
 - **A vector needs a tool that isn't on the box?** `escalate` **auto-stages** it from the
   arsenal, or **auto-builds** it (`poc`) and stages it, then retries — nothing to do.
 - **A delivery gets caught by AV?** `escalate` marks it red and **climbs the delivery ladder**
-  (native → in-memory → script) automatically.
+  (native → in-memory → script) automatically. For SeImpersonate it also tries multiple
+  **Potato variants** (GodPotato, PrintSpoofer, JuicyPotatoNG, SweetPotato, SharpEfsPotato).
+- **A non-sysadmin MSSQL login?** `fieldkit mssql escalate <ip> --allow config-change` reaches
+  sysadmin (EXECUTE AS impersonation), then `enum`/`escalate` run over xp_cmdshell → SYSTEM.
 - **A route can't be one-shot** (overwrite a running service binary, plant a hijack DLL)?
   `escalate` hands it to `prep`: `fieldkit prep 10.0.0.7 writablesvc:Spooler` builds the
   payload and prints exactly where to place it and the steps.
