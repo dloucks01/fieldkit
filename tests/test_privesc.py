@@ -126,7 +126,7 @@ class WindowsDriverTest(unittest.TestCase):
     def test_iex_godpotato_is_a_fileless_served_delivery(self):
         # the in-memory rung: serve Invoke-GodPotato.ps1 and IEX it — nothing on disk.
         f = HostFacts(os="windows", privs={"SeImpersonatePrivilege"})
-        v = [x for x in vectors_for(f, "10.0.0.7") if x.key == "seimpersonate:iex-godpotato"][0]
+        v = [x for x in vectors_for(f, "10.0.0.7") if x.key == "seimpersonate:ps-godpotato"][0]
         self.assertEqual(v.delivery, "inmem-fileless")
         self.assertEqual(v.serves, ("Invoke-GodPotato.ps1",))
         self.assertEqual(v.stages, ())                    # nothing staged to disk
@@ -136,7 +136,7 @@ class WindowsDriverTest(unittest.TestCase):
     def test_assign_primary_token_maps_to_same_ladder(self):
         f = HostFacts(os="windows", privs={"SeAssignPrimaryTokenPrivilege"})
         vs = [x for x in vectors_for(f, "10.0.0.7") if x.family == "seimpersonate"]
-        self.assertEqual(len(vs), 6)   # 5 native Potato tools + the in-memory IEX rung
+        self.assertEqual(len(vs), 10)  # 5 native .exe rungs + 5 ps1 (IEX) rungs
 
     def test_stage_dir_is_substituted(self):
         f = HostFacts(os="windows", privs={"SeImpersonatePrivilege"})
@@ -152,7 +152,7 @@ class WindowsDriverTest(unittest.TestCase):
         self.assertEqual(v.stages, (("GodPotato", "C:\\stage\\GodPotato.exe"),))
         # the in-memory IEX alternate serves a script, stages nothing to disk
         inmem = [x for x in vectors_for(f, "10.0.0.7")
-                 if x.key == "seimpersonate:iex-godpotato"][0]
+                 if x.key == "seimpersonate:ps-godpotato"][0]
         self.assertEqual(inmem.stages, ())
 
     def test_backup_operators_group_route(self):
