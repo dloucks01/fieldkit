@@ -51,3 +51,6 @@ system.hive
 pre.c
 s.php
 sh.sh
+
+# kit packages built by package.sh
+*.tar.gz
