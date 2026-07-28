@@ -18,14 +18,15 @@ Design, kept parallel to :mod:`fieldkit.classify`:
     (native PE → in-memory → script). A delivery already known-caught (lab or a live
     catch this run) is skipped without firing — assume-caught applied live, so the loop
     never re-burns a burned delivery on the client. See :data:`fieldkit.privesc` families;
-  * **auto-stage a missing tool** — when a vector fails because the artifact it needs
-    is not on the target (the ``stage`` axis, or its Windows phrasing on the ``delivery``
-    axis) and the vector declares stageable artifacts, the loop pushes them from the
-    arsenal via the injected ``stage`` and re-fires the same vector once. No arsenal
-    match → it advances, carrying the classifier's "stage it" guidance;
-  * **only what the kit can actually do** — the ``build``/``rebuild`` axes still
-    ``ADVANCE`` (fieldkit deliberately owns no payload toolchain), with the classifier's
-    guidance in the trail for the operator's manual step;
+  * **auto-provision a missing artifact** — when a vector fails because the artifact it
+    needs is not on the target (the ``stage`` axis, or its Windows phrasing on the
+    ``delivery`` axis), the loop *stages* it from the arsenal (vector ``stages``) or
+    *builds* it (:mod:`fieldkit.poc`, vector ``builds``) and pushes it, then re-fires
+    once. No source → it advances, carrying the classifier's guidance;
+  * **rebuild a bad image** — a ``rebuild`` verdict (BAD_BUILD: ran but wrong
+    arch/.NET) rebuilds the vector's artifact corrected once, then re-fires. A
+    ``build`` verdict (BUILD_ERROR: the builder itself failed) advances — the toolchain,
+    not fieldkit, is what to fix;
   * **the safety gate is upheld** — a vector whose blast radius exceeds ``allow`` is
     *skipped without firing*; the loop never escalates its own authorisation;
   * **a decision trail** — every step (fired, retried, gated, skipped) is recorded, so
@@ -141,7 +142,7 @@ def order_deliveries(vectors, delivery_order):
 
 def escalate(vectors, *, fire, allow="read-only", os_name=None,
              budget=DEFAULT_BUDGET, retries=1, on_event=None,
-             delivery_order=None, caught=None, mark_caught=None, stage=None):
+             delivery_order=None, caught=None, mark_caught=None, stage=None, build=None):
     """Walk ``vectors`` (already ranked best-first) along the fallback axis.
 
     ``fire(vector) -> ExecResult`` runs one vector and is injected (the CLI wires it to
@@ -156,10 +157,12 @@ def escalate(vectors, *, fire, allow="read-only", os_name=None,
     when a delivery is caught live, so the catch persists and the same delivery is not
     re-burned.
 
-    Auto-stage: ``stage(vector) -> StageResult`` pushes a vector's declared ``stages``
-    artifacts from the arsenal. It is called once per vector when the target reports the
-    artifact missing (a :data:`STAGE_AXES` verdict); on success the vector is re-fired.
-    Returns an :class:`Outcome` with the winning vector and the full trail.
+    Auto-provision: ``stage(vector) -> StageResult`` pushes a vector's ``stages``
+    artifacts from the arsenal; ``build(vector, corrected) -> StageResult`` builds+pushes
+    its ``builds`` artifacts (``corrected=True`` rebuilds a bad image). Each is called
+    once per vector — stage/build on a missing-artifact verdict (:data:`STAGE_AXES`),
+    rebuild on a ``rebuild`` verdict — and on success the vector is re-fired. Returns an
+    :class:`Outcome` with the winning vector and the full trail.
     """
     def emit(msg):
         if on_event:
@@ -171,7 +174,8 @@ def escalate(vectors, *, fire, allow="read-only", os_name=None,
 
     vectors = order_deliveries(vectors, delivery_order)
     caught = set(caught or ())
-    staged_keys = set()
+    provisioned = set()   # vectors we've staged/built-for once (don't re-provision forever)
+    rebuilt = set()       # vectors we've rebuilt-corrected once (BAD_BUILD)
 
     fired = 0
     for vector in vectors:
@@ -210,22 +214,42 @@ def escalate(vectors, *, fire, allow="read-only", os_name=None,
             verdict = classify_mod.classify(result.run, os_name=os_name)
             axis_action = POLICY.get(verdict.axis, SURFACE)
 
-            # auto-stage: the artifact this vector needs isn't on the target. Push it from
-            # the arsenal and re-fire — once per vector, and only within budget.
-            if (verdict.axis in STAGE_AXES and stage is not None
-                    and getattr(vector, "stages", ()) and vector.key not in staged_keys
-                    and fired < budget):
-                staged_keys.add(vector.key)
-                emit(f"  stage  {vector.key}: {verdict.outcome} — staging from the arsenal")
-                sres = stage(vector)
-                if sres and sres.ok:
-                    attempts.append(Attempt(vector, STAGED, verdict, sres.detail))
-                    emit(f"  staged {vector.key}: {sres.detail} — retrying")
+            # auto-provision: the artifact this vector needs isn't on the target (a
+            # stage/delivery miss). Stage it from the arsenal, or build it (fieldkit.poc)
+            # and stage it, then re-fire — once per vector, within budget.
+            how, provision = None, None
+            if getattr(vector, "stages", ()) and stage is not None:
+                how, provision = "stage", (lambda v: stage(v))
+            elif getattr(vector, "builds", ()) and build is not None:
+                how, provision = "build", (lambda v: build(v, False))
+            if (verdict.axis in STAGE_AXES and provision
+                    and vector.key not in provisioned and fired < budget):
+                provisioned.add(vector.key)
+                emit(f"  {how:<6} {vector.key}: {verdict.outcome} — {how} then retry")
+                pres = provision(vector)
+                if pres and pres.ok:
+                    attempts.append(Attempt(vector, STAGED, verdict, pres.detail))
+                    emit(f"  staged {vector.key}: {pres.detail} — retrying")
                     continue  # re-fire the same vector, now that its artifact is present
-                # couldn't stage — advance, but say why.
-                why = sres.detail if sres else "no arsenal match"
-                attempts.append(Attempt(vector, ADVANCE, verdict, f"stage failed: {why}"))
-                emit(f"  advance  {vector.key}: {verdict.outcome} — stage failed: {why}")
+                why = pres.detail if pres else "no source"
+                attempts.append(Attempt(vector, ADVANCE, verdict, f"{how} failed: {why}"))
+                emit(f"  advance  {vector.key}: {verdict.outcome} — {how} failed: {why}")
+                break
+
+            # rebuild: the artifact ran but was the wrong image (BAD_BUILD, axis rebuild).
+            # Rebuild it corrected once, then re-fire.
+            if (verdict.axis == "rebuild" and getattr(vector, "builds", ())
+                    and build is not None and vector.key not in rebuilt and fired < budget):
+                rebuilt.add(vector.key)
+                emit(f"  rebuild {vector.key}: {verdict.outcome} — rebuilding corrected")
+                bres = build(vector, True)
+                if bres and bres.ok:
+                    attempts.append(Attempt(vector, STAGED, verdict, f"rebuilt: {bres.detail}"))
+                    emit(f"  staged {vector.key}: {bres.detail} — retrying")
+                    continue
+                why = bres.detail if bres else "rebuild failed"
+                attempts.append(Attempt(vector, ADVANCE, verdict, f"rebuild failed: {why}"))
+                emit(f"  advance  {vector.key}: {verdict.outcome} — rebuild failed: {why}")
                 break
 
             if axis_action == RETRY and tries < retries and fired < budget:
@@ -278,9 +302,11 @@ def describe_policy():
         lines.append(f"  {act:<8} {gloss}\n           axes: {axes}")
     lines.append("  gated    a vector above --allow is skipped, never fired")
     lines.append("  burned   a delivery known-caught (lab/live) is skipped, never fired")
-    lines.append("  staged   a missing artifact is pushed from the arsenal, then re-fired")
+    lines.append("  staged   a missing artifact is staged/built + pushed, then re-fired")
     lines.append("\nevasion axis: a CAUGHT fire marks its delivery red (live) and the loop "
                  "climbs\n           to the next delivery of the same objective, in posture order.")
-    lines.append("stage/delivery axes: if the vector declares stageable artifacts, the loop "
-                 "auto-\n           stages them from the arsenal and re-fires once, else advances.")
+    lines.append("stage/delivery axes: a vector's missing artifact is staged from the arsenal "
+                 "or\n           built (fieldkit.poc) and pushed, then re-fired once, else advance.")
+    lines.append("rebuild axis: a BAD_BUILD rebuilds the artifact corrected once; a BUILD_ERROR "
+                 "(the\n           builder failed) advances — fix the toolchain (`fieldkit poc --check`).")
     return "\n".join(lines)

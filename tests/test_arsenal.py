@@ -4,8 +4,8 @@
 Pinned:
 
   * parse_manifest reads the TSV; staged() scans the disk; find() resolves by name;
-  * resolve() classifies each Need — builtin/build are always ready, supplied never,
-    staged is ready only when the artifact (or a category PoC) is on disk.
+  * resolve() classifies each Need — builtin always ready, build ready iff its builder
+    is installed, supplied never, staged only when the artifact (or category PoC) is on disk.
 
 Run:  python3 -m unittest discover -s tests
 """
@@ -58,9 +58,15 @@ class StagedFindTest(ArsenalTestCase):
 
 
 class ResolveTest(ArsenalTestCase):
-    def test_builtin_and_build_always_ready(self):
+    def test_builtin_always_ready(self):
         self.assertTrue(resolve("x", Need(BUILTIN, "native"), self.root).ready)
-        self.assertTrue(resolve("x", Need(BUILD, "an exe", ("exe",)), self.root).ready)
+
+    def test_build_ready_tracks_the_toolchain(self):
+        # BUILD is ready iff its builder is installed — honest, not always-true (Phase 9).
+        from fieldkit import poc
+        need = Need(BUILD, "an exe", ("exe",))
+        self.assertEqual(resolve("x", need, self.root).ready, poc.have("exe"))
+        self.assertIn(poc.BUILDER["exe"], resolve("x", need, self.root).detail)
 
     def test_supplied_never_ready(self):
         self.assertFalse(resolve("x", Need(SUPPLIED, "byovd"), self.root).ready)
