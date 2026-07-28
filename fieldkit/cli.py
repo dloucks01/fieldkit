@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 
 from . import (__version__, config as config_mod, creds as creds_mod,
                evasion as evasion_mod, executor as executor_mod, hostenum as hostenum_mod,
-               bridge as bridge_mod, ingest as ingest_mod, kb as kb_mod,
+               adcs as adcs_mod, bridge as bridge_mod, ingest as ingest_mod, kb as kb_mod,
                kerberos as kerberos_mod, lab as lab_mod, privesc as privesc_mod,
                report as report_mod, scope as scope_mod, spray as spray_mod)
 from .errors import ConfirmationError, FieldkitError
@@ -589,6 +589,36 @@ def cmd_roast(args):
     return 0
 
 
+def cmd_adcs_find(args):
+    with _open_store(args) as store:
+        store.require_engagement()
+        dcs = [h for h in store.hosts() if h["is_dc"]]
+        dc_ip = args.dc or (dcs[0]["ip"] if dcs else None)
+        if not dc_ip:
+            _err("no DC/CA known — mark one with `add hosts --dc`, or pass --dc <ip>")
+            return 2
+        dc_host = store.host_by_ip(dc_ip)
+        if dc_host is None:
+            _err(f"{dc_ip} is not in scope — add it with `fieldkit add hosts`")
+            return 2
+        cred = _domain_credential(store)
+        if cred is None:
+            _err("certipy needs a domain credential — add one with `fieldkit add cred`")
+            return 2
+        principal = creds_mod.Credential.from_row(cred).principal
+        if not _confirm(f"enumerate vulnerable certificate templates on {dc_ip} as "
+                        f"{principal}? (certipy find, read-only)", args.yes):
+            print("aborted — nothing ran")
+            return 1
+        report = adcs_mod.run_find(store, dc_host, cred, on_event=lambda m: print(m))
+    if report.aborted:
+        _err(report.aborted)
+        return 2
+    print(f"\nfound {_plural(report.found, 'vulnerable template')} — "
+          "`fieldkit analyze` ranks them, `fieldkit report` writes them up")
+    return 0
+
+
 def cmd_report(args):
     with _open_store(args) as store:
         store.require_engagement()
@@ -866,6 +896,17 @@ def build_parser():
                          help="which roast (default: both)")
     p_roast.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
     p_roast.set_defaults(func=cmd_roast)
+
+    p_adcs = sub.add_parser("adcs", help="AD Certificate Services (certipy) enumeration")
+    adcs_sub = p_adcs.add_subparsers(dest="adcs_command", metavar="<action>")
+    a_find = adcs_sub.add_parser(
+        "find", help="enumerate vulnerable certificate templates (ESC1-16)",
+        description="Drives `certipy find -vulnerable` with a domain credential and "
+                    "records each ESC weakness as a finding for analyze/report.")
+    a_find.add_argument("--dc", metavar="IP", help="DC/CA host (default: a host marked --dc)")
+    a_find.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
+    a_find.set_defaults(func=cmd_adcs_find)
+    p_adcs.set_defaults(func=lambda a: _missing(p_adcs))
 
     p_report = sub.add_parser(
         "report", help="render the customer report from proven findings in state",

@@ -398,6 +398,9 @@ class Store:
     def host_by_ip(self, ip):
         return self.conn.execute("SELECT * FROM host WHERE ip = ?", (ip,)).fetchone()
 
+    def host_by_id(self, host_id):
+        return self.conn.execute("SELECT * FROM host WHERE id = ?", (host_id,)).fetchone()
+
     # -- credentials --------------------------------------------------------
 
     def add_credential(self, cred, source="manual", notes=None):

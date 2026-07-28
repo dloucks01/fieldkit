@@ -167,6 +167,25 @@ def _roastable_loot(store):
                            "offline and touches nothing on the target.")
 
 
+def _adcs_templates(store):
+    for f in store.findings():
+        if f["vector_type"] != "adcs_esc" or f["proven"]:
+            continue
+        host = store.host_by_id(f["host_id"]) if f["host_id"] else None
+        yield Opportunity(
+            key=f"adcs:{f['id']}",
+            title=f["title"],
+            exploitability="high", safety="config-change", detection="moderate",
+            host=host["ip"] if host else None,
+            detail=(f["evidence"] or "") + " — a certificate issued for a privileged UPN "
+                   "gives PKINIT to that account, and cert auth survives password resets.",
+            evidence=f["evidence"] or "",
+            next_step="certipy req -upn administrator@<domain> -ca <CA> -template <template>, "
+                      "then certipy auth -pfx (see `fieldkit adcs find`).",
+            safe_proof="certipy find is read-only; a cert request issues an artifact — "
+                       "track and revoke it.")
+
+
 #: The registry. Append a predicate to extend the KB; order here does not matter —
 #: output is sorted by score.
 PREDICATES = (
@@ -176,6 +195,7 @@ PREDICATES = (
     _loot_admin_host,
     _foothold_enum,
     _roastable_loot,
+    _adcs_templates,
 )
 
 
