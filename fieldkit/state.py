@@ -172,9 +172,36 @@ _V1 = [
     "CREATE INDEX ix_loot_host       ON loot(host_id, kind)",
 ]
 
+# v2: the executor captures every command it runs, including enumeration that belongs
+# to no finding yet. Rebuild `step` so finding_id is optional and a step records the
+# host, its purpose (label) and the transport that carried it. SQLite cannot drop a
+# NOT NULL in place, so the table is rebuilt and its rows copied.
+_V2 = [
+    """
+    CREATE TABLE step_new (
+        id         INTEGER PRIMARY KEY,
+        finding_id INTEGER REFERENCES finding(id) ON DELETE CASCADE,
+        host_id    INTEGER REFERENCES host(id) ON DELETE CASCADE,
+        seq        INTEGER NOT NULL,
+        label      TEXT,
+        transport  TEXT,
+        cmd        TEXT NOT NULL,
+        output     TEXT,
+        exit_code  INTEGER,
+        ts         TEXT NOT NULL
+    )
+    """,
+    "INSERT INTO step_new (id, finding_id, seq, cmd, output, exit_code, ts) "
+    "SELECT id, finding_id, seq, cmd, output, exit_code, ts FROM step",
+    "DROP TABLE step",
+    "ALTER TABLE step_new RENAME TO step",
+    "CREATE INDEX ix_step_finding ON step(finding_id)",
+    "CREATE INDEX ix_step_host    ON step(host_id)",
+]
+
 #: (version, [statements]) applied in order; a database records the last applied
 #: version in PRAGMA user_version. Append to migrate; never edit a shipped entry.
-MIGRATIONS = [(1, _V1)]
+MIGRATIONS = [(1, _V1), (2, _V2)]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -479,6 +506,86 @@ class Store:
             return self.conn.execute(
                 "SELECT * FROM loot WHERE kind = ? ORDER BY id", (kind,)).fetchall()
         return self.conn.execute("SELECT * FROM loot ORDER BY id").fetchall()
+
+    # -- findings / evidence / cleanup --------------------------------------
+
+    def add_finding(self, vector_type, title, host_id=None, evidence=None,
+                    severity=None, risk=None, proven=None):
+        """Insert or update a finding, keyed on ``(host_id, vector_type, title)``.
+
+        Idempotent so re-running a vector does not fan out duplicate findings; a later
+        proof upgrades ``proven`` to 1 in place. Returns ``(finding_id, created)``.
+        """
+        with self._write():
+            row = self.conn.execute(
+                "SELECT id, proven FROM finding WHERE host_id IS ? AND vector_type = ? "
+                "AND title = ?", (host_id, vector_type, title)).fetchone()
+            if row is None:
+                cur = self.conn.execute(
+                    "INSERT INTO finding (host_id, vector_type, title, evidence, severity, "
+                    "risk, proven, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (host_id, vector_type, title, evidence, severity, risk,
+                     int(bool(proven)), utcnow()))
+                return cur.lastrowid, True
+            updates = {}
+            if evidence is not None:
+                updates["evidence"] = evidence
+            if proven and not row["proven"]:
+                updates["proven"] = 1
+            if updates:
+                self.conn.execute(
+                    "UPDATE finding SET " + ", ".join(f"{k} = ?" for k in updates)
+                    + " WHERE id = ?", list(updates.values()) + [row["id"]])
+            return row["id"], False
+
+    def add_step(self, cmd, output=None, exit_code=None, host_id=None,
+                 finding_id=None, label=None, transport=None):
+        """Append one captured command — verbatim evidence, the anti-fabrication spine.
+
+        ``seq`` is assigned per finding (or per host for finding-less enum steps), so a
+        finding's evidence renders in run order. Returns the new step id.
+        """
+        with self._write():
+            scope = ("finding_id", finding_id) if finding_id is not None else ("host_id", host_id)
+            prev = self.conn.execute(
+                f"SELECT COALESCE(MAX(seq), 0) FROM step WHERE {scope[0]} IS ?",
+                (scope[1],)).fetchone()[0]
+            cur = self.conn.execute(
+                "INSERT INTO step (finding_id, host_id, seq, label, transport, cmd, "
+                "output, exit_code, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (finding_id, host_id, prev + 1, label, transport, cmd, output,
+                 exit_code, utcnow()))
+            return cur.lastrowid
+
+    def steps(self, finding_id=None, host_id=None):
+        if finding_id is not None:
+            return self.conn.execute(
+                "SELECT * FROM step WHERE finding_id = ? ORDER BY seq", (finding_id,)).fetchall()
+        if host_id is not None:
+            return self.conn.execute(
+                "SELECT * FROM step WHERE host_id = ? ORDER BY id", (host_id,)).fetchall()
+        return self.conn.execute("SELECT * FROM step ORDER BY id").fetchall()
+
+    def add_artifact(self, description, cleanup_cmd=None, host_id=None, finding_id=None):
+        """Record a change made on a target so cleanup is a manifest, not memory."""
+        with self._write():
+            cur = self.conn.execute(
+                "INSERT INTO artifact (finding_id, host_id, description, cleanup_cmd, "
+                "created) VALUES (?, ?, ?, ?, ?)",
+                (finding_id, host_id, description, cleanup_cmd, utcnow()))
+            return cur.lastrowid
+
+    def artifacts(self, pending_only=False):
+        sql = "SELECT * FROM artifact"
+        if pending_only:
+            sql += " WHERE removed = 0"
+        return self.conn.execute(sql + " ORDER BY id").fetchall()
+
+    def findings(self, proven_only=False):
+        sql = "SELECT * FROM finding"
+        if proven_only:
+            sql += " WHERE proven = 1"
+        return self.conn.execute(sql + " ORDER BY id").fetchall()
 
     # -- analysis (what `analyze` ranks) ------------------------------------
 
