@@ -18,7 +18,7 @@ import sqlite3
 import sys
 
 from . import (__version__, config as config_mod, creds as creds_mod,
-               ingest as ingest_mod, scope as scope_mod, spray as spray_mod)
+               ingest as ingest_mod, kb as kb_mod, scope as scope_mod, spray as spray_mod)
 from .errors import ConfirmationError, FieldkitError
 from .state import DB_ENV_VAR, Store, default_db_path
 
@@ -55,7 +55,11 @@ def _confirm(question, assume_yes=False):
 
 
 def _word(n, word):
-    return word if n == 1 else word + "s"
+    if n == 1:
+        return word
+    if word.endswith("y") and word[-2:-1] not in "aeiou":
+        return word[:-1] + "ies"  # opportunity -> opportunities
+    return word + "s"
 
 
 def _plural(n, word):
@@ -285,6 +289,34 @@ def cmd_spray(args):
     return 0
 
 
+def cmd_analyze(args):
+    with _open_store(args) as store:
+        store.require_engagement()
+        opportunities = kb_mod.analyze(store)
+    if not opportunities:
+        counts = None
+        with _open_store(args) as store:
+            counts = store.counts()
+        if not counts["access"]:
+            print("nothing to analyze yet — no access proven. Run `fieldkit spray` first.")
+        else:
+            print("no ranked opportunities from the current state.")
+        return 0
+
+    print(f"{_plural(len(opportunities), 'opportunity')}, best first "
+          "(exploitability/safety/detection):\n")
+    for i, opp in enumerate(opportunities, 1):
+        where = f"  [{opp.host}]" if opp.host else ""
+        print(f"{i}. {opp.title}{where}")
+        print(f"     rank: {opp.axes}")
+        print(f"     {opp.detail}")
+        print(f"     next: {opp.next_step}")
+        if args.proof and opp.safe_proof:
+            print(f"     safe proof: {opp.safe_proof}")
+        print()
+    return 0
+
+
 def cmd_status(args):
     with _open_store(args) as store:
         row = store.require_engagement()
@@ -436,6 +468,15 @@ def build_parser():
     p_spray.add_argument("-y", "--yes", action="store_true",
                          help="run without the confirm-back")
     p_spray.set_defaults(func=cmd_spray)
+
+    p_analyze = sub.add_parser(
+        "analyze", help="rank the next moves from what the loop has proved",
+        description="Reads state and ranks privesc/lateral opportunities by "
+                    "exploitability x safety x detection. Read-only — it names the "
+                    "next move, it does not run it.")
+    p_analyze.add_argument("--proof", action="store_true",
+                           help="show each opportunity's safe-proof (report evidence)")
+    p_analyze.set_defaults(func=cmd_analyze)
 
     p_status = sub.add_parser("status", help="the engagement board")
     p_status.add_argument("--hosts", action="store_true", help="list every host")

@@ -337,5 +337,31 @@ SMB   10.0.0.8   445   WS03   [-] corp.local\\jdoe:Winter2025! STATUS_LOGON_FAIL
         self.assertEqual(self.store().counts()["credentials"], 2)
 
 
+class AnalyzeTest(CliTestCase):
+
+    CAPTURE = """\
+SMB   10.0.0.6   445   DC01   [*] Windows Server 2019 Build 17763 x64 (name:DC01) (domain:corp.local) (signing:True) (SMBv1:False)
+SMB   10.0.0.6   445   DC01   [+] corp.local\\jdoe:Winter2025! (Pwn3d!)
+SMB   10.0.0.7   445   WS02   [+] corp.local\\jdoe:Winter2025! (Pwn3d!)
+"""
+
+    def test_analyze_before_any_access(self):
+        self.init()
+        out = self.run_cli("analyze")
+        self.assertIn("nothing to analyze", out)
+
+    def test_analyze_ranks_proven_moves(self):
+        self.init()
+        cap = self.write("cap.txt", self.CAPTURE)
+        # mark the DC so dc-takeover can fire
+        self.run_cli("add", "hosts", "10.0.0.6", "--dc")
+        self.run_cli("ingest", "nxc", cap, "--yes")
+        out = self.run_cli("analyze", "--proof")
+        self.assertIn("Domain takeover", out)
+        self.assertIn("Password reuse", out)
+        self.assertIn("safe proof:", out)
+        self.assertIn("high/read-only", out)
+
+
 if __name__ == "__main__":
     unittest.main()

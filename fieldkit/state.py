@@ -480,6 +480,53 @@ class Store:
                 "SELECT * FROM loot WHERE kind = ? ORDER BY id", (kind,)).fetchall()
         return self.conn.execute("SELECT * FROM loot ORDER BY id").fetchall()
 
+    # -- analysis (what `analyze` ranks) ------------------------------------
+
+    def admin_on_dcs(self):
+        """(host, credential) pairs where we hold admin on a domain controller —
+        the shortest path to the whole domain (DCSync / NTDS)."""
+        return self.conn.execute(
+            "SELECT h.ip, h.hostname, c.id AS cred_id, c.domain, c.username, c.secret_type "
+            "FROM access a JOIN host h ON h.id = a.host_id "
+            "JOIN credential c ON c.id = a.cred_id "
+            "WHERE a.admin = 1 AND h.is_dc = 1 ORDER BY h.id").fetchall()
+
+    def creds_valid_on_multiple(self, min_hosts=2):
+        """Credentials proven valid on ``min_hosts`` or more — proven password reuse,
+        the lateral-movement finding. Admin count comes along for the ranking."""
+        return self.conn.execute(
+            "SELECT c.id AS cred_id, c.domain, c.username, c.secret_type, c.local_auth, "
+            "COUNT(DISTINCT a.host_id) AS hosts, "
+            "SUM(CASE WHEN a.admin = 1 THEN 1 ELSE 0 END) AS admin_hits "
+            "FROM credential c JOIN access a ON a.cred_id = c.id "
+            "GROUP BY c.id HAVING hosts >= ? ORDER BY hosts DESC, admin_hits DESC",
+            (min_hosts,)).fetchall()
+
+    def local_hash_credentials(self):
+        """Local-account NT hashes — the pass-the-hash sweep input (LAPS-less fleets
+        share a local admin hash)."""
+        return self.conn.execute(
+            "SELECT * FROM credential WHERE local_auth = 1 "
+            "AND secret_type IN ('nt', 'lm:nt') ORDER BY id").fetchall()
+
+    def admin_hosts_without_loot(self):
+        """Hosts we own but have not dumped — free credentials waiting to be read."""
+        return self.conn.execute(
+            "SELECT DISTINCT h.* FROM host h JOIN access a ON a.host_id = h.id "
+            "WHERE a.admin = 1 AND NOT EXISTS "
+            "(SELECT 1 FROM loot l WHERE l.host_id = h.id) ORDER BY h.id").fetchall()
+
+    def footholds_without_admin(self):
+        """Hosts where a credential is valid but not admin — a foothold needing local
+        privilege escalation (shell + enum)."""
+        return self.conn.execute(
+            "SELECT h.ip, h.hostname, h.os, c.domain, c.username "
+            "FROM access a JOIN host h ON h.id = a.host_id "
+            "JOIN credential c ON c.id = a.cred_id "
+            "WHERE a.admin = 0 AND NOT EXISTS "
+            "(SELECT 1 FROM access a2 WHERE a2.host_id = h.id AND a2.admin = 1) "
+            "ORDER BY h.id").fetchall()
+
     # -- board --------------------------------------------------------------
 
     def counts(self):

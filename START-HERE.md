@@ -2,8 +2,8 @@
 
 > **v1 guide.** This is the decision guide for the print-only generator tree, which now lives under
 > **`archive/`** — every path below is relative to it (`archive/access/network/…`, `archive/winpriv/…`).
-> The v2 engine (`fieldkit init` / `add cred` / `add hosts` / `status`, with spray/loot/analyze landing in
-> Phase 1) is documented in [`README.md`](README.md); its knowledge is being lifted out of these modules
+> The v2 engine (`fieldkit init` / `add` / `spray` / `ingest` / `analyze` / `status` — the credential loop
+> landed in Phase 1) is documented in [`README.md`](README.md); its knowledge is being lifted out of these modules
 > phase by phase. `configure.sh` is gone — set LHOST/LPORT/domain with `fieldkit config set`, or edit the
 > archived `_*_common.py` directly if you are running a v1 generator.
 

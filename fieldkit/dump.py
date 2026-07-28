@@ -12,7 +12,7 @@ Everything recognizable is recorded as loot regardless; promotion is the subset 
 credential loop can actually reuse.
 """
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from .creds import EMPTY_LM, Credential
 from .netexec import strip_prefix

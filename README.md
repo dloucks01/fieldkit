@@ -21,7 +21,7 @@ your existing kit).
 | Phase | What it adds | State |
 |---|---|---|
 | **0** | state store, engagement config, credential model, `init`/`config`/`add`/`status` | **done** |
-| 1 | nxc spray + `(Pwn3d!)` parsing, loot → creds, the credential loop, `analyze` + KB detect predicates | next |
+| **1** | nxc `spray` + `(Pwn3d!)` parsing, `ingest`, loot → creds, the credential loop, `analyze` + KB detect predicates | **done** |
 | 1.5 | Defender lab harness, `evasion.py`, technique green/red matrix, `posture` | planned |
 | 2 | transports, executor with capture + safety gate, per-vector privesc drivers | planned |
 | 3 | report (`--check`, md/docx/pdf, cleanup manifest) + recce bridge | planned |
@@ -49,9 +49,21 @@ bin/fieldkit add cred --user Administrator --hash <NT> --local   #  :NT, a secre
 bin/fieldkit add cred --from-file creds.txt
 bin/fieldkit add hosts scope.txt                       # IPs, CIDRs, or 'IP hostname' lines
 
-# 3) the board
+# 3) run the credential loop: spray every cred across the scope, parse (Pwn3d!),
+#    loot owned hosts, promote what it recovers, re-spray until dry
+bin/fieldkit spray smb                                  # reads the lockout policy first
+bin/fieldkit ingest nxc capture.txt                     # or fold in a spray you ran by hand
+
+# 4) rank the next moves from what the loop proved
+bin/fieldkit analyze --proof
+
+# the board
 bin/fieldkit status --hosts --creds
 ```
+
+`spray` reuses each account's own proven secret, so it cannot lock a domain
+account; it still reads the domain password policy up front and surfaces it. The
+loop stops when a round adds no new access and no new credential.
 
 `bin/fieldkit` is a shim for `python3 -m fieldkit`; either works from a clone. The
 database defaults to `./engagement.db` (override with `--db` or `$FIELDKIT_DB`).
