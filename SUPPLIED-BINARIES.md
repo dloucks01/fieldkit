@@ -56,7 +56,7 @@ Name each source file `<exploit>.c` (or the binary `<exploit>` with `--prebuilt`
 | `stackrot` (CVE-2023-3269) | github.com/lrh2000/StackRot |
 | `gameoverlay` (CVE-2023-2640) | **pure shell — no binary needed** (built into `gen_exploit`) |
 
-## Initial access — public-service exploit PoCs (`archive/access/network/gen_exploit`)
+## Initial access — public-service exploit PoCs
 Metasploit-backed entries need only `msfconsole`; these need a **supplied public PoC** (version-match first):
 | Exploit | Source |
 |---|---|
@@ -67,7 +67,7 @@ Metasploit-backed entries need only `msfconsole`; these need a **supplied public
 | `vcenter` (CVE-2021-21972) | public PoC (vROps webshell upload) |
 | `zerologon` (CVE-2020-1472) ⚠ | github.com/dirkjanm/CVE-2020-1472 + impacket secretsdump — **intrusive, can break the DC** |
 | `printnightmare` (CVE-2021-34527) | Invoke-Nightmare / CVE-2021-1675 (also in the Windows privesc list) |
-Also: `sqlmap`, `nuclei`, `ysoserial`(.jar), `phpggc`, `tplmap`, `ysoserial.net` for the `archive/access/web/` module.
+Also: `sqlmap`, `nuclei`, `ysoserial`(.jar), `phpggc`, `tplmap`, `ysoserial.net`.
 
 ## Linux — recon (`gen_recon`)
 | Binary | Source |
@@ -76,7 +76,7 @@ Also: `sqlmap`, `nuclei`, `ysoserial`(.jar), `phpggc`, `tplmap`, `ysoserial.net`
 | `pspy64` ⚠ | github.com/DominicBreuker/pspy |
 
 ## Pre-flight ritual
-1. `sh report/preflight.sh` → install any missing **tools**.
-2. Stage every artifact above that your target's OS/versions call for (match kernel/.NET first — see `enum.sh`/`enum.bat`).
+1. Install the tools fieldkit drives (nxc/impacket/certipy/evil-winrm; msfvenom/wixl/gcc/mingw for `poc`); `fieldkit poc --check` confirms the build toolchain.
+2. Stage every artifact above that your target's OS/versions call for (match kernel/.NET first — `fieldkit enum` names the route).
 3. **Recompile the ⚠ items from source** (fresh hash) if the target has AV.
 4. Verify each runs in a lab before you rely on it — a missing/wrong-version PoC is a false negative on the client.

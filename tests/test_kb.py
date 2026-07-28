@@ -66,10 +66,11 @@ class PredicateTest(KbTestCase):
         self.assertIn("2 hosts", opp.title)
         self.assertEqual(opp.exploitability, "high")  # has admin hits
 
-    def test_foothold_names_the_right_privesc_module(self):
+    def test_foothold_points_at_enum_and_escalate(self):
         opp = [o for o in analyze(self.store) if o.key == "foothold-enum"][0]
         self.assertEqual(opp.host, "10.0.0.8")
-        self.assertIn("linpriv", opp.next_step)  # linux host
+        self.assertIn("fieldkit enum 10.0.0.8", opp.next_step)
+        self.assertIn("escalate", opp.next_step)
 
     def test_mssql_sysadmin_surfaces_the_exec_opportunity(self):
         s = self.store
