@@ -56,6 +56,24 @@ class StagedFindTest(ArsenalTestCase):
         self.assertTrue(find("godp", self.root).endswith("GodPotato"))  # ci prefix
         self.assertIsNone(find("PrintSpoofer", self.root))
 
+    def test_find_recurses_into_a_precompiled_collection(self):
+        # a binary nested inside a cloned collection (SharpCollection layout) still resolves.
+        deep = os.path.join(self.root, "win-postex", "SharpCollection", "NetFramework_4.7_x64")
+        os.makedirs(deep)
+        open(os.path.join(deep, "SweetPotato.exe"), "w").close()
+        self.assertTrue(find("SweetPotato.exe", self.root).endswith(
+            "SharpCollection/NetFramework_4.7_x64/SweetPotato.exe"))
+        self.assertTrue(find("SweetPotato", self.root).endswith("SweetPotato.exe"))  # ci prefix
+
+    def test_find_prefers_shallowest_exact(self):
+        # a category-level drop wins over the same name buried in a collection.
+        open(os.path.join(self.root, "win-potato", "SweetPotato.exe"), "w").close()
+        deep = os.path.join(self.root, "win-postex", "SharpCollection", "NetFramework_4.7_x64")
+        os.makedirs(deep)
+        open(os.path.join(deep, "SweetPotato.exe"), "w").close()
+        self.assertTrue(find("SweetPotato.exe", self.root).endswith(
+            "win-potato/SweetPotato.exe"))
+
 
 class ResolveTest(ArsenalTestCase):
     def test_builtin_always_ready(self):

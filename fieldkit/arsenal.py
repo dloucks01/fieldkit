@@ -80,22 +80,31 @@ def staged(root=None):
 
 
 def find(name, root=None):
-    """Path to a staged artifact by name (exact, then case-insensitive prefix), or None."""
+    """Path to a staged artifact by name (exact basename, then case-insensitive prefix).
+
+    Recurses the whole arsenal, preferring the shallowest exact match, so a binary
+    that ships inside a cloned precompiled collection (e.g.
+    ``win-postex/SharpCollection/NetFramework_4.7_x64/GodPotato.exe``) resolves just
+    like one dropped directly in a category dir. Returns None if nothing matches.
+    """
     root = root or arsenal_dir()
     if not os.path.isdir(root):
         return None
     low = name.lower()
+    exact = None        # (depth, path) — keep the shallowest
     prefix = None
-    for cat in sorted(os.listdir(root)):
-        catdir = os.path.join(root, cat)
-        if not os.path.isdir(catdir):
-            continue
-        for n in sorted(os.listdir(catdir)):
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()                                   # deterministic traversal
+        depth = dirpath[len(root):].count(os.sep)
+        for n in sorted(filenames):
             if n == name:
-                return os.path.join(catdir, n)
-            if prefix is None and n.lower().startswith(low):
-                prefix = os.path.join(catdir, n)
-    return prefix
+                if exact is None or depth < exact[0]:
+                    exact = (depth, os.path.join(dirpath, n))
+                    if depth <= 1:                        # can't get shallower than a category
+                        return exact[1]
+            elif prefix is None and n.lower().startswith(low):
+                prefix = os.path.join(dirpath, n)
+    return exact[1] if exact else prefix
 
 
 # --------------------------------------------------------------- requirements
