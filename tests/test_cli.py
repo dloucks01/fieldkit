@@ -211,7 +211,7 @@ class AddHostsTest(CliTestCase):
     def test_re_adding_enriches_instead_of_duplicating(self):
         self.run_cli("add", "hosts", "10.0.0.5")
         out = self.run_cli("add", "hosts", "10.0.0.5", "--os", "linux")
-        self.assertIn("already in scope", out)
+        self.assertIn("already in the engagement", out)
         self.assertEqual(self.store().counts()["hosts"], 1)
         self.assertEqual(self.store().host_by_ip("10.0.0.5")["os"], "linux")
 
@@ -235,6 +235,75 @@ class AddHostsTest(CliTestCase):
 
     def test_nothing_to_add(self):
         self.assertIn("nothing to add", self.run_cli("add", "hosts", expect=2))
+
+
+class ScopeTest(CliTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.init()
+
+    def test_no_rules_means_no_enforcement(self):
+        out = self.run_cli("scope", "show")
+        self.assertIn("no scope rules", out)
+        # every IP is allowed when no rules exist (backward-compat)
+        self.assertTrue(self.store().in_scope("10.0.0.5"))
+        self.assertTrue(self.store().in_scope("8.8.8.8"))
+
+    def test_allow_rule_narrows_scope(self):
+        self.run_cli("scope", "allow", "10.0.0.0/24")
+        self.assertTrue(self.store().in_scope("10.0.0.5"))
+        self.assertFalse(self.store().in_scope("10.0.1.5"))
+        self.assertFalse(self.store().in_scope("8.8.8.8"))
+
+    def test_deny_carves_exception_out_of_allow(self):
+        self.run_cli("scope", "allow", "10.0.0.0/16")
+        self.run_cli("scope", "deny", "10.0.10.0/24")
+        self.assertTrue(self.store().in_scope("10.0.5.5"))
+        self.assertFalse(self.store().in_scope("10.0.10.5"))    # excluded
+        self.assertFalse(self.store().in_scope("192.168.1.1"))  # outside allow
+
+    def test_add_hosts_refuses_outside_scope(self):
+        self.run_cli("scope", "allow", "10.0.0.0/24")
+        out = self.run_cli("add", "hosts", "10.0.0.5", "10.0.1.5", "8.8.8.8", expect=1)
+        # only the in-scope IP was added
+        self.assertEqual(self.store().counts()["hosts"], 1)
+        self.assertIsNotNone(self.store().host_by_ip("10.0.0.5"))
+        self.assertIsNone(self.store().host_by_ip("10.0.1.5"))
+        self.assertIn("outside the engagement scope", out)
+        self.assertIn("10.0.1.5", out)
+
+    def test_scope_show_lists_rules(self):
+        self.run_cli("scope", "allow", "10.0.0.0/24", "--notes", "prod segment")
+        self.run_cli("scope", "deny", "10.0.0.10/32")
+        out = self.run_cli("scope", "show")
+        self.assertIn("allow  10.0.0.0/24", out)
+        self.assertIn("deny", out)
+        self.assertIn("prod segment", out)
+
+    def test_scope_clear_removes_enforcement(self):
+        self.run_cli("scope", "allow", "10.0.0.0/24")
+        self.run_cli("scope", "clear", "--yes")
+        self.assertTrue(self.store().in_scope("192.168.1.1"))   # enforcement OFF
+        self.assertEqual(len(self.store().scope_rules()), 0)
+
+    def test_bad_cidr_is_rejected(self):
+        out = self.run_cli("scope", "allow", "not-a-cidr", expect=2)
+        self.assertIn("not-a-cidr", out)
+
+    def test_normalization(self):
+        # /24 given via a host bit gets normalized to the network address
+        self.run_cli("scope", "allow", "10.0.0.5/24")
+        rules = self.store().scope_rules()
+        self.assertEqual(rules[0]["cidr"], "10.0.0.0/24")
+
+    def test_run_on_out_of_scope_reports_scope_not_engagement(self):
+        # scope error must be distinct from "not in the engagement"
+        self.run_cli("scope", "allow", "10.0.0.0/24")
+        # add credential so the credential check doesn't shadow the scope check
+        self.run_cli("add", "cred", "svc:pw", "--yes")
+        out = self.run_cli("run", "10.9.9.9", "suid:find", "--yes", expect=2)
+        self.assertIn("outside the engagement scope", out)
 
 
 class StatusTest(CliTestCase):
@@ -397,9 +466,9 @@ class RunCliTest(CliTestCase):
         store = self.store()
         self.assertEqual(store.counts()["proven_findings"], 0)
 
-    def test_run_on_host_not_in_scope(self):
+    def test_run_on_host_not_in_engagement(self):
         out = self.run_cli("run", "10.9.9.9", "suid:find", "--yes", expect=2)
-        self.assertIn("not in scope", out)
+        self.assertIn("not in the engagement", out)
 
 
 class PostureCliTest(CliTestCase):
