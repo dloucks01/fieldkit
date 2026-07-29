@@ -26,7 +26,8 @@ from . import (__version__, adcs as adcs_mod, arsenal as arsenal_mod,
                evasion as evasion_mod,
                executor as executor_mod, hostenum as hostenum_mod, ingest as ingest_mod,
                kb as kb_mod, kerberos as kerberos_mod, lab as lab_mod,
-               mssql as mssql_mod, poc as poc_mod, preflight as preflight_mod,
+               mongodb as mongodb_mod, mssql as mssql_mod, poc as poc_mod,
+               postgres as postgres_mod, preflight as preflight_mod,
                privesc as privesc_mod, provision as provision_mod,
                report as report_mod, scope as scope_mod,
                sharespider as sharespider_mod, spray as spray_mod)
@@ -942,6 +943,101 @@ def cmd_mssql_escalate(args):
     return 0
 
 
+def cmd_postgres_escalate(args):
+    with _open_store(args) as store:
+        store.require_engagement()
+        host, cred, err = _resolve_target(store, args.host)
+        if err:
+            _err(err)
+            return 2
+        allow_cc = "config-change" in (args.allow or [])
+        prompt = (f"enumerate + escalate PostgreSQL privileges on {args.host}:{args.port}"
+                  + (" (may run `id` on the target via COPY FROM PROGRAM — reversible)?"
+                     if allow_cc else
+                     " (read-only enum; add --allow config-change to run COPY FROM PROGRAM)?"))
+        if not _confirm(prompt, args.yes):
+            print("aborted — nothing ran")
+            return 1
+        rep = postgres_mod.escalate_privs(
+            store, host, cred, allow_config_change=allow_cc,
+            port=args.port, database=args.database,
+            on_event=lambda m: print(m))
+    if rep.aborted:
+        _err(rep.aborted)
+        return 2
+
+    print()
+    if rep.status == "exec":
+        why = "superuser" if rep.is_superuser else "pg_execute_server_program"
+        print(f"GOT EXEC: COPY FROM PROGRAM runs OS commands as the postgres user "
+              f"(via {why}). Recorded as a finding; your postgres access is upgraded to admin.")
+    elif rep.status == "escalated":
+        print(f"ESCALATED: SET ROLE {rep.via} → superuser → COPY FROM PROGRAM (verified).")
+    elif rep.status == "already_superuser":
+        print("you are superuser — re-run with `--allow config-change` to run + capture "
+              "`id` via COPY FROM PROGRAM.")
+    elif rep.status == "gated":
+        which = rep.escalatable_via or (
+            ["pg_execute_server_program"] if rep.exec_role_member else [])
+        print(f"escalatable via: {', '.join(which)} — re-run with `--allow config-change`.")
+    elif rep.status == "failed":
+        print("the escalation attempt did not produce output — inspect manually.")
+    else:
+        print("no PG-layer escalation path found (not superuser, no superuser role "
+              "membership, not a member of pg_execute_server_program).")
+    if rep.databases:
+        print(f"databases: {', '.join(rep.databases)}")
+    return 0
+
+
+def cmd_mongodb_escalate(args):
+    with _open_store(args) as store:
+        store.require_engagement()
+        host, cred, err = _resolve_target(store, args.host)
+        if err:
+            _err(err)
+            return 2
+        allow_cc = "config-change" in (args.allow or [])
+        prompt = (f"enumerate MongoDB on {args.host}:{args.port}"
+                  + (" (will dump admin.system.users + count credential-fields — "
+                     "read-only against DB state, writes to the audit log)?"
+                     if allow_cc else
+                     " (surface only; add --allow config-change to dump users/scan data)?"))
+        if not _confirm(prompt, args.yes):
+            print("aborted — nothing ran")
+            return 1
+        rep = mongodb_mod.enumerate_privs(
+            store, host, cred, allow_config_change=allow_cc,
+            port=args.port, database=args.database, scan_data=args.scan_data,
+            on_event=lambda m: print(m))
+    if rep.aborted:
+        _err(rep.aborted)
+        return 2
+
+    print()
+    if rep.is_unauth:
+        print("UNAUTH: MongoDB accepts connections without credentials. Recorded as a "
+              "Critical finding; enumerated the surface anonymously.")
+    elif rep.privileged_roles:
+        print(f"ADMIN: role(s) {', '.join(sorted(set(rep.privileged_roles)))} — full "
+              "user + data administration. Recorded as a finding; your mongodb access is "
+              "upgraded to admin.")
+    elif rep.identity:
+        print(f"authenticated as {rep.identity} (no privileged role) — enumerated the "
+              "visible databases only.")
+    else:
+        print("no MongoDB-layer escalation path found.")
+    if rep.databases:
+        print(f"databases: {', '.join(rep.databases)}")
+    if rep.users_dumped:
+        print(f"users dumped: {rep.users_dumped} (recorded as loot)")
+    if rep.cred_candidates:
+        print(f"credential-field candidates: {_plural(len(rep.cred_candidates), 'hit')}")
+        for db, coll, field, count in rep.cred_candidates[:8]:
+            print(f"  {db}.{coll}.{field}: {count} document(s)")
+    return 0
+
+
 def cmd_lab_test(args):
     with _open_store(args) as store:
         store.require_engagement()
@@ -1610,6 +1706,56 @@ def build_parser():
     m_esc.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
     m_esc.set_defaults(func=cmd_mssql_escalate)
     p_mssql.set_defaults(func=lambda a: _missing(p_mssql))
+
+    p_pg = sub.add_parser(
+        "postgres", help="PostgreSQL privilege escalation (login → superuser → OS exec)",
+        aliases=["pg", "psql"])
+    pg_sub = p_pg.add_subparsers(dest="pg_command", metavar="<action>")
+    pg_esc = pg_sub.add_parser(
+        "escalate", help="find COPY FROM PROGRAM / SET ROLE paths to OS exec",
+        description="From a Postgres login, enumerates the DB-layer escalation surface: "
+                    "am I superuser?, roles I'm a member of that grant superuser, and "
+                    "whether pg_execute_server_program covers me. With --allow "
+                    "config-change it runs `COPY FROM PROGRAM 'id'` (directly if "
+                    "superuser or a member of pg_execute_server_program; else via "
+                    "SET ROLE to a member superuser). Read-only without --allow.")
+    pg_esc.add_argument("host", metavar="IP", help="the Postgres host")
+    pg_esc.add_argument("--port", type=int, default=5432, help="port (default 5432)")
+    pg_esc.add_argument("-d", "--database", default="postgres",
+                        help="database to connect to (default: postgres)")
+    pg_esc.add_argument("--allow", action="append", choices=["config-change"],
+                        metavar="LEVEL",
+                        help="permit COPY FROM PROGRAM to actually run")
+    pg_esc.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
+    pg_esc.set_defaults(func=cmd_postgres_escalate)
+    p_pg.set_defaults(func=lambda a: _missing(p_pg))
+
+    p_mongo = sub.add_parser(
+        "mongodb", help="MongoDB privilege enumeration + credential extraction",
+        aliases=["mongo"])
+    mongo_sub = p_mongo.add_subparsers(dest="mongo_command", metavar="<action>")
+    mongo_esc = mongo_sub.add_parser(
+        "escalate", help="enumerate roles + dump users; flag unauth exposure",
+        description="MongoDB (4.0+) has no native OS-exec analog. This enumerates the "
+                    "auth surface (identity, roles, databases), records unauth exposure "
+                    "as a Critical proven finding, and — with --allow config-change — "
+                    "dumps admin.system.users. With --scan-data it also counts "
+                    "credential-shaped fields (password/hash/token) across application "
+                    "collections; values are not captured — the operator dumps them "
+                    "separately if the ROE allow.")
+    mongo_esc.add_argument("host", metavar="IP", help="the MongoDB host")
+    mongo_esc.add_argument("--port", type=int, default=27017,
+                           help="port (default 27017)")
+    mongo_esc.add_argument("-d", "--database", default="admin",
+                           help="authenticationDatabase (default: admin)")
+    mongo_esc.add_argument("--scan-data", action="store_true",
+                           help="also count credential-field candidates across app DBs")
+    mongo_esc.add_argument("--allow", action="append", choices=["config-change"],
+                           metavar="LEVEL",
+                           help="permit user dump + data scan (writes to the audit log)")
+    mongo_esc.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
+    mongo_esc.set_defaults(func=cmd_mongodb_escalate)
+    p_mongo.set_defaults(func=lambda a: _missing(p_mongo))
 
     p_report = sub.add_parser(
         "report", help="render the customer report (proven Findings + Observations)",

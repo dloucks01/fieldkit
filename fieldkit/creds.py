@@ -556,3 +556,62 @@ def render_mssqlclient(cred, host, port=None, extra=()):
         rendered.argv.append("-windows-auth")
     rendered.argv += list(extra)
     return rendered
+
+
+def render_psql(cred, host, port=None, database=None, sql=None, extra=()):
+    """The ``psql`` client. Password via ``PGPASSWORD`` (never on the command line).
+
+    ``-w`` never prompts, ``-A`` unaligned output, ``-t`` no headers/footer, ``-q`` quiet
+    startup — so the driver sees exactly the row bytes and the ``FK:`` sentinels stay
+    unambiguous. Hash/kerberos secrets are not supported by the ``psql`` protocol; the
+    caller gets a ``notes`` line back explaining why.
+    """
+    argv = ["psql", "-h", host]
+    if port:
+        argv += ["-p", str(port)]
+    argv += ["-U", cred.username]
+    if database:
+        argv += ["-d", database]
+    argv += ["-w", "-A", "-t", "-q", "-X"]
+    env, notes = {}, []
+    if cred.secret_type == "password":
+        env["PGPASSWORD"] = cred.secret
+    else:
+        notes.append(f"psql cannot use secret_type={cred.secret_type!r} — password only")
+    if sql is not None:
+        argv += ["-c", sql]
+    argv += list(extra)
+    return Rendered(argv=argv, env=env, notes=notes)
+
+
+def render_mongosh(cred, host, port=None, database=None, auth_source="admin",
+                   script=None, extra=(), tool="mongosh"):
+    """The ``mongosh`` (or legacy ``mongo``) client. Auth flags are argv, not URI —
+    keeps a plaintext password out of the shell history if the operator repros later.
+
+    ``--quiet`` suppresses the banner so the driver sees only the ``print('FK:…')`` we
+    asked for. ``--authenticationDatabase`` defaults to ``admin`` (the usual place
+    application accounts live in modern deployments).
+    """
+    argv = [tool, "--host", host]
+    if port:
+        argv += ["--port", str(port)]
+    argv += ["--quiet"]
+    if cred.username:
+        argv += ["-u", cred.username]
+    if cred.secret_type == "password":
+        argv += ["-p", cred.secret]
+    elif cred.secret_type != "password" and cred.secret:
+        # mongosh has no direct hash/kerberos flag; the caller decides.
+        pass
+    if auth_source:
+        argv += ["--authenticationDatabase", auth_source]
+    if database:
+        argv.append(database)
+    if script is not None:
+        argv += ["--eval", script]
+    argv += list(extra)
+    notes = []
+    if cred.secret_type not in ("password", ""):
+        notes.append(f"mongosh cannot use secret_type={cred.secret_type!r} — password only")
+    return Rendered(argv=argv, env={}, notes=notes)
