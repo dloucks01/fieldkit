@@ -365,7 +365,11 @@ def _win_vector(spec, ctx, evidence):
         shell=spec.get("shell", "cmd"), host=ctx.host, detail=detail,
         evidence=evidence,
         safe_proof=spec.get("safe_proof", "the vector runs `whoami` in the elevated context."),
-        cleanup=cleanup)
+        cleanup=cleanup,
+        # rule 9: carry the spec's canonical vector_type. Without this the recorder falls
+        # back to the vector *key*, which only works where key == KB key by coincidence —
+        # SeDebug (key "sedebug", type "lsass") silently rendered as the generic default.
+        report_type=spec.get("report_type", spec["key"]))
 
 
 # ------------------------------------------------------------------- drivers
