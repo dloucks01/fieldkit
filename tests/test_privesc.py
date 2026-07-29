@@ -21,8 +21,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fieldkit.hostenum import HostFacts  # noqa: E402
 from fieldkit.privesc import (  # noqa: E402
-    KERNEL_LPE, Vector, _in_range, find_vector, kernel_candidates, vectors_for,
-    vectors_from_state,
+    KERNEL_LPE, WIN_LPE, Vector, _in_range, find_vector, kernel_candidates,
+    vectors_for, vectors_from_state, win_lpe_candidates,
 )
 from fieldkit.state import Store  # noqa: E402
 
@@ -367,6 +367,68 @@ class StateRoundTripTest(unittest.TestCase):
 
     def test_find_vector_missing(self):
         self.assertIsNone(find_vector(self.store, "10.0.0.8", "sudo:nope"))
+
+
+class WindowsLpeTest(unittest.TestCase):
+    """Windows local-CVE matcher: build + hotfixes -> the staged win-kernel PoCs."""
+
+    def facts(self, **kw):
+        base = dict(os="windows")
+        base.update(kw)
+        return HostFacts(**base)
+
+    def cves(self, facts):
+        return {r["cve"] for r, _ in win_lpe_candidates(facts)}
+
+    def test_no_build_never_matches(self):
+        # the matcher must not guess — an unknown OS build produces nothing
+        self.assertEqual(self.cves(self.facts()), set())
+        self.assertEqual(self.cves(self.facts(win_build=None)), set())
+        self.assertEqual(self.cves(self.facts(win_build="unknown")), set())
+
+    def test_build_range_matches_multiple_cves(self):
+        # Win10 20H2 (build 19042) is in range for printnightmare, spoolfool,
+        # and win32k-2021-1732. It's NOT in range for smbghost (18362-18363) or
+        # afd (22000-22623).
+        f = self.facts(win_build="10.0.19042.928")
+        got = self.cves(f)
+        self.assertIn("CVE-2021-34527", got)   # printnightmare
+        self.assertIn("CVE-2022-21999", got)   # spoolfool
+        self.assertIn("CVE-2021-1732", got)    # win32k
+        self.assertNotIn("CVE-2020-0796", got)  # smbghost — wrong version
+        self.assertNotIn("CVE-2023-21768", got)  # afd — wrong version
+
+    def test_hotfix_kb_suppresses_the_rule(self):
+        # KB4601319 fixes CVE-2021-1732; when present, win32k must not fire
+        f = self.facts(win_build="10.0.19042.928", hotfixes={"KB4601319"})
+        got = self.cves(f)
+        self.assertNotIn("CVE-2021-1732", got)
+        self.assertIn("CVE-2021-34527", got)   # unaffected rule still fires
+
+    def test_smbghost_only_on_1903_1909(self):
+        # 18362 / 18363 are the only vulnerable builds
+        self.assertIn("CVE-2020-0796", self.cves(self.facts(win_build="10.0.18362.1")))
+        self.assertIn("CVE-2020-0796", self.cves(self.facts(win_build="10.0.18363.1")))
+        self.assertNotIn("CVE-2020-0796", self.cves(self.facts(win_build="10.0.19041.0")))
+
+    def test_vectors_are_prepared_routes_never_auto_fired(self):
+        # kernel LPEs at a client host: ranked + explained, NEVER blind-fired
+        vs = [v for v in vectors_for(self.facts(win_build="10.0.19042.928"), "10.0.0.7")
+              if v.key.startswith("wincve:")]
+        self.assertTrue(vs)
+        for v in vs:
+            self.assertTrue(v.manual)
+            self.assertIsNotNone(v.playbook)
+            self.assertEqual(v.report_type, "kernel_cve")
+            self.assertTrue(v.stages)               # the arsenal PoC to stage
+
+    def test_every_rule_has_the_load_bearing_fields(self):
+        for rule in WIN_LPE:
+            self.assertTrue(rule["cve"].startswith("CVE-"))
+            self.assertTrue(rule["artifact"])
+            self.assertTrue(rule["fixed_kbs"])       # every real CVE has a fix KB
+            for kb in rule["fixed_kbs"]:
+                self.assertTrue(kb.startswith("KB"), f"{rule['key']}: {kb!r}")
 
 
 if __name__ == "__main__":  # pragma: no cover

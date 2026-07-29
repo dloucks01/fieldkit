@@ -46,6 +46,16 @@ WIN_OUT = {
         "SeImpersonatePrivilege        Enabled\n"
         "SeChangeNotifyPrivilege       Enabled\n"),
     "whoami /groups": "BUILTIN\\Remote Management Users\nBUILTIN\\Backup Operators\n",
+    "systeminfo": (
+        "Host Name:                 WS02\n"
+        "OS Name:                   Microsoft Windows Server 2019 Datacenter\n"
+        "OS Version:                10.0.17763 N/A Build 17763\n"
+        "OS Manufacturer:           Microsoft Corporation\n"
+        "System Type:               x64-based PC\n"),
+    "wmic qfe get HotFixID /format:list": (
+        "\nHotFixID=KB5031364\n\n"
+        "\nHotFixID=KB5033372\n\n"
+        "\nHotFixID=KB5034441\n\n"),
     "services": ("Name     PathName                          StartMode\n"
                  "MyApp    C:\\Program Files\\My App\\svc.exe   Auto\n"
                  "Spooler  C:\\Windows\\System32\\spoolsv.exe   Auto\n"),
@@ -75,6 +85,11 @@ def make_runner(table, aie_both=True):
             return RunResult(argv, exit_code=0, stdout=hit * (2 if aie_both else 1))
         if command.startswith("wmic service"):
             return RunResult(argv, exit_code=0, stdout=table.get("services", ""))
+        if command.startswith("wmic qfe"):
+            return RunResult(argv, exit_code=0,
+                             stdout=table.get("wmic qfe get HotFixID /format:list", ""))
+        if command.startswith("systeminfo"):
+            return RunResult(argv, exit_code=0, stdout=table.get("systeminfo", ""))
         if "sdshow" in command:
             return RunResult(argv, exit_code=0, stdout=table.get("svcperms", ""))
         return RunResult(argv, exit_code=0, stdout=table.get(command, ""))
@@ -136,7 +151,8 @@ class WindowsFactsTest(EnumTestCase):
     def test_run_and_parse(self):
         host, cred, hid = self.windows_host()
         report = run_enum(self.store, host, cred, run=make_runner(WIN_OUT))
-        self.assertEqual(set(report.ran), {"priv", "groups", "aie", "services", "svcperms"})
+        self.assertEqual(set(report.ran), {"priv", "groups", "sysinfo", "hotfixes",
+                                            "aie", "services", "svcperms"})
         f = facts_for(self.store, hid)
         self.assertIn("SeImpersonatePrivilege", f.privs)
         self.assertIn("Backup Operators", f.win_groups)
@@ -151,6 +167,11 @@ class WindowsFactsTest(EnumTestCase):
         self.assertIn("MyApp", f.writable_service_bins)
         self.assertIn("MyApp", f.writable_service_dirs)
         self.assertNotIn("Spooler", f.writable_service_bins)
+        # OS build + hotfixes — the new CVE-matcher's inputs
+        self.assertEqual(f.win_build, "10.0.17763")
+        self.assertIn("Server 2019", f.win_edition)
+        self.assertEqual(f.win_arch, "x64")
+        self.assertEqual(f.hotfixes, {"KB5031364", "KB5033372", "KB5034441"})
 
     def test_aie_needs_both_keys(self):
         host, cred, hid = self.windows_host()
