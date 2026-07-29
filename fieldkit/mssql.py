@@ -167,7 +167,7 @@ def _establish_exec(store, host, cred, ip, *, proof, report_type, title, evidenc
         store.add_step(cmd=f'nxc mssql {ip} … -q "{_XP_TEST}"',
                        output=(proof or "FK:XPOK").strip(), host_id=host["id"],
                        finding_id=fid, transport="mssql")
-        store.add_access(host["id"], _cred_id(store, cred), "mssql", admin=True)
+        store.add_access(host["id"], store.credential_id(cred), "mssql", admin=True)
         for desc, cmd in cleanups:
             store.add_artifact(desc, cleanup_cmd=cmd, host_id=host["id"], finding_id=fid)
 
@@ -186,7 +186,3 @@ def _record_linked(store, host, rep):
                      + ". `EXEC ('…') AT [<server>]` runs on the remote instance.")
 
 
-def _cred_id(store, cred):
-    # add_credential dedupes, so this returns the existing row's id.
-    cid, _ = store.add_credential(cred)
-    return cid

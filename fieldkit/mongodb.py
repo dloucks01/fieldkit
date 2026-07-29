@@ -207,8 +207,6 @@ def _scan_script(dbname):
 
 
 def _record_unauth(store, host, ip, port, proof):
-    from .mssql import _cred_id       # for parity — not used unauth (no cred)
-    _ = _cred_id
     with store.transaction():
         fid, _ = store.add_finding(
             "mongodb_unauth",
@@ -223,7 +221,6 @@ def _record_unauth(store, host, ip, port, proof):
 
 
 def _record_admin(store, host, cred, rep):
-    from .mssql import _cred_id
     which = ", ".join(sorted(set(rep.privileged_roles)))
     with store.transaction():
         fid, _ = store.add_finding(
@@ -232,7 +229,7 @@ def _record_admin(store, host, cred, rep):
             host_id=host["id"], proven=True,
             evidence=(f"{rep.identity} holds {which} on {rep.host}:{rep.port} — full "
                       "user and data administration."))
-        store.add_access(host["id"], _cred_id(store, cred), "mongodb", admin=True)
+        store.add_access(host["id"], store.credential_id(cred), "mongodb", admin=True)
         store.add_step(cmd=f"mongosh --host {rep.host} --port {rep.port} --quiet "
                            f"-u {cred.username} … --eval \"{_WHOAMI[:60]}…\"",
                        output=f"identity={rep.identity}; roles={rep.roles}",
