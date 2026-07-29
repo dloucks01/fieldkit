@@ -240,9 +240,15 @@ def cmd_add_hosts(args):
 
     with _open_store(args) as store:
         store.require_engagement()
-        added = enriched = 0
+        added = enriched = out_of_scope = 0
+        rejected = []
         with store.transaction():  # one commit for the whole scope file
             for ip, hostname in targets:
+                if not store.in_scope(ip):
+                    out_of_scope += 1
+                    if len(rejected) < 5:
+                        rejected.append(ip)
+                    continue
                 _, created = store.add_host(
                     ip, hostname=hostname or None, os_name=args.os,
                     is_dc=True if args.dc else None, subnet=args.subnet)
@@ -250,9 +256,64 @@ def cmd_add_hosts(args):
                 enriched += not created
         total = store.counts()["hosts"]
     print(f"added {_plural(added, 'host')}"
-          + (f", {enriched} already in scope" if enriched else "")
-          + f" — {total} in scope now")
-    return 0 if not errors else 1
+          + (f", {enriched} already in the engagement" if enriched else "")
+          + f" — {total} host(s) in the engagement")
+    if out_of_scope:
+        preview = ", ".join(rejected) + (f" (+{out_of_scope - len(rejected)} more)"
+                                          if out_of_scope > len(rejected) else "")
+        _err(f"{out_of_scope} rejected as outside the engagement scope: {preview}. "
+             "See `fieldkit scope show`.")
+    return 0 if not errors and not out_of_scope else 1
+
+
+def cmd_scope_show(args):
+    with _open_store(args) as store:
+        store.require_engagement()
+        rows = store.scope_rules()
+    if not rows:
+        print("no scope rules — every IP is allowed (no enforcement)")
+        print(f"tighten with: `{PROG} scope allow 10.0.0.0/24`")
+        return 0
+    print(f"engagement scope ({len(rows)} rule(s)):")
+    for r in rows:
+        added = (r["added"] or "").split("T")[0]
+        notes = f"  # {r['notes']}" if r["notes"] else ""
+        print(f"  {r['kind']:<5}  {r['cidr']:<20}  ({added}){notes}")
+    return 0
+
+
+def cmd_scope_add(args):
+    kind = "deny" if args.deny else "allow"
+    with _open_store(args) as store:
+        store.require_engagement()
+        cidrs = []
+        for target in args.cidrs:
+            try:
+                cid, created = store.scope_add(target, kind=kind, notes=args.notes)
+            except ValueError as exc:
+                _err(f"{target!r}: {exc}")
+                return 2
+            cidrs.append((target, created))
+    for cidr, created in cidrs:
+        print(f"{kind:<5}  {cidr}   ({'added' if created else 'already present'})")
+    return 0
+
+
+def cmd_scope_clear(args):
+    with _open_store(args) as store:
+        store.require_engagement()
+        n = len(store.scope_rules())
+        if not n:
+            print("no scope rules to clear")
+            return 0
+        prompt = (f"drop {_plural(n, 'scope rule')} — enforcement will be OFF and "
+                  "every IP will be allowed?")
+        if not _confirm(prompt, args.yes):
+            print("aborted — nothing changed")
+            return 1
+        store.scope_clear()
+    print(f"cleared {_plural(n, 'scope rule')} — enforcement OFF")
+    return 0
 
 
 def cmd_ingest_nxc(args):
@@ -455,10 +516,26 @@ def cmd_analyze(args, store):
 
 
 def _resolve_target(store, ip):
-    """(host_row, cred_row) for a target, or an error string. Shared by enum/run."""
+    """(host_row, cred_row) for a target, or an error string. Shared by enum/run.
+
+    Two distinct failures the error message MUST NOT conflate:
+      * ``ip`` is not in the engagement database — the operator needs to
+        ``add hosts`` first (or the arg is a CIDR passed to a single-host command);
+      * ``ip`` is not in scope by an active :meth:`Store.scope_rules` allow/deny
+        pair — that's an engagement-scope violation and the error says so.
+    """
+    if "/" in ip:
+        return None, None, (f"{ip} looks like a CIDR — this command takes a single "
+                            "host. Use `add hosts <cidr>` to register the range, then "
+                            "`spray` to sweep it, then run this on a specific IP.")
+    if not store.in_scope(ip):
+        return None, None, (f"{ip} is outside the engagement scope — see "
+                            "`fieldkit scope show` for the current rules")
     host = store.host_by_ip(ip)
     if host is None:
-        return None, None, f"{ip} is not in scope — add it with `fieldkit add hosts`"
+        return None, None, (f"{ip} is not in the engagement — add it with "
+                            "`fieldkit add hosts` (accepts single IPs, CIDR, or a "
+                            "scope file)")
     cred = store.credential_with_access_on(host["id"])
     if cred is None:
         return host, None, (f"no credential is proven on {ip} — spray/validate one there "
@@ -1127,7 +1204,7 @@ def cmd_roast(args, store):
         return 2
     dc_host = store.host_by_ip(dc_ip)
     if dc_host is None:
-        _err(f"{dc_ip} is not in scope — add it with `fieldkit add hosts`")
+        _err(f"{dc_ip} is not in the engagement — add it with `fieldkit add hosts <ip>`")
         return 2
     cred = _domain_credential(store)
     if cred is None:
@@ -1184,7 +1261,7 @@ def cmd_delegation(args, store):
         return 2
     dc_host = store.host_by_ip(dc_ip)
     if dc_host is None:
-        _err(f"{dc_ip} is not in scope — add it with `fieldkit add hosts`")
+        _err(f"{dc_ip} is not in the engagement — add it with `fieldkit add hosts <ip>`")
         return 2
     cred = _domain_credential(store)
     if cred is None:
@@ -1213,7 +1290,7 @@ def cmd_adcs_find(args, store):
         return 2
     dc_host = store.host_by_ip(dc_ip)
     if dc_host is None:
-        _err(f"{dc_ip} is not in scope — add it with `fieldkit add hosts`")
+        _err(f"{dc_ip} is not in the engagement — add it with `fieldkit add hosts <ip>`")
         return 2
     cred = _domain_credential(store)
     if cred is None:
@@ -1474,6 +1551,38 @@ def build_parser():
                          help="max hosts one CIDR may expand to (default: %(default)s)")
     a_hosts.set_defaults(func=cmd_add_hosts)
     p_add.set_defaults(func=lambda a: _missing(p_add))
+
+    p_scope = sub.add_parser(
+        "scope", help="engagement scope rules (allow/deny CIDRs)",
+        description="Optional engagement-scope enforcement. With no rules, every "
+                    "IP is allowed (backward-compat: an engagement that never sets "
+                    "up scope rules works as it always did). Add allow rules to "
+                    "narrow the engagement to specific CIDRs; add deny rules to "
+                    "carve exceptions. Deny always wins. `add hosts` refuses IPs "
+                    "outside scope; commands taking a single IP report the exact "
+                    "scope violation rather than 'not in scope' being confused "
+                    "with 'not in the engagement database'.")
+    scope_sub = p_scope.add_subparsers(dest="scope_command", metavar="<action>")
+    s_show = scope_sub.add_parser("show", help="list the current rules")
+    s_show.set_defaults(func=cmd_scope_show)
+    s_allow = scope_sub.add_parser(
+        "allow", help="add one or more allow CIDRs (narrows the scope)",
+        description="Everything OUTSIDE these CIDRs is rejected. Add several by "
+                    "listing them; each is normalized (10.0.0.5/24 -> 10.0.0.0/24).")
+    s_allow.add_argument("cidrs", nargs="+", metavar="CIDR", help="CIDR to allow")
+    s_allow.add_argument("--notes", metavar="TEXT", help="engagement notes for this rule")
+    s_allow.set_defaults(func=cmd_scope_add, deny=False)
+    s_deny = scope_sub.add_parser(
+        "deny", help="add one or more deny CIDRs (carve exceptions)",
+        description="Carve an exception out of a broader allow. E.g. 10.0.0.0/16 "
+                    "allowed + 10.0.10.0/24 denied = the /16 minus the /24.")
+    s_deny.add_argument("cidrs", nargs="+", metavar="CIDR", help="CIDR to deny")
+    s_deny.add_argument("--notes", metavar="TEXT", help="engagement notes for this rule")
+    s_deny.set_defaults(func=cmd_scope_add, deny=True)
+    s_clear = scope_sub.add_parser("clear", help="drop every scope rule (enforcement OFF)")
+    s_clear.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
+    s_clear.set_defaults(func=cmd_scope_clear)
+    p_scope.set_defaults(func=lambda a: _missing(p_scope))
 
     p_ingest = sub.add_parser("ingest", help="fold captured tool output into state")
     ingest_sub = p_ingest.add_subparsers(dest="ingest_command", metavar="<tool>")

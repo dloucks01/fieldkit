@@ -240,9 +240,26 @@ _V4 = [
     "CREATE INDEX ix_bh_node_name ON bh_node(name)",
 ]
 
+# v5 — engagement scope enforcement. When `scope_rule` has any allow row, only
+# hosts inside an allow CIDR (and not inside a deny CIDR) may be inserted. When
+# empty, hosts may be added freely (backward-compatible with pre-v5 engagements
+# that never set up scope rules).
+_V5 = [
+    """
+    CREATE TABLE scope_rule (
+        id    INTEGER PRIMARY KEY,
+        kind  TEXT NOT NULL CHECK (kind IN ('allow', 'deny')),
+        cidr  TEXT NOT NULL,
+        added TEXT NOT NULL,
+        notes TEXT,
+        UNIQUE (kind, cidr)
+    )
+    """,
+]
+
 #: (version, [statements]) applied in order; a database records the last applied
 #: version in PRAGMA user_version. Append to migrate; never edit a shipped entry.
-MIGRATIONS = [(1, _V1), (2, _V2), (3, _V3), (4, _V4)]
+MIGRATIONS = [(1, _V1), (2, _V2), (3, _V3), (4, _V4), (5, _V5)]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -425,6 +442,62 @@ class Store:
 
     def host_by_id(self, host_id):
         return self.conn.execute("SELECT * FROM host WHERE id = ?", (host_id,)).fetchone()
+
+    # -- scope enforcement --------------------------------------------------
+
+    def scope_add(self, cidr, kind="allow", notes=None):
+        """Add an allow/deny CIDR to the engagement scope. Returns ``(id, created)``.
+
+        ``allow`` narrows the engagement to inside the CIDR; ``deny`` carves an
+        exception out. A ``(kind, cidr)`` pair is unique — re-adding is a no-op.
+        Raises ValueError for an invalid CIDR.
+        """
+        import ipaddress                                    # local — stdlib, cheap
+        net = ipaddress.ip_network(cidr, strict=False)      # normalize; may raise
+        cidr = str(net)
+        with self._write():
+            row = self.conn.execute(
+                "SELECT id FROM scope_rule WHERE kind = ? AND cidr = ?",
+                (kind, cidr)).fetchone()
+            if row is not None:
+                return row["id"], False
+            cur = self.conn.execute(
+                "INSERT INTO scope_rule (kind, cidr, added, notes) VALUES (?, ?, ?, ?)",
+                (kind, cidr, utcnow(), notes))
+            return cur.lastrowid, True
+
+    def scope_rules(self):
+        return self.conn.execute(
+            "SELECT * FROM scope_rule ORDER BY kind, cidr").fetchall()
+
+    def scope_clear(self):
+        with self._write():
+            self.conn.execute("DELETE FROM scope_rule")
+
+    def in_scope(self, ip):
+        """True when ``ip`` is within the engagement scope, or scope is empty.
+
+        Empty scope means "no enforcement" (backward-compat: an engagement that
+        never called :meth:`scope_add` adds hosts freely). Once ANY allow rule
+        exists, ``ip`` must be inside at least one allow rule AND not inside any
+        deny rule. Explicit deny always wins.
+        """
+        import ipaddress
+        rows = self.scope_rules()
+        if not rows:
+            return True                                     # no rules -> no enforcement
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        allows = [ipaddress.ip_network(r["cidr"]) for r in rows if r["kind"] == "allow"]
+        denies = [ipaddress.ip_network(r["cidr"]) for r in rows if r["kind"] == "deny"]
+        if any(addr in net for net in denies):
+            return False
+        if not allows:
+            # only deny rules: everything not denied is allowed (block-list mode)
+            return True
+        return any(addr in net for net in allows)
 
     # -- credentials --------------------------------------------------------
 
