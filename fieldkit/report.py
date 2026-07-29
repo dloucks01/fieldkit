@@ -46,6 +46,19 @@ def build(store, config, *, proven_only=True):
     row = store.require_engagement()
     hosts = {h["id"]: h for h in store.hosts()}
     client = config.get("client") or row["name"]
+    # Credential lineage: everything that was RECOVERED during the assessment
+    # (source != "manual"), grouped by source. This is the audit trail — the report
+    # should say where each recovered login came from, not just that it exists.
+    recovered = []
+    for c in store.credentials():
+        src = (c["source"] or "").strip()
+        if src and src != "manual":
+            recovered.append({
+                "principal": (f"{c['domain']}\\{c['username']}"
+                              if c["domain"] else c["username"]),
+                "kind": c["secret_type"],
+                "source": src,
+            })
     engagement = {
         "client": client,
         "assessor": config.get("assessor") or "",
@@ -57,6 +70,7 @@ def build(store, config, *, proven_only=True):
                           "verbatim (command, output and exit code) in the engagement "
                           "database as it executed.",
         "evidence_log": os.path.basename(store.path or "engagement.db"),
+        "recovered_credentials": recovered,
     }
     findings = []
     for f in store.findings(proven_only=proven_only):
@@ -420,6 +434,26 @@ def render_markdown(engagement, findings):
         w("")
         for i, f in enumerate(observations, 1):
             _render_observation(w, i, f)
+
+    recovered = engagement.get("recovered_credentials") or []
+    if recovered:
+        w("# Credentials recovered during testing")
+        w("")
+        w("The credentials below were **recovered during the assessment** — the audit "
+          "trail for how each one was obtained. Every recovery method here is a "
+          "misconfiguration in its own right (cleartext storage, dumped hive, exposed "
+          "share, promoted GPP cpassword, extracted MSSQL/PostgreSQL/MongoDB user); the "
+          "corresponding remediations are covered under the Findings and Observations "
+          "above.")
+        w("")
+        w("| # | Principal | Kind | Recovered from |")
+        w("|---|-----------|------|----------------|")
+        for n, c in enumerate(recovered, 1):
+            w(f"| {n} | `{c['principal']}` | {c['kind']} | `{c['source']}` |")
+        w("")
+        w("Rotate every credential above; where reuse across systems is suspected, sweep "
+          "adjacent hosts and services for the same login.")
+        w("")
 
     w("## Assessment limitations")
     w("")
