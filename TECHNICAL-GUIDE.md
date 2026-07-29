@@ -238,21 +238,30 @@ and re-fires — once per vector, within budget:
 
 `--no-stage` disables all of it (advance on a miss instead).
 
-In-memory delivery (evasion): a vector may `serves=(script,)` instead of staging a
-binary — the loop serves it over HTTP and the target IEX-loads it in memory (nothing on
-disk). The SeImpersonate ladder's in-memory rung is `Invoke-GodPotato.ps1` via a
-`powershell -ep bypass` IEX download-cradle, so when the native `.exe` Potatoes are AV-caught
-the loop climbs to a fileless delivery that sidesteps the on-disk signature entirely. Needs
-`config set lhost=<ip>`.
+Ready binaries — no compiling. `exploits/fetch.sh` pulls the Potatoes that publish release
+assets as ready `.exe`s (`ghrelease`): GodPotato (broad/default), PrintSpoofer, JuicyPotatoNG,
+RoguePotato, LocalPotato. SweetPotato + the GhostPack set come precompiled from the optional
+`SharpCollection` umbrella (`fetch.sh --only SharpCollection`). `arsenal.find` recurses, so a
+binary nested in that collection resolves like a category-level drop.
 
-In-memory / fileless delivery: a vector may `serves=(script,)` instead of staging a binary
-— the loop serves it over HTTP (ephemeral port, `config lhost`) and the target IEX-loads it in
-memory (nothing on disk). The **SeImpersonate ladder** is generated as 5 native `.exe` rungs
-(`seimpersonate:<tool>`, auto-staged) **plus a `.ps1` equivalent for each**
-(`seimpersonate:ps-<tool>`, serving `Invoke-<Tool>.ps1` via a `powershell -ep bypass` IEX
-cradle). So when the on-disk Potatoes are AV-caught, the loop climbs to the fileless rungs that
-sidestep the on-disk signature. Stage your `Invoke-<Tool>.ps1` wrappers in the arsenal; the ps1
-invocation mirrors the .exe args (tune it to your wrapper).
+In-memory / fileless delivery (evasion): each **.NET** Potato yields two ladder rungs — a native
+`.exe` (`seimpersonate:<tool>`, auto-staged to disk) and a fileless reflective rung
+(`seimpersonate:ps-<tool>`). The reflective rung serves the *same compiled `.exe`* over HTTP
+(ephemeral port, `config set lhost=`) and the target reflectively loads it in memory
+(`[Reflection.Assembly]::Load` + `EntryPoint.Invoke`) — nothing touches disk, no separate `.ps1`
+wrapper needed. So when the on-disk Potatoes are AV-caught, the loop climbs to the reflective
+rung that moots the on-disk signature. (C++ Potatoes — PrintSpoofer/JuicyPotatoNG — aren't .NET
+assemblies, so they're native-exe only.)
+
+AMSI (`config set amsi_bypass=on|off|<oneliner>`): the reflective load still presents its
+assembly to AMSI in memory. `on` prepends a built-in (string-split) `amsiInitFailed` patch before
+the load; supply your own one-liner for a hardened/EDR host. Default off.
+
+ConfuserEx (`fieldkit poc obfuscate <exe|arsenal-name> -o <out> [--confuser PATH]`): drives your
+ConfuserEx CLI (a `.exe` runs under `mono`; set `config confuser_cli=<path>`) over a compiled
+`.exe` to clear the *on-disk* signature for the native rung. fieldkit generates the `.crproj` and
+orchestrates the CLI — it never embeds an obfuscator. `fieldkit poc --check` shows whether it's
+found.
 
 ## 12. Evasion (assume-caught + the delivery ladder)
 

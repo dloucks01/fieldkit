@@ -451,6 +451,7 @@ class FullFunnelTest(unittest.TestCase):
 
         self.cli("init", "ACME Corp")
         self.cli("config", "set", "lhost=127.0.0.1")       # served-payload callback
+        self.cli("config", "set", "amsi_bypass=on")        # patch AMSI before the in-mem load
         self.cli("add", "hosts", "10.0.0.7 WS02")
         self.cli("add", "cred", "corp.local/jdoe:Winter2025!", "--yes")
         self.cli("spray", "smb", "--yes")
@@ -460,8 +461,13 @@ class FullFunnelTest(unittest.TestCase):
         self.assertIn("caught", run)                       # the native delivery tripped AMSI
         self.assertIn("marked 'native-exe' red", run)      # it was learned red, live
         self.assertIn("serving GodPotato.exe", run)        # in-memory reflective delivery
+        self.assertIn("AMSI bypass: built-in", run)        # bypass prepended to the load
         self.assertIn("PROVEN", run)                       # then re-delivered to a win
         self.assertEqual(self.store().counts()["proven_findings"], 1)
+        # the bypass actually reached the executed command (captured verbatim in the step)
+        god = [s for s in self.store().steps() if "Reflection.Assembly" in (s["cmd"] or "")]
+        self.assertTrue(god and "amsiInitFailed" not in god[0]["cmd"]  # split, not literal
+                        and "SetValue" in god[0]["cmd"])
 
         # the live catch persisted: native-exe is now caught in the evasion matrix,
         # so posture (and a future run) will skip it without firing.

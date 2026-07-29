@@ -181,3 +181,103 @@ def have(fmt):
 def toolchain():
     """``[(tool, path_or_None)]`` for every builder — for ``fieldkit poc --check``."""
     return [(t, shutil.which(t)) for t in TOOLS]
+
+
+# ---- ConfuserEx obfuscation --------------------------------------------------
+# Orchestration only: fieldkit generates the .crproj and drives the operator's ConfuserEx
+# CLI — it never ships or embeds an obfuscator (same boundary as msfvenom/wixl/gcc). Turns
+# a compiled .NET assembly (e.g. a Potato .exe) into an obfuscated variant that clears the
+# on-disk signature for the native rung; the in-memory rung stays the AMSI-bypass path.
+
+#: ConfuserEx protections applied by default (id -> as named in a .crproj rule).
+CONFUSER_PROTECTIONS = ("anti debug", "constants", "ctrl flow", "rename")
+
+
+def _wrap_confuser(path):
+    """(argv-prefix, path): a ``.exe`` CLI runs under mono; a native CLI runs directly.
+    Returns (None, path) when a ``.exe`` needs mono and mono is absent."""
+    if path.lower().endswith(".exe"):
+        mono = shutil.which("mono")
+        return ([mono, path], path) if mono else (None, path)
+    return ([path], path)
+
+
+def _confuser_cli(override=None):
+    """(argv-prefix, display-path) for the ConfuserEx CLI, or (None, None).
+
+    An explicit ``override`` (config/flag) is trusted as given — the operator knows their
+    path; a wrong one surfaces when the run fails. Otherwise PATH is searched, preferring a
+    native CLI over a ``.exe`` that would need mono.
+    """
+    if override:
+        return _wrap_confuser(override)
+    fallback = None
+    for n in ("Confuser.CLI", "ConfuserEx.CLI", "confuser-cli",
+              "Confuser.CLI.exe", "ConfuserEx.CLI.exe"):
+        p = shutil.which(n)
+        if not p:
+            continue
+        prefix, path = _wrap_confuser(p)
+        if prefix:
+            return prefix, path
+        fallback = fallback or (None, path)   # a .exe found but mono missing
+    return fallback or (None, None)
+
+
+def confuser(override=None):
+    """The resolved ConfuserEx CLI display-path, or None — for ``poc --check``."""
+    return _confuser_cli(override)[1]
+
+
+def _crproj(basedir, outdir, module, protections):
+    rules = "".join(f'    <protection id="{_xml_escape(p)}" />\n' for p in protections)
+    return (f'<project outputDir="{_xml_escape(outdir)}" baseDir="{_xml_escape(basedir)}" '
+            'xmlns="http://confuser.codeplex.com">\n'
+            '  <rule pattern="true" inherit="false">\n'
+            f'{rules}'
+            '  </rule>\n'
+            f'  <module path="{_xml_escape(module)}" />\n'
+            '</project>\n')
+
+
+def obfuscate(input_path, out, *, protections=None, cli=None, run=None, workdir=None):
+    """Obfuscate a compiled .NET assembly with ConfuserEx; return a :class:`BuildResult`.
+
+    fieldkit writes the ``.crproj`` and drives the CLI through the injected ``run`` — it
+    never embeds obfuscation. ``cli`` overrides CLI discovery; ``run`` is injected for tests.
+    Never raises for a missing CLI or a nonzero run (the caller reads ``ok``).
+    """
+    if not os.path.exists(input_path):
+        return BuildResult(False, "confuser", detail=f"input not found: {input_path}")
+    prefix, cli_path = _confuser_cli(cli)
+    if not prefix:
+        hint = ("ConfuserEx CLI not found — install it and `config set confuser_cli=<path>` "
+                "(or pass --confuser). A .exe CLI also needs mono on PATH."
+                if not cli_path else
+                f"found {cli_path} but mono is not on PATH (needed to run a .exe CLI)")
+        return BuildResult(False, "confuser", tool="ConfuserEx", detail=hint)
+    wd = workdir or tempfile.mkdtemp(prefix="fk-confuser-")
+    basedir = os.path.dirname(os.path.abspath(input_path)) or "."
+    module = os.path.basename(input_path)
+    outdir = os.path.join(wd, "obf")
+    proj = os.path.join(wd, "fk.crproj")
+    _write(proj, _crproj(basedir, outdir, module, protections or CONFUSER_PROTECTIONS))
+    run = run or (lambda argv: runner_mod.run(argv, timeout=300))
+    res = run(prefix + [proj])
+    if getattr(res, "error", None):
+        return BuildResult(False, "confuser", tool="ConfuserEx", detail=res.error)
+    if getattr(res, "exit_code", 0) not in (0, None):
+        tail = (getattr(res, "output", "") or "")[-200:].strip()
+        return BuildResult(False, "confuser", tool="ConfuserEx",
+                           detail=f"ConfuserEx exited {res.exit_code}: {tail}")
+    produced = os.path.join(outdir, module)
+    if not os.path.exists(produced):
+        return BuildResult(False, "confuser", tool="ConfuserEx",
+                           detail=f"ConfuserEx ran but produced no output at {produced}")
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+        shutil.move(produced, out)
+    except OSError as exc:
+        return BuildResult(False, "confuser", tool="ConfuserEx", detail=str(exc))
+    return BuildResult(True, "confuser", path=out, tool="ConfuserEx",
+                       detail=f"obfuscated {module} with ConfuserEx")
