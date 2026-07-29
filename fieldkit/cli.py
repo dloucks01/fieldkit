@@ -13,6 +13,7 @@ Phase 0 surface:
     fieldkit status
 """
 import argparse
+import functools
 import os
 import sqlite3
 import sys
@@ -64,6 +65,39 @@ def _confirm(question, assume_yes=False):
     except EOFError:
         return False
     return answer in ("y", "yes")
+
+
+def needs_engagement(fn):
+    """Wrap a ``cmd_`` handler with the standard "open store + require engagement"
+    prologue. The wrapped function is called as ``fn(args, store)``.
+
+    Cuts the same three-line boilerplate ("with _open_store … require_engagement …")
+    from every handler and consolidates it: one place to change if the setup ever
+    grows a step (a preflight probe, a config load, an idle-DB warning)."""
+    @functools.wraps(fn)
+    def wrapper(args):
+        with _open_store(args) as store:
+            store.require_engagement()
+            return fn(args, store)
+    return wrapper
+
+
+def needs_target(fn):
+    """Same as :func:`needs_engagement`, plus resolves ``args.host`` to (host, cred).
+    The wrapped function is called as ``fn(args, store, host, cred)``.
+
+    Errors out (with the canonical message from :func:`_resolve_target`) before the
+    handler runs — the handler sees only a valid target."""
+    @functools.wraps(fn)
+    def wrapper(args):
+        with _open_store(args) as store:
+            store.require_engagement()
+            host, cred, err = _resolve_target(store, args.host)
+            if err:
+                _err(err)
+                return 2
+            return fn(args, store, host, cred)
+    return wrapper
 
 
 def _word(n, word):
@@ -340,30 +374,25 @@ def _expand_stage_dirs(store, host_ip, host_os, cfg, vectors, dirs):
     return out
 
 
-def cmd_spider(args):
+@needs_target
+def cmd_spider(args, store, host, cred):
     """SMB share spider + scrub → loot → creds. Uses nxc's spider_plus module."""
-    with _open_store(args) as store:
-        store.require_engagement()
-        host, cred, err = _resolve_target(store, args.host)
-        if host is None:
-            _err(err)
-            return 2
-        if host["os"] and host["os"] != "windows":
-            _err(f"{args.host} is {host['os']} — SMB spidering is Windows-only")
-            return 2
+    if host["os"] and host["os"] != "windows":
+        _err(f"{args.host} is {host['os']} — SMB spidering is Windows-only")
+        return 2
 
-        out = args.out or os.path.join(_build_dir(), f"spider-{host['ip']}")
-        os.makedirs(out, exist_ok=True)
-        question = (f"spider readable SMB shares on {args.host}, download all files "
-                    f"under 50KB to {out}, and scrub them for secrets? this pulls a "
-                    "copy of the client's files")
-        if not _confirm(question, args.yes):
-            print("aborted — nothing ran")
-            return 1
+    out = args.out or os.path.join(_build_dir(), f"spider-{host['ip']}")
+    os.makedirs(out, exist_ok=True)
+    question = (f"spider readable SMB shares on {args.host}, download all files "
+                f"under 50KB to {out}, and scrub them for secrets? this pulls a "
+                "copy of the client's files")
+    if not _confirm(question, args.yes):
+        print("aborted — nothing ran")
+        return 1
 
-        rep = sharespider_mod.spider_and_scrub(
-            store, host, cred, output_folder=out, on_event=lambda m: print(m),
-            allow_promotion=not args.no_promote)
+    rep = sharespider_mod.spider_and_scrub(
+        store, host, cred, output_folder=out, on_event=lambda m: print(m),
+        allow_promotion=not args.no_promote)
 
     if rep.error:
         _err(f"nxc did not run: {rep.error}")
@@ -384,13 +413,12 @@ def cmd_spider(args):
     return 0
 
 
-def cmd_analyze(args):
-    with _open_store(args) as store:
-        store.require_engagement()
-        cfg = config_mod.load(store)
-        items = list(kb_mod.analyze(store))
-        items += privesc_mod.vectors_from_state(store, **_stage_dirs(cfg))
-        counts = store.counts()
+@needs_engagement
+def cmd_analyze(args, store):
+    cfg = config_mod.load(store)
+    items = list(kb_mod.analyze(store))
+    items += privesc_mod.vectors_from_state(store, **_stage_dirs(cfg))
+    counts = store.counts()
     items.sort(key=lambda x: -x.score)
 
     if not items:
@@ -470,23 +498,18 @@ def _facts_summary(facts):
     return lines
 
 
-def cmd_enum(args):
-    with _open_store(args) as store:
-        store.require_engagement()
-        host, cred, err = _resolve_target(store, args.host)
-        if err:
-            _err(err)
-            return 2
-        principal = creds_mod.Credential.from_row(cred).principal
-        if not _confirm(f"enumerate {args.host} as {principal}? (read-only, runs commands "
-                        "on the target)", args.yes):
-            print("aborted — nothing ran")
-            return 1
-        report = hostenum_mod.run_enum(store, host, cred, on_event=lambda m: print(m))
-        if report.blocked:
-            _err(report.blocked)
-            return 2
-        facts = hostenum_mod.facts_for(store, host["id"])
+@needs_target
+def cmd_enum(args, store, host, cred):
+    principal = creds_mod.Credential.from_row(cred).principal
+    if not _confirm(f"enumerate {args.host} as {principal}? (read-only, runs commands "
+                    "on the target)", args.yes):
+        print("aborted — nothing ran")
+        return 1
+    report = hostenum_mod.run_enum(store, host, cred, on_event=lambda m: print(m))
+    if report.blocked:
+        _err(report.blocked)
+        return 2
+    facts = hostenum_mod.facts_for(store, host["id"])
 
     print(f"\nenumerated {args.host}: {_plural(len(report.ran), 'check')} captured"
           + (f", {len(report.failed)} failed" if report.failed else ""))
@@ -497,54 +520,49 @@ def cmd_enum(args):
     return 0
 
 
-def cmd_run(args):
-    with _open_store(args) as store:
-        store.require_engagement()
-        cfg = config_mod.load(store)
-        host, cred, err = _resolve_target(store, args.host)
-        if err:
-            _err(err)
-            return 2
-        vector = privesc_mod.find_vector(store, args.host, args.vector, **_stage_dirs(cfg))
-        if vector is None:
-            available = [v.key for v in privesc_mod.vectors_from_state(store, **_stage_dirs(cfg))
-                         if v.host == args.host]
-            _err(f"no vector {args.vector!r} on {args.host}"
-                 + (f" — available: {', '.join(available)}" if available
-                    else " — run `fieldkit enum` then `fieldkit analyze` first"))
-            return 2
+@needs_target
+def cmd_run(args, store, host, cred):
+    cfg = config_mod.load(store)
+    vector = privesc_mod.find_vector(store, args.host, args.vector, **_stage_dirs(cfg))
+    if vector is None:
+        available = [v.key for v in privesc_mod.vectors_from_state(store, **_stage_dirs(cfg))
+                     if v.host == args.host]
+        _err(f"no vector {args.vector!r} on {args.host}"
+             + (f" — available: {', '.join(available)}" if available
+                else " — run `fieldkit enum` then `fieldkit analyze` first"))
+        return 2
 
-        allow = ["read-only"] + list(args.allow or [])
-        gated = not executor_mod.gate(vector.safety, allow)
-        print(f"vector: {vector.title}")
-        print(f"  host {args.host}  rank {vector.axes}  safety {vector.safety}")
-        print(f"  command: {vector.command}")
-        if vector.cleanup:
-            print(f"  cleanup: {vector.cleanup}")
-        if gated:
-            _err(f"{vector.safety} action blocked by the safety gate — re-run with "
-                 f"--allow {vector.safety}")
-            return 2
-        if not _confirm(f"run this on {args.host}? (executes on the target)", args.yes):
-            print("aborted — nothing ran")
-            return 1
+    allow = ["read-only"] + list(args.allow or [])
+    gated = not executor_mod.gate(vector.safety, allow)
+    print(f"vector: {vector.title}")
+    print(f"  host {args.host}  rank {vector.axes}  safety {vector.safety}")
+    print(f"  command: {vector.command}")
+    if vector.cleanup:
+        print(f"  cleanup: {vector.cleanup}")
+    if gated:
+        _err(f"{vector.safety} action blocked by the safety gate — re-run with "
+             f"--allow {vector.safety}")
+        return 2
+    if not _confirm(f"run this on {args.host}? (executes on the target)", args.yes):
+        print("aborted — nothing ran")
+        return 1
 
-        vtype = vector.report_type or vector.key.split(":", 1)[0]
-        finding_id, _ = store.add_finding(
-            vtype, vector.title, host_id=host["id"], risk=vector.detection)
-        creates = [(f"{vector.title} (artifact)", vector.cleanup)] if vector.cleanup else ()
-        action = executor_mod.Action(
-            host=host, cred=cred, command=vector.command, label=f"vector:{vector.key}",
-            safety=vector.safety, shell=vector.shell, finding_id=finding_id, creates=creates)
-        res = executor_mod.execute(store, action, allow=allow, on_event=lambda m: print(m))
+    vtype = vector.report_type or vector.key.split(":", 1)[0]
+    finding_id, _ = store.add_finding(
+        vtype, vector.title, host_id=host["id"], risk=vector.detection)
+    creates = [(f"{vector.title} (artifact)", vector.cleanup)] if vector.cleanup else ()
+    action = executor_mod.Action(
+        host=host, cred=cred, command=vector.command, label=f"vector:{vector.key}",
+        safety=vector.safety, shell=vector.shell, finding_id=finding_id, creates=creates)
+    res = executor_mod.execute(store, action, allow=allow, on_event=lambda m: print(m))
 
-        if res.blocked:
-            _err(res.blocked)
-            return 2
-        verdict = classify_mod.classify(res.run, os_name=host["os"])
-        if verdict.ok:
-            store.add_finding(vtype, vector.title, host_id=host["id"], proven=True,
-                              evidence=(res.output or "").strip()[:500])
+    if res.blocked:
+        _err(res.blocked)
+        return 2
+    verdict = classify_mod.classify(res.run, os_name=host["os"])
+    if verdict.ok:
+        store.add_finding(vtype, vector.title, host_id=host["id"], proven=True,
+                          evidence=(res.output or "").strip()[:500])
 
     print("\n--- output ---")
     print((res.output or "").rstrip() or "(no output)")
@@ -892,23 +910,18 @@ def cmd_poc(args):
     return 0
 
 
-def cmd_mssql_escalate(args):
-    with _open_store(args) as store:
-        store.require_engagement()
-        host, cred, err = _resolve_target(store, args.host)
-        if err:
-            _err(err)
-            return 2
-        allow_cc = "config-change" in (args.allow or [])
-        prompt = ("enumerate + escalate MSSQL privileges on "
-                  + args.host + (" (may add your login to the sysadmin role — reversible)?"
-                                 if allow_cc else
-                                 " (read-only enum; add --allow config-change to escalate)?"))
-        if not _confirm(prompt, args.yes):
-            print("aborted — nothing ran")
-            return 1
-        rep = mssql_mod.escalate_privs(store, host, cred, allow_config_change=allow_cc,
-                                       on_event=lambda m: print(m))
+@needs_target
+def cmd_mssql_escalate(args, store, host, cred):
+    allow_cc = "config-change" in (args.allow or [])
+    prompt = ("enumerate + escalate MSSQL privileges on "
+              + args.host + (" (may add your login to the sysadmin role — reversible)?"
+                             if allow_cc else
+                             " (read-only enum; add --allow config-change to escalate)?"))
+    if not _confirm(prompt, args.yes):
+        print("aborted — nothing ran")
+        return 1
+    rep = mssql_mod.escalate_privs(store, host, cred, allow_config_change=allow_cc,
+                                   on_event=lambda m: print(m))
     if rep.aborted:
         _err(rep.aborted)
         return 2
@@ -943,25 +956,20 @@ def cmd_mssql_escalate(args):
     return 0
 
 
-def cmd_postgres_escalate(args):
-    with _open_store(args) as store:
-        store.require_engagement()
-        host, cred, err = _resolve_target(store, args.host)
-        if err:
-            _err(err)
-            return 2
-        allow_cc = "config-change" in (args.allow or [])
-        prompt = (f"enumerate + escalate PostgreSQL privileges on {args.host}:{args.port}"
-                  + (" (may run `id` on the target via COPY FROM PROGRAM — reversible)?"
-                     if allow_cc else
-                     " (read-only enum; add --allow config-change to run COPY FROM PROGRAM)?"))
-        if not _confirm(prompt, args.yes):
-            print("aborted — nothing ran")
-            return 1
-        rep = postgres_mod.escalate_privs(
-            store, host, cred, allow_config_change=allow_cc,
-            port=args.port, database=args.database,
-            on_event=lambda m: print(m))
+@needs_target
+def cmd_postgres_escalate(args, store, host, cred):
+    allow_cc = "config-change" in (args.allow or [])
+    prompt = (f"enumerate + escalate PostgreSQL privileges on {args.host}:{args.port}"
+              + (" (may run `id` on the target via COPY FROM PROGRAM — reversible)?"
+                 if allow_cc else
+                 " (read-only enum; add --allow config-change to run COPY FROM PROGRAM)?"))
+    if not _confirm(prompt, args.yes):
+        print("aborted — nothing ran")
+        return 1
+    rep = postgres_mod.escalate_privs(
+        store, host, cred, allow_config_change=allow_cc,
+        port=args.port, database=args.database,
+        on_event=lambda m: print(m))
     if rep.aborted:
         _err(rep.aborted)
         return 2
@@ -990,26 +998,21 @@ def cmd_postgres_escalate(args):
     return 0
 
 
-def cmd_mongodb_escalate(args):
-    with _open_store(args) as store:
-        store.require_engagement()
-        host, cred, err = _resolve_target(store, args.host)
-        if err:
-            _err(err)
-            return 2
-        allow_cc = "config-change" in (args.allow or [])
-        prompt = (f"enumerate MongoDB on {args.host}:{args.port}"
-                  + (" (will dump admin.system.users + count credential-fields — "
-                     "read-only against DB state, writes to the audit log)?"
-                     if allow_cc else
-                     " (surface only; add --allow config-change to dump users/scan data)?"))
-        if not _confirm(prompt, args.yes):
-            print("aborted — nothing ran")
-            return 1
-        rep = mongodb_mod.enumerate_privs(
-            store, host, cred, allow_config_change=allow_cc,
-            port=args.port, database=args.database, scan_data=args.scan_data,
-            on_event=lambda m: print(m))
+@needs_target
+def cmd_mongodb_escalate(args, store, host, cred):
+    allow_cc = "config-change" in (args.allow or [])
+    prompt = (f"enumerate MongoDB on {args.host}:{args.port}"
+              + (" (will dump admin.system.users + count credential-fields — "
+                 "read-only against DB state, writes to the audit log)?"
+                 if allow_cc else
+                 " (surface only; add --allow config-change to dump users/scan data)?"))
+    if not _confirm(prompt, args.yes):
+        print("aborted — nothing ran")
+        return 1
+    rep = mongodb_mod.enumerate_privs(
+        store, host, cred, allow_config_change=allow_cc,
+        port=args.port, database=args.database, scan_data=args.scan_data,
+        on_event=lambda m: print(m))
     if rep.aborted:
         _err(rep.aborted)
         return 2
@@ -1115,31 +1118,30 @@ def _domain_credential(store):
     return None
 
 
-def cmd_roast(args):
-    with _open_store(args) as store:
-        store.require_engagement()
-        dcs = [h for h in store.hosts() if h["is_dc"]]
-        dc_ip = args.dc or (dcs[0]["ip"] if dcs else None)
-        if not dc_ip:
-            _err("no DC known — mark one with `add hosts --dc`, or pass --dc <ip>")
-            return 2
-        dc_host = store.host_by_ip(dc_ip)
-        if dc_host is None:
-            _err(f"{dc_ip} is not in scope — add it with `fieldkit add hosts`")
-            return 2
-        cred = _domain_credential(store)
-        if cred is None:
-            _err("roasting needs a domain credential — add one with `fieldkit add cred`")
-            return 2
-        kinds = {"both": ("kerberoast", "asrep_roast"), "kerberoast": ("kerberoast",),
-                 "asrep": ("asrep_roast",)}[args.kind]
-        principal = creds_mod.Credential.from_row(cred).principal
-        if not _confirm(f"roast {', '.join(kinds)} against {dc_ip} as {principal}? "
-                        "(read-only Kerberos requests)", args.yes):
-            print("aborted — nothing ran")
-            return 1
-        report = kerberos_mod.run_roast(store, dc_host, cred, kinds=kinds,
-                                        on_event=lambda m: print(m))
+@needs_engagement
+def cmd_roast(args, store):
+    dcs = [h for h in store.hosts() if h["is_dc"]]
+    dc_ip = args.dc or (dcs[0]["ip"] if dcs else None)
+    if not dc_ip:
+        _err("no DC known — mark one with `add hosts --dc`, or pass --dc <ip>")
+        return 2
+    dc_host = store.host_by_ip(dc_ip)
+    if dc_host is None:
+        _err(f"{dc_ip} is not in scope — add it with `fieldkit add hosts`")
+        return 2
+    cred = _domain_credential(store)
+    if cred is None:
+        _err("roasting needs a domain credential — add one with `fieldkit add cred`")
+        return 2
+    kinds = {"both": ("kerberoast", "asrep_roast"), "kerberoast": ("kerberoast",),
+             "asrep": ("asrep_roast",)}[args.kind]
+    principal = creds_mod.Credential.from_row(cred).principal
+    if not _confirm(f"roast {', '.join(kinds)} against {dc_ip} as {principal}? "
+                    "(read-only Kerberos requests)", args.yes):
+        print("aborted — nothing ran")
+        return 1
+    report = kerberos_mod.run_roast(store, dc_host, cred, kinds=kinds,
+                                    on_event=lambda m: print(m))
     if report.aborted:
         _err(report.aborted)
         return 2
@@ -1149,18 +1151,17 @@ def cmd_roast(args):
     return 0
 
 
-def cmd_bloodhound_import(args):
+@needs_engagement
+def cmd_bloodhound_import(args, store):
     if not os.path.exists(args.path):
         _err(f"{args.path}: no such file or directory")
         return 2
-    with _open_store(args) as store:
-        store.require_engagement()
-        try:
-            counts = bloodhound_mod.import_graph(store, args.path)
-        except ValueError as exc:
-            _err(str(exc))
-            return 2
-        paths = bloodhound_mod.owned_paths(store)
+    try:
+        counts = bloodhound_mod.import_graph(store, args.path)
+    except ValueError as exc:
+        _err(str(exc))
+        return 2
+    paths = bloodhound_mod.owned_paths(store)
     print(f"imported {counts['nodes']} nodes, {counts['edges']} edges "
           f"({counts['high_value']} high-value)")
     if paths:
@@ -1174,28 +1175,27 @@ def cmd_bloodhound_import(args):
     return 0
 
 
-def cmd_delegation(args):
-    with _open_store(args) as store:
-        store.require_engagement()
-        dcs = [h for h in store.hosts() if h["is_dc"]]
-        dc_ip = args.dc or (dcs[0]["ip"] if dcs else None)
-        if not dc_ip:
-            _err("no DC known — mark one with `add hosts --dc`, or pass --dc <ip>")
-            return 2
-        dc_host = store.host_by_ip(dc_ip)
-        if dc_host is None:
-            _err(f"{dc_ip} is not in scope — add it with `fieldkit add hosts`")
-            return 2
-        cred = _domain_credential(store)
-        if cred is None:
-            _err("finding delegation needs a domain credential — add one with `add cred`")
-            return 2
-        principal = creds_mod.Credential.from_row(cred).principal
-        if not _confirm(f"enumerate Kerberos delegation on {dc_ip} as {principal}? "
-                        "(nxc --find-delegation, read-only)", args.yes):
-            print("aborted — nothing ran")
-            return 1
-        report = delegation_mod.run_find(store, dc_host, cred, on_event=lambda m: print(m))
+@needs_engagement
+def cmd_delegation(args, store):
+    dcs = [h for h in store.hosts() if h["is_dc"]]
+    dc_ip = args.dc or (dcs[0]["ip"] if dcs else None)
+    if not dc_ip:
+        _err("no DC known — mark one with `add hosts --dc`, or pass --dc <ip>")
+        return 2
+    dc_host = store.host_by_ip(dc_ip)
+    if dc_host is None:
+        _err(f"{dc_ip} is not in scope — add it with `fieldkit add hosts`")
+        return 2
+    cred = _domain_credential(store)
+    if cred is None:
+        _err("finding delegation needs a domain credential — add one with `add cred`")
+        return 2
+    principal = creds_mod.Credential.from_row(cred).principal
+    if not _confirm(f"enumerate Kerberos delegation on {dc_ip} as {principal}? "
+                    "(nxc --find-delegation, read-only)", args.yes):
+        print("aborted — nothing ran")
+        return 1
+    report = delegation_mod.run_find(store, dc_host, cred, on_event=lambda m: print(m))
     if report.aborted:
         _err(report.aborted)
         return 2
@@ -1204,28 +1204,27 @@ def cmd_delegation(args):
     return 0
 
 
-def cmd_adcs_find(args):
-    with _open_store(args) as store:
-        store.require_engagement()
-        dcs = [h for h in store.hosts() if h["is_dc"]]
-        dc_ip = args.dc or (dcs[0]["ip"] if dcs else None)
-        if not dc_ip:
-            _err("no DC/CA known — mark one with `add hosts --dc`, or pass --dc <ip>")
-            return 2
-        dc_host = store.host_by_ip(dc_ip)
-        if dc_host is None:
-            _err(f"{dc_ip} is not in scope — add it with `fieldkit add hosts`")
-            return 2
-        cred = _domain_credential(store)
-        if cred is None:
-            _err("certipy needs a domain credential — add one with `fieldkit add cred`")
-            return 2
-        principal = creds_mod.Credential.from_row(cred).principal
-        if not _confirm(f"enumerate vulnerable certificate templates on {dc_ip} as "
-                        f"{principal}? (certipy find, read-only)", args.yes):
-            print("aborted — nothing ran")
-            return 1
-        report = adcs_mod.run_find(store, dc_host, cred, on_event=lambda m: print(m))
+@needs_engagement
+def cmd_adcs_find(args, store):
+    dcs = [h for h in store.hosts() if h["is_dc"]]
+    dc_ip = args.dc or (dcs[0]["ip"] if dcs else None)
+    if not dc_ip:
+        _err("no DC/CA known — mark one with `add hosts --dc`, or pass --dc <ip>")
+        return 2
+    dc_host = store.host_by_ip(dc_ip)
+    if dc_host is None:
+        _err(f"{dc_ip} is not in scope — add it with `fieldkit add hosts`")
+        return 2
+    cred = _domain_credential(store)
+    if cred is None:
+        _err("certipy needs a domain credential — add one with `fieldkit add cred`")
+        return 2
+    principal = creds_mod.Credential.from_row(cred).principal
+    if not _confirm(f"enumerate vulnerable certificate templates on {dc_ip} as "
+                    f"{principal}? (certipy find, read-only)", args.yes):
+        print("aborted — nothing ran")
+        return 1
+    report = adcs_mod.run_find(store, dc_host, cred, on_event=lambda m: print(m))
     if report.aborted:
         _err(report.aborted)
         return 2
@@ -1234,13 +1233,12 @@ def cmd_adcs_find(args):
     return 0
 
 
-def cmd_report(args):
+@needs_engagement
+def cmd_report(args, store):
     # Observations are in the report by default now; --proven-only drops them. (--all is a
     # retired no-op alias — it used to be the way to include observations.)
-    with _open_store(args) as store:
-        store.require_engagement()
-        cfg = config_mod.load(store)
-        engagement, findings = report_mod.build(store, cfg, proven_only=args.proven_only)
+    cfg = config_mod.load(store)
+    engagement, findings = report_mod.build(store, cfg, proven_only=args.proven_only)
 
     proven = [f for f in findings if f.get("proven", True)]
     errors, warns = report_mod.check(findings)
@@ -1289,12 +1287,11 @@ def cmd_report(args):
     return 0
 
 
-def cmd_export_recce(args):
+@needs_engagement
+def cmd_export_recce(args, store):
     import json
-    with _open_store(args) as store:
-        store.require_engagement()
-        cfg = config_mod.load(store)
-        engagement, findings = report_mod.build(store, cfg, proven_only=not args.all)
+    cfg = config_mod.load(store)
+    engagement, findings = report_mod.build(store, cfg, proven_only=not args.all)
     if not findings:
         _err("no proven findings to export — run `fieldkit run` to prove vectors first "
              "(or --all to include unproven)")
@@ -1361,49 +1358,49 @@ def cmd_arsenal_check(args):
     return 0
 
 
-def cmd_status(args):
-    with _open_store(args) as store:
-        row = store.require_engagement()
-        cfg = config_mod.load(store)
-        counts = store.counts()
+@needs_engagement
+def cmd_status(args, store):
+    row = store.require_engagement()
+    cfg = config_mod.load(store)
+    counts = store.counts()
 
-        print(f"engagement:  {row['name']}   created {row['created']}")
-        print(f"database:    {store.path}")
-        summary = "  ".join(
-            f"{k}={cfg.get(k)}" for k in config_mod.HEADLINE_KEYS if cfg.get(k))
-        overrides = cfg.overrides()
-        print(f"config:      {summary or '(unset — run `fieldkit config set lhost=…`)'}"
-              + (f"   (+{_plural(len(overrides), 'subnet override')})" if overrides else ""))
-        print()
+    print(f"engagement:  {row['name']}   created {row['created']}")
+    print(f"database:    {store.path}")
+    summary = "  ".join(
+        f"{k}={cfg.get(k)}" for k in config_mod.HEADLINE_KEYS if cfg.get(k))
+    overrides = cfg.overrides()
+    print(f"config:      {summary or '(unset — run `fieldkit config set lhost=…`)'}"
+          + (f"   (+{_plural(len(overrides), 'subnet override')})" if overrides else ""))
+    print()
 
-        os_mix = "  ".join(f"{r['os'] or 'unfingerprinted'} {r['n']}"
-                           for r in store.host_os_breakdown())
-        cred_mix = "  ".join(f"{r['secret_type']} {r['n']}"
-                             for r in store.credential_type_breakdown())
-        print(f"hosts        {counts['hosts']:>5}   {os_mix}")
-        print(f"services     {counts['services']:>5}")
-        print(f"credentials  {counts['credentials']:>5}   {cred_mix}")
-        print(f"access       {counts['access']:>5}   "
-              f"{counts['admin_access']} admin on {_plural(counts['admin_hosts'], 'host')}")
-        print(f"findings     {counts['findings']:>5}   {counts['proven_findings']} proven")
-        print(f"loot         {counts['loot']:>5}")
+    os_mix = "  ".join(f"{r['os'] or 'unfingerprinted'} {r['n']}"
+                       for r in store.host_os_breakdown())
+    cred_mix = "  ".join(f"{r['secret_type']} {r['n']}"
+                         for r in store.credential_type_breakdown())
+    print(f"hosts        {counts['hosts']:>5}   {os_mix}")
+    print(f"services     {counts['services']:>5}")
+    print(f"credentials  {counts['credentials']:>5}   {cred_mix}")
+    print(f"access       {counts['access']:>5}   "
+          f"{counts['admin_access']} admin on {_plural(counts['admin_hosts'], 'host')}")
+    print(f"findings     {counts['findings']:>5}   {counts['proven_findings']} proven")
+    print(f"loot         {counts['loot']:>5}")
 
-        if args.hosts:
-            print("\nhosts:")
-            for host in store.hosts():
-                print(f"  {host['ip']:<39} {host['hostname'] or '':<20} "
-                      f"{host['os'] or '':<8} {host['subnet'] or ''}"
-                      + ("  DC" if host["is_dc"] else ""))
-        if args.creds:
-            print("\ncredentials:")
-            for row in store.credentials():
-                cred = creds_mod.Credential.from_row(row)
-                print(f"  {cred.principal:<32} {cred.secret_type:<9} source={row['source']}")
+    if args.hosts:
+        print("\nhosts:")
+        for host in store.hosts():
+            print(f"  {host['ip']:<39} {host['hostname'] or '':<20} "
+                  f"{host['os'] or '':<8} {host['subnet'] or ''}"
+                  + ("  DC" if host["is_dc"] else ""))
+    if args.creds:
+        print("\ncredentials:")
+        for row in store.credentials():
+            cred = creds_mod.Credential.from_row(row)
+            print(f"  {cred.principal:<32} {cred.secret_type:<9} source={row['source']}")
 
-        if not counts["hosts"]:
-            print(f"\nnext: {PROG} add hosts scope.txt")
-        elif not counts["credentials"]:
-            print(f"\nnext: {PROG} add cred 'CORP/jdoe:Winter2025!'")
+    if not counts["hosts"]:
+        print(f"\nnext: {PROG} add hosts scope.txt")
+    elif not counts["credentials"]:
+        print(f"\nnext: {PROG} add cred 'CORP/jdoe:Winter2025!'")
     return 0
 
 
