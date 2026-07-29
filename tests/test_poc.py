@@ -112,5 +112,62 @@ class ToolchainTest(unittest.TestCase):
             self.assertIn(t, tools)
 
 
+class ConfuserTest(unittest.TestCase):
+    """ConfuserEx obfuscation orchestration — the CLI is faked, none is invoked."""
+
+    def setUp(self):
+        self.wd = tempfile.mkdtemp()
+        self.src = os.path.join(self.wd, "GodPotato.exe")
+        with open(self.src, "w") as fh:
+            fh.write("MZ")
+
+    def _fake_confuser(self, produce=True):
+        """A fake run() that emulates ConfuserEx: read the .crproj, write outputDir/module."""
+        seen = {}
+
+        def run(argv):
+            seen["argv"] = argv
+            proj = argv[-1]
+            import re
+            outdir = re.search(r'outputDir="([^"]+)"', open(proj).read()).group(1)
+            if produce:
+                os.makedirs(outdir, exist_ok=True)
+                with open(os.path.join(outdir, "GodPotato.exe"), "w") as fh:
+                    fh.write("OBFUSCATED")
+            return RunResult(argv, exit_code=0, stdout="done")
+        return run, seen
+
+    def test_obfuscate_drives_cli_with_a_generated_crproj(self):
+        run, seen = self._fake_confuser()
+        out = os.path.join(self.wd, "god-obf.exe")
+        res = poc.obfuscate(self.src, out, cli="/opt/ConfuserEx/Confuser.CLI", run=run)
+        self.assertTrue(res.ok, res.detail)
+        self.assertEqual(res.tool, "ConfuserEx")
+        self.assertEqual(seen["argv"][0], "/opt/ConfuserEx/Confuser.CLI")   # native CLI, no mono
+        self.assertTrue(seen["argv"][-1].endswith(".crproj"))
+        self.assertEqual(open(out).read(), "OBFUSCATED")                    # moved to out
+
+    def test_missing_input_is_not_ok(self):
+        run, _ = self._fake_confuser()
+        res = poc.obfuscate("/no/such.exe", os.path.join(self.wd, "o.exe"),
+                            cli="/opt/Confuser.CLI", run=run)
+        self.assertFalse(res.ok)
+        self.assertIn("input not found", res.detail)
+
+    def test_no_cli_is_a_clean_failure_not_a_crash(self):
+        run, _ = self._fake_confuser()
+        # an unresolved CLI (empty override, nothing on PATH in CI) fails gracefully
+        res = poc.obfuscate(self.src, os.path.join(self.wd, "o.exe"), cli=None, run=run)
+        self.assertFalse(res.ok)
+        self.assertIn("ConfuserEx", res.detail)
+
+    def test_cli_ran_but_no_output(self):
+        run, _ = self._fake_confuser(produce=False)
+        res = poc.obfuscate(self.src, os.path.join(self.wd, "o.exe"),
+                            cli="/opt/Confuser.CLI", run=run)
+        self.assertFalse(res.ok)
+        self.assertIn("no output", res.detail)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

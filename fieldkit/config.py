@@ -94,6 +94,10 @@ KEYS = {
     "passlist":  (_v_path, "path to the password wordlist"),
     "client":    (lambda k, v: v, "client name, for the report header"),
     "lab_host":  (_v_host, "a Defender-on Windows lab host to prove evasion against (see `posture`)"),
+    "amsi_bypass": (lambda k, v: v, "AMSI bypass for in-memory loads: 'on' (built-in), "
+                    "'off' (default), or your own PowerShell one-liner"),
+    "confuser_cli": (lambda k, v: v, "path to the ConfuserEx CLI (Confuser.CLI[.exe]) for "
+                     "`poc obfuscate` — run under mono if it's a .exe"),
 }
 
 DEFAULTS = {

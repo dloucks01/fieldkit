@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from fieldkit import evasion  # noqa: E402
 from fieldkit.evasion import (  # noqa: E402
     CAUGHT, GREEN, STALE, UNTESTED, by_key, for_os, recommend, resolve,
 )
@@ -94,6 +95,28 @@ class RecommendTest(unittest.TestCase):
         statuses = self._statuses({"native-exe": record("caught")})
         order = [s.technique.key for s in recommend(statuses)]
         self.assertEqual(order[-1], "native-exe")
+
+
+class AmsiPrefixTest(unittest.TestCase):
+    def test_off_by_default(self):
+        for v in (None, "", "off", "no", "0", "none"):
+            self.assertEqual(evasion.amsi_prefix(v), "")
+            self.assertIsNone(evasion.amsi_label(v))
+
+    def test_on_uses_builtin(self):
+        p = evasion.amsi_prefix("on")
+        self.assertEqual(p, evasion.BUILTIN_AMSI.rstrip("; ") + "; ")
+        self.assertTrue(p.endswith("; "))                 # chains before the load
+        self.assertEqual(evasion.amsi_label("on"), "built-in")
+
+    def test_custom_oneliner_is_passed_through(self):
+        self.assertEqual(evasion.amsi_prefix("Patch-Amsi"), "Patch-Amsi; ")
+        self.assertEqual(evasion.amsi_label("Patch-Amsi"), "custom")
+
+    def test_builtin_dodges_naive_signatures(self):
+        # the built-in never contains the literal flagged tokens (string-split)
+        self.assertNotIn("AmsiUtils", evasion.BUILTIN_AMSI)
+        self.assertNotIn("amsiInitFailed", evasion.BUILTIN_AMSI)
 
 
 if __name__ == "__main__":  # pragma: no cover
