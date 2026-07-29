@@ -335,6 +335,45 @@ class StatusTest(CliTestCase):
         self.init()
         self.assertIn("add hosts", self.run_cli("status"))
 
+    def test_phase_indicator_walks_the_workflow(self):
+        # setup -> spraying -> enumeration -> exploitation
+        self.init()
+        self.assertIn("phase:       setup", self.run_cli("status"))
+
+        self.run_cli("add", "hosts", "10.0.0.5")
+        self.assertIn("phase:       setup", self.run_cli("status"))  # no cred yet
+
+        self.run_cli("add", "cred", "svc:pw", "--yes")
+        self.assertIn("phase:       spraying", self.run_cli("status"))
+
+        # simulate: a spray proved access
+        s = self.store()
+        s.add_access(s.host_by_ip("10.0.0.5")["id"], s.credentials()[0]["id"], "ssh")
+        self.assertIn("phase:       enumeration", self.run_cli("status"))
+
+    def test_top_moves_appear_once_access_exists(self):
+        self.init()
+        self.run_cli("add", "hosts", "10.0.0.5", "--os", "linux")
+        self.run_cli("add", "cred", "svc:pw", "--yes")
+        # simulate proven access + sudo -l enum output → sudo:ALL vector is unlocked
+        s = self.store()
+        hid = s.host_by_ip("10.0.0.5")["id"]
+        s.add_access(hid, s.credentials()[0]["id"], "ssh")
+        s.add_step(cmd="id", output="uid=1000(svc) gid=1000(svc)", host_id=hid,
+                   label="enum:id")
+        s.add_step(cmd="sudo -l",
+                   output="(ALL) NOPASSWD: ALL", host_id=hid, label="enum:sudo")
+        out = self.run_cli("status")
+        self.assertIn("top moves", out)
+        self.assertIn("sudo", out.lower())
+
+    def test_scope_rules_appear_in_status(self):
+        self.init()
+        self.run_cli("scope", "allow", "10.0.0.0/24")
+        out = self.run_cli("status")
+        self.assertIn("scope:", out)
+        self.assertIn("10.0.0.0/24", out)
+
 
 class WorkflowTest(CliTestCase):
     """The Phase-0 acceptance check, start to finish."""
