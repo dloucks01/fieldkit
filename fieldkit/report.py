@@ -20,10 +20,11 @@ Rendering is pure (dicts in, text out), so it is testable without a database; th
 assembles the dicts from state via :func:`build`.
 """
 import os
-import subprocess
+import shutil
 from datetime import datetime, timezone
 
 from . import reportkb as kb
+from . import runner as runner_mod
 
 PLACEHOLDERS = ("<pid>", "<target>", "<service", "<youruser>", "<the-allowed",
                 "/path/to", "example.com", "placeholder", "todo", "xxxx")
@@ -486,27 +487,42 @@ def cleanup_manifest(engagement, findings):
 # ------------------------------------------------------------------- export
 
 def _have(tool):
-    return subprocess.call(["bash", "-lc", f"command -v {tool} >/dev/null"]) == 0
+    """True when ``tool`` is on PATH. ``shutil.which`` rather than a ``bash -lc`` probe:
+    no shell string to build (rule 7), no child process, and no bash dependency."""
+    return shutil.which(tool) is not None
 
 
-def export(md_path, basename, formats):
-    """Convert the Markdown to docx/pdf via pandoc. Returns operator-facing lines."""
+def _convert(run, md_path, out, extra, label):
+    """Drive one pandoc conversion through the injected runner. Returns one status line."""
+    res = run(["pandoc", md_path, "-o", out, *extra])
+    if res.error:
+        return f"{label} FAILED: {res.error}"
+    if res.timed_out:
+        return f"{label} FAILED: pandoc timed out"
+    if res.exit_code not in (0, None):
+        return f"{label} FAILED: {(res.stderr or res.output or '').strip()[:200]}"
+    return f"wrote {out}"
+
+
+def export(md_path, basename, formats, *, run=None, have=None):
+    """Convert the Markdown to docx/pdf via pandoc. Returns operator-facing lines.
+
+    ``run``/``have`` are injected for testing (rule 2 — the real spawn is
+    :func:`fieldkit.runner.run`, never a bare ``subprocess`` call).
+    """
+    run = run or (lambda argv: runner_mod.run(argv, timeout=300))
+    have = have or _have
     lines = []
-    pandoc = _have("pandoc")
+    pandoc = have("pandoc")
     if "docx" in formats:
         if pandoc:
-            r = subprocess.run(["pandoc", md_path, "-o", f"{basename}.docx"],
-                               capture_output=True, text=True)
-            lines.append(f"wrote {basename}.docx" if r.returncode == 0
-                         else f"docx FAILED: {r.stderr.strip()}")
+            lines.append(_convert(run, md_path, f"{basename}.docx", (), "docx"))
         else:
             lines.append(f"# docx: install pandoc, then: pandoc {md_path} -o {basename}.docx")
     if "pdf" in formats:
-        if pandoc and _have("weasyprint"):
-            r = subprocess.run(["pandoc", md_path, "-o", f"{basename}.pdf",
-                                "--pdf-engine=weasyprint"], capture_output=True, text=True)
-            lines.append(f"wrote {basename}.pdf" if r.returncode == 0
-                         else f"pdf FAILED: {r.stderr.strip()}")
+        if pandoc and have("weasyprint"):
+            lines.append(_convert(run, md_path, f"{basename}.pdf",
+                                  ("--pdf-engine=weasyprint",), "pdf"))
         else:
             lines.append(f"# pdf: install pandoc + weasyprint, then: "
                          f"pandoc {md_path} -o {basename}.pdf --pdf-engine=weasyprint")
