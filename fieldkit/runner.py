@@ -27,6 +27,7 @@ class RunResult:
     duration: float = 0.0
     timed_out: bool = False
     error: str = None           # set when the tool could not be executed at all
+    stdout_bytes: bytes = None  # set when binary output was requested (openssl decrypt)
 
     @property
     def ok(self):
@@ -40,32 +41,52 @@ class RunResult:
         return self.stdout + (("\n" + self.stderr) if self.stderr else "")
 
 
-def run(argv, env_add=None, timeout=600, input_text=None):
+def run(argv, env_add=None, timeout=600, input_text=None, input_bytes=None):
     """Execute ``argv``, capturing output. Never raises for an operator-caused failure.
 
     ``env_add`` is merged onto the current environment (renderers use it for
     ``KRB5CCNAME``). ``timeout`` guards against a tool that hangs on an unreachable
     host. A missing binary comes back as ``error``, not an exception, so the loop can
     tell the operator to install it and move on.
+
+    ``input_bytes`` switches to binary I/O — used by the GPP cpassword decrypter, which
+    pipes AES ciphertext into openssl. Text and bytes are mutually exclusive; when
+    binary, output lands in ``stdout_bytes`` and ``stdout`` gets a latin-1 shadow of it.
     """
     argv = list(argv)
     env = None
     if env_add:
         env = {**os.environ, **env_add}
     start = time.monotonic()
+    binary = input_bytes is not None
     try:
-        proc = subprocess.run(
-            argv, capture_output=True, text=True, env=env, input=input_text,
-            timeout=timeout, errors="replace")
+        if binary:
+            proc = subprocess.run(
+                argv, capture_output=True, env=env, input=input_bytes,
+                timeout=timeout)
+        else:
+            proc = subprocess.run(
+                argv, capture_output=True, text=True, env=env, input=input_text,
+                timeout=timeout, errors="replace")
     except FileNotFoundError:
         return RunResult(argv, error=f"{argv[0]}: not found — is it installed and on PATH?")
     except PermissionError as exc:
         return RunResult(argv, error=f"{argv[0]}: {exc}")
     except subprocess.TimeoutExpired as exc:
         return RunResult(
-            argv, stdout=exc.stdout or "", stderr=exc.stderr or "",
+            argv, stdout=(exc.stdout.decode("latin-1") if binary and exc.stdout
+                          else (exc.stdout or "")) or "",
+            stderr=(exc.stderr.decode("latin-1") if binary and exc.stderr
+                    else (exc.stderr or "")) or "",
             duration=time.monotonic() - start, timed_out=True,
             error=f"timed out after {timeout}s")
+    if binary:
+        return RunResult(
+            argv, exit_code=proc.returncode,
+            stdout=proc.stdout.decode("latin-1"),
+            stderr=proc.stderr.decode("latin-1"),
+            stdout_bytes=proc.stdout,
+            duration=time.monotonic() - start)
     return RunResult(
         argv, exit_code=proc.returncode, stdout=proc.stdout, stderr=proc.stderr,
         duration=time.monotonic() - start)

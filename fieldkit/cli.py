@@ -28,7 +28,8 @@ from . import (__version__, adcs as adcs_mod, arsenal as arsenal_mod,
                kb as kb_mod, kerberos as kerberos_mod, lab as lab_mod,
                mssql as mssql_mod, poc as poc_mod, preflight as preflight_mod,
                privesc as privesc_mod, provision as provision_mod,
-               report as report_mod, scope as scope_mod, spray as spray_mod)
+               report as report_mod, scope as scope_mod,
+               sharespider as sharespider_mod, spray as spray_mod)
 from .errors import ConfirmationError, FieldkitError
 from .state import DB_ENV_VAR, Store, default_db_path
 
@@ -336,6 +337,50 @@ def _expand_stage_dirs(store, host_ip, host_os, cfg, vectors, dirs):
                 slug = "".join(c for c in leaf if c.isalnum()) or "dir"
                 out.append(dataclasses.replace(v2, key=f"{v2.key}@{slug}"))
     return out
+
+
+def cmd_spider(args):
+    """SMB share spider + scrub → loot → creds. Uses nxc's spider_plus module."""
+    with _open_store(args) as store:
+        store.require_engagement()
+        host, cred, err = _resolve_target(store, args.host)
+        if host is None:
+            _err(err)
+            return 2
+        if host["os"] and host["os"] != "windows":
+            _err(f"{args.host} is {host['os']} — SMB spidering is Windows-only")
+            return 2
+
+        out = args.out or os.path.join(_build_dir(), f"spider-{host['ip']}")
+        os.makedirs(out, exist_ok=True)
+        question = (f"spider readable SMB shares on {args.host}, download all files "
+                    f"under 50KB to {out}, and scrub them for secrets? this pulls a "
+                    "copy of the client's files")
+        if not _confirm(question, args.yes):
+            print("aborted — nothing ran")
+            return 1
+
+        rep = sharespider_mod.spider_and_scrub(
+            store, host, cred, output_folder=out, on_event=lambda m: print(m),
+            allow_promotion=not args.no_promote)
+
+    if rep.error:
+        _err(f"nxc did not run: {rep.error}")
+        return 1
+    kinds = {}
+    for h in rep.hits:
+        kinds[h.kind] = kinds.get(h.kind, 0) + 1
+    print(f"\nspider {args.host}: {rep.shares_readable} share(s), "
+          f"{rep.files_inventoried} file(s) inventoried, "
+          f"{_plural(len(rep.hits), 'hit')}")
+    for kind, n in sorted(kinds.items(), key=lambda p: (-p[1], p[0])):
+        print(f"  {kind:<20} {n}")
+    if rep.creds_promoted:
+        print(f"\n{_plural(rep.creds_promoted, 'credential')} promoted to the loop — "
+              "re-run `fieldkit spray` to chase them")
+    print(f"\nclient-data corpus at {out} — recorded as a deletion obligation; "
+          "`fieldkit report` will surface it")
+    return 0
 
 
 def cmd_analyze(args):
@@ -1371,6 +1416,26 @@ def build_parser():
     p_spray.add_argument("-y", "--yes", action="store_true",
                          help="run without the confirm-back")
     p_spray.set_defaults(func=cmd_spray)
+
+    p_spider = sub.add_parser(
+        "spider", help="spider readable SMB shares, scrub files for secrets, promote creds",
+        description="Drives `nxc smb -M spider_plus` against one host: downloads every "
+                    "file under 50KB from every readable share and scrubs the corpus "
+                    "against an inspectable ruleset (GPP cpassword, unattend.xml, "
+                    "web.config, key=value scripts, sensitive filenames). Every hit is "
+                    "loot; a plaintext user+password (GPP, unattend, .ps1 -Password) is "
+                    "promoted straight into the credential loop. Holding a bulk copy of "
+                    "the client's files is recorded as a deletion obligation in the "
+                    "cleanup manifest so the report says so.")
+    p_spider.add_argument("host", metavar="HOST",
+                          help="target IP/hostname (must be a Windows SMB service)")
+    p_spider.add_argument("--out", metavar="DIR",
+                          help="local download folder (default: build/spider-<host>/)")
+    p_spider.add_argument("--no-promote", action="store_true",
+                          help="record hits as loot only, do not promote to credentials")
+    p_spider.add_argument("-y", "--yes", action="store_true",
+                          help="run without the confirm-back")
+    p_spider.set_defaults(func=cmd_spider)
 
     p_analyze = sub.add_parser(
         "analyze", help="rank the next moves from what the loop has proved",
