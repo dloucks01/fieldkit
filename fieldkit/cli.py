@@ -25,7 +25,8 @@ from . import (__version__, adcs as adcs_mod, arsenal as arsenal_mod,
                classify as classify_mod, config as config_mod, creds as creds_mod,
                delegation as delegation_mod, escalate as escalate_mod,
                evasion as evasion_mod,
-               executor as executor_mod, hostenum as hostenum_mod, ingest as ingest_mod,
+               executor as executor_mod, fs_scrub as fs_scrub_mod,
+               hostenum as hostenum_mod, ingest as ingest_mod,
                kb as kb_mod, kerberos as kerberos_mod, lab as lab_mod,
                mongodb as mongodb_mod, mssql as mssql_mod, poc as poc_mod,
                postgres as postgres_mod, preflight as preflight_mod,
@@ -528,6 +529,34 @@ def cmd_spider(args, store, host, cred):
               "re-run `fieldkit spray` to chase them")
     print(f"\nclient-data corpus at {out} — recorded as a deletion obligation; "
           "`fieldkit report` will surface it")
+    return 0
+
+
+@needs_target
+def cmd_scrub(args, store, host, cred):
+    """On-box filesystem scrub: sweep /etc, /opt, $HOME, /var/www for cleartext
+    secrets on a Linux foothold. Uses the same scrubbers as `spider`."""
+    paths = args.paths or None      # None -> DEFAULT_LINUX_PATHS
+    question = (f"scrub {host['ip']} for on-box secrets in "
+                f"{', '.join(paths or fs_scrub_mod.DEFAULT_LINUX_PATHS)}? "
+                "(read-only; runs one find | cat pipeline on the target)")
+    if not _confirm(question, args.yes):
+        print("aborted — nothing ran")
+        return 1
+    rep = fs_scrub_mod.fs_scrub(store, host, cred, paths=paths,
+                                on_event=lambda m: print(m))
+    if rep.aborted:
+        _err(rep.aborted)
+        return 2
+    kinds = {}
+    for h in rep.hits:
+        kinds[h.kind] = kinds.get(h.kind, 0) + 1
+    print(f"\nfs-scrub {host['ip']}: {_plural(len(rep.hits), 'hit')}")
+    for kind, n in sorted(kinds.items(), key=lambda p: (-p[1], p[0])):
+        print(f"  {kind:<20} {n}")
+    if rep.creds_promoted:
+        print(f"\n{_plural(rep.creds_promoted, 'credential')} promoted — "
+              "re-run `fieldkit spray` to chase them")
     return 0
 
 
@@ -1724,6 +1753,23 @@ the spec is missing that field. `--from-file` reads one credential per line.
     p_spider.add_argument("-y", "--yes", action="store_true",
                           help="run without the confirm-back")
     p_spider.set_defaults(func=cmd_spider)
+
+    p_scrub = sub.add_parser(
+        "scrub", help="on-box filesystem scrub of a Linux foothold for cleartext secrets",
+        description="Same scrubbers as `spider`, but against the local filesystem of a "
+                    "Linux foothold you already own. One `find | cat` pipeline sweeps "
+                    "/etc, /opt, $HOME, /var/www (or the paths you pass) for config "
+                    "files that carry credentials (kv-secret, dotenv, YAML), sensitive "
+                    "filenames (id_rsa, .env, .git-credentials, .pfx), and web.config "
+                    "connection strings. Recovered credentials are promoted; the rest "
+                    "become loot. Read-only against the target.")
+    p_scrub.add_argument("host", metavar="HOST",
+                         help="target IP/hostname (must be a Linux foothold with proven access)")
+    p_scrub.add_argument("paths", nargs="*", metavar="PATH",
+                         help="paths to scrub (default: /etc /opt /root /home /var/www /srv)")
+    p_scrub.add_argument("-y", "--yes", action="store_true",
+                         help="run without the confirm-back")
+    p_scrub.set_defaults(func=cmd_scrub)
 
     p_analyze = sub.add_parser(
         "analyze", help="rank the next moves from what the loop has proved",
