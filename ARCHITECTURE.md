@@ -10,7 +10,7 @@ tools it drives are the operator's existing kit. Authorized engagements only.
 
 ```bash
 bin/fieldkit <command>          # shim for `python3 -m fieldkit` (run from a clone)
-python3 -m pytest -q            # 523 tests, ~2s, no network/subprocess/tools needed
+python3 -m pytest -q            # 533 tests, ~2s, no network/subprocess/tools needed
 python3 -m pyflakes fieldkit/ tests/   # keep clean before committing
 ```
 
@@ -38,7 +38,7 @@ fallback axis; `report` renders the captured evidence.
 |---|---|---|
 | Foundation | `state.py`, `config.py`, `creds.py`, `scope.py`, `errors.py` | SQLite store (+migrations), engagement config, the canonical credential model + per-tool renderers, scope parsing, one error family |
 | Loop | `netexec.py`, `ingest.py`, `spray.py`, `dump.py`, `kb.py` | parse nxc `(Pwn3d!)`/`--pass-pol`; fold captures into state; the live spray loop; parse SAM/LSA/NTDS → loot→creds; the opportunity KB + three-axis ranking |
-| Execution | `transport.py`, `executor.py`, `runner.py`, `hostenum.py`, `privesc.py`, `poc.py`, `classify.py`, `escalate.py`, `staging.py`, `mssql.py`, `preflight.py` | run a command on a host (nxc `-x`/ssh/**mssql xp_cmdshell**) or push a file (`--put-file` smb/ssh, or **download-stage** via HTTP+certutil/curl over the exec transport); the safety gate + evidence capture; the one subprocess spawn; OS enum → `HostFacts`; privesc vectors (GTFOBins/caps/Se*/Potato-ladder/local-CVE matcher/…); the payload build layer (drive msfvenom/wixl/gcc/mingw → an artifact); the inspectable failure classifier (output→`Verdict`+fallback axis); the orchestrator that walks that axis over the ranked vectors — evasion re-delivery, auto-stage, auto-build, download-stage; MSSQL low-priv→sysadmin (EXECUTE AS); and a tool-presence preflight |
+| Execution | `transport.py`, `executor.py`, `runner.py`, `hostenum.py`, `privesc.py`, `poc.py`, `classify.py`, `escalate.py`, `provision.py`, `staging.py`, `mssql.py`, `preflight.py` | run a command on a host (nxc `-x`/ssh/**mssql xp_cmdshell**) or push a file (`--put-file` smb/ssh, or **download-stage** via HTTP+certutil/curl over the exec transport); the safety gate + evidence capture; the one subprocess spawn; OS enum → `HostFacts`; privesc vectors (GTFOBins/caps/Se*/Potato-ladder/local-CVE matcher/…); the payload build layer (drive msfvenom/wixl/gcc/mingw → an artifact); the inspectable failure classifier (output→`Verdict`+fallback axis); the *pure* orchestrator that walks that axis over the ranked vectors (it takes fire/stage/build callbacks and never touches a target); the delivery half behind those callbacks — fire (incl. serve-in-memory), auto-stage, auto-build, put-file/download-stage; MSSQL low-priv→sysadmin (EXECUTE AS); and a tool-presence preflight |
 | AD depth | `kerberos.py`, `delegation.py`, `adcs.py`, `bloodhound.py` | roasting → loot; `--find-delegation`; certipy ESC1-16; SharpHound graph + owned→DA pathfinding |
 | Evasion | `evasion.py`, `lab.py` | technique catalog + assume-caught model; Defender lab harness (EICAR-gated) |
 | Reporting | `report.py`, `reportkb.py`, `bridge.py` | build+render+`--check`+cleanup from state; the remediation KB (~80 vector_types); the recce export contract |

