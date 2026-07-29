@@ -18,10 +18,12 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from fieldkit import report  # noqa: E402
 from fieldkit.config import load as load_config  # noqa: E402
 from fieldkit.report import (  # noqa: E402
     build, check, cleanup_manifest, render_markdown,
 )
+from fieldkit.runner import RunResult  # noqa: E402
 from fieldkit.state import Store  # noqa: E402
 
 
@@ -153,6 +155,104 @@ class CleanupTest(ReportTestCase):
         self.assertIn("staged GodPotato.exe", man)
         self.assertIn("del C:\\Windows\\Temp\\GodPotato.exe", man)
         self.assertIn("Host: 10.0.0.7", man)
+
+
+class ExportTest(unittest.TestCase):
+    """docx/pdf conversion — pandoc is driven through the injected runner, never spawned
+    here directly (rule 2), so this runs with or without pandoc installed."""
+
+    def runner(self, exit_code=0, stderr="", error=None):
+        seen = []
+
+        def run(argv):
+            seen.append(argv)
+            return RunResult(argv, exit_code=exit_code, stderr=stderr, error=error)
+        return run, seen
+
+    def test_docx_drives_pandoc_with_an_argv_list(self):
+        run, seen = self.runner()
+        lines = report.export("r.md", "r", ["docx"], run=run, have=lambda t: True)
+        self.assertEqual(lines, ["wrote r.docx"])
+        self.assertEqual(seen[0], ["pandoc", "r.md", "-o", "r.docx"])   # argv, not a string
+
+    def test_pdf_passes_the_engine_flag(self):
+        run, seen = self.runner()
+        report.export("r.md", "r", ["pdf"], run=run, have=lambda t: True)
+        self.assertIn("--pdf-engine=weasyprint", seen[0])
+
+    def test_missing_pandoc_prints_the_manual_command_and_runs_nothing(self):
+        run, seen = self.runner()
+        lines = report.export("r.md", "r", ["docx", "pdf"], run=run, have=lambda t: False)
+        self.assertEqual(seen, [])                       # nothing spawned
+        self.assertTrue(all(ln.startswith("#") for ln in lines))
+        self.assertIn("install pandoc", lines[0])
+
+    def test_pdf_needs_weasyprint_too(self):
+        run, seen = self.runner()
+        lines = report.export("r.md", "r", ["pdf"], run=run,
+                              have=lambda t: t == "pandoc")   # pandoc yes, weasyprint no
+        self.assertEqual(seen, [])
+        self.assertIn("weasyprint", lines[0])
+
+    def test_a_failed_conversion_is_reported_not_raised(self):
+        run, _ = self.runner(exit_code=1, stderr="pandoc: boom")
+        lines = report.export("r.md", "r", ["docx"], run=run, have=lambda t: True)
+        self.assertIn("docx FAILED", lines[0])
+        self.assertIn("boom", lines[0])
+
+    def test_a_missing_binary_is_reported_not_raised(self):
+        run, _ = self.runner(error="pandoc not found")
+        lines = report.export("r.md", "r", ["docx"], run=run, have=lambda t: True)
+        self.assertIn("docx FAILED", lines[0])
+        self.assertIn("not found", lines[0])
+
+
+class ArchitectureTest(unittest.TestCase):
+    """The load-bearing invariants from CLAUDE.md, checked mechanically so they can't rot."""
+
+    def _package_files(self):
+        pkg = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "fieldkit")
+        return [os.path.join(pkg, f) for f in sorted(os.listdir(pkg)) if f.endswith(".py")]
+
+    def test_runner_is_the_only_child_process_spawn(self):
+        """Rule 2 — every tool goes through `runner.run`, so tests can inject a fake."""
+        import ast
+        offenders = []
+        for path in self._package_files():
+            if os.path.basename(path) == "runner.py":
+                continue
+            tree = ast.parse(open(path).read())
+            for node in ast.walk(tree):
+                # `import subprocess` / `from subprocess import ...`
+                if isinstance(node, ast.Import):
+                    offenders += [(path, node.lineno, a.name) for a in node.names
+                                  if a.name == "subprocess"]
+                elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+                    offenders.append((path, node.lineno, "from subprocess"))
+                # os.system / os.popen / os.exec*
+                elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+                    if node.value.id == "os" and (node.attr in ("system", "popen")
+                                                  or node.attr.startswith("exec")):
+                        offenders.append((path, node.lineno, f"os.{node.attr}"))
+        self.assertEqual(offenders, [], f"child-process spawn outside runner.py: {offenders}")
+
+    def test_no_module_does_io_at_import_time(self):
+        """Importing the package must be free of disk/network work — `fieldkit --help`
+        (and every test) imports everything."""
+        import ast
+        forbidden = {"open", "urlopen", "mkdir", "makedirs", "remove", "rmtree", "connect"}
+        offenders = []
+        for path in self._package_files():
+            tree = ast.parse(open(path).read())
+            for node in tree.body:            # module level only, not inside a def/class
+                for sub in ast.walk(node) if not isinstance(
+                        node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) else ():
+                    if isinstance(sub, ast.Call):
+                        name = getattr(sub.func, "id", None) or getattr(sub.func, "attr", None)
+                        if name in forbidden:
+                            offenders.append((os.path.basename(path), sub.lineno, name))
+        self.assertEqual(offenders, [], f"I/O at import time: {offenders}")
 
 
 if __name__ == "__main__":  # pragma: no cover
