@@ -200,7 +200,11 @@ def cmd_add_cred(args):
     else:
         if not args.spec and not any([args.password, args.hash, args.aes, args.ccache,
                                       args.ssh_key]):
-            _err("give a credential, e.g. 'CORP/jdoe:Winter2025!' or --user jdoe --hash <NT>")
+            _err("give a credential — quote the whole thing:\n"
+                 "  fieldkit add cred 'jdoe:Winter2025!'\n"
+                 "  fieldkit add cred 'CORP/jdoe:Winter2025!'\n"
+                 "  fieldkit add cred 'jdoe:<NT-hash>'\n"
+                 "  (or --from-file <path> for one credential per line; see `add cred -h`)")
             return 2
         parsed = [creds_mod.parse_credential(args.spec, **kwargs)]
 
@@ -1523,9 +1527,26 @@ def build_parser():
 
     a_cred = add_sub.add_parser(
         "cred", help="add a credential in whatever form you have it",
-        description="Accepts DOMAIN\\user:pass, user@corp.local:pass, corp/user:pass, "
-                    "user:LM:NT, :NT, a secretsdump line, or a ccache/key path.")
-    a_cred.add_argument("spec", nargs="?", help="the credential as you have it")
+        description="""Pass the credential the way you already have it — the parser
+autodetects the shape and picks the right auth flow.
+
+Examples (just quote the whole thing):
+
+  fieldkit add cred 'jdoe:Winter2025!'                    (plain user + password)
+  fieldkit add cred 'CORP/jdoe:Winter2025!'               (domain user + password)
+  fieldkit add cred 'CORP\\jdoe:Winter2025!'                 (Windows-style domain)
+  fieldkit add cred 'jdoe@corp.local:Winter2025!'         (UPN)
+  fieldkit add cred '.\\Administrator:P@ss'                  (local account, -> --local-auth)
+  fieldkit add cred 'jdoe:31d6cfe0d16ae931b73c59d7e0c089c0' (NT hash — autodetected)
+  fieldkit add cred 'jdoe:aad3b435...ee:31d6cfe...c0'     (LM:NT hash pair)
+  fieldkit add cred ':31d6cfe0d16ae931b73c59d7e0c089c0' --user Administrator --local
+
+The individual flags below (--user, --hash, --password, ...) are only needed when
+the spec is missing that field. `--from-file` reads one credential per line.
+`--source` tags the audit trail on the report (default: manual).""",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    a_cred.add_argument("spec", nargs="?", metavar="CREDENTIAL",
+                        help="the credential as you have it — see examples above")
     a_cred.add_argument("--user", help="username, when the spec has none")
     a_cred.add_argument("--domain", help="AD domain (overrides the spec)")
     a_cred.add_argument("--password", help="password, when the spec has none")
