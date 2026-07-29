@@ -21,7 +21,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fieldkit.hostenum import HostFacts  # noqa: E402
 from fieldkit.privesc import (  # noqa: E402
-    Vector, find_vector, vectors_for, vectors_from_state,
+    KERNEL_LPE, Vector, _in_range, find_vector, kernel_candidates, vectors_for,
+    vectors_from_state,
 )
 from fieldkit.state import Store  # noqa: E402
 
@@ -95,6 +96,86 @@ class LinuxDriverTest(unittest.TestCase):
         keys = self.keys(self.facts(sudo_all=True, sudo_binaries={"find"}))
         self.assertIn("sudo:ALL", keys)
         self.assertNotIn("sudo:find", keys)  # ALL already means root
+
+
+class KernelLpeTest(unittest.TestCase):
+    """Local-CVE matching: captured component versions -> the staged lin-kernel PoCs."""
+
+    def facts(self, **kw):
+        base = dict(os="linux", uid=1000, user="svc")
+        base.update(kw)
+        return HostFacts(**base)
+
+    def cves(self, facts):
+        return {r["cve"] for r, _ in kernel_candidates(facts)}
+
+    def test_version_range_is_inclusive_and_exact(self):
+        self.assertTrue(_in_range("5.15.0", "5.8", "5.16.11"))
+        self.assertTrue(_in_range("5.16.11", "5.8", "5.16.11"))    # inclusive upper
+        self.assertFalse(_in_range("5.16.12", "5.8", "5.16.11"))
+        self.assertFalse(_in_range("5.17.0", "5.8", "5.16.11"))
+        self.assertTrue(_in_range("4.4.0", None, "4.8.2"))          # unbounded lower
+
+    def test_p_suffix_orders_after_its_base(self):
+        # sudo 1.9.5p2 is the *fixed* release; 1.9.5p1 is still vulnerable.
+        self.assertTrue(_in_range("1.9.5p1", "1.8.2", "1.9.5p1"))
+        self.assertFalse(_in_range("1.9.5p2", "1.8.2", "1.9.5p1"))
+
+    def test_absent_or_unparseable_version_never_matches(self):
+        # the matcher does not guess — no captured version means no claim.
+        self.assertFalse(_in_range(None, "5.8", "5.16"))
+        self.assertFalse(_in_range("", "5.8", "5.16"))
+        self.assertFalse(_in_range("unknown", "5.8", "5.16"))
+        self.assertEqual(self.cves(self.facts()), set())
+
+    def test_matches_on_the_component_each_cve_targets(self):
+        # sudo/polkit/glibc CVEs gate on their own component, not on uname.
+        f = self.facts(kernel="6.11.0", sudo_version="1.8.31", glibc_version="2.35",
+                       suid={"pkexec"})
+        got = self.cves(f)
+        self.assertIn("CVE-2021-3156", got)      # sudo 1.8.31
+        self.assertIn("CVE-2023-4911", got)      # glibc 2.35
+        self.assertIn("CVE-2021-4034", got)      # SUID pkexec present
+        self.assertNotIn("CVE-2022-0847", got)   # kernel 6.11 is out of Dirty Pipe's range
+
+    def test_pwnkit_needs_suid_pkexec(self):
+        self.assertIn("CVE-2021-4034", self.cves(self.facts(suid={"pkexec", "passwd"})))
+        self.assertNotIn("CVE-2021-4034", self.cves(self.facts(suid={"passwd"})))
+
+    def test_patched_modern_host_matches_nothing(self):
+        f = self.facts(kernel="6.11.0", sudo_version="1.9.15p5", glibc_version="2.39",
+                       suid={"passwd"})
+        self.assertEqual(self.cves(f), set())
+
+    def test_vectors_are_prepared_routes_not_auto_fired(self):
+        # kernel exploits against a client host are ranked + explained, never blind-fired.
+        vs = [v for v in vectors_for(self.facts(kernel="5.15.0"), "10.0.0.5")
+              if v.key.startswith("cve:")]
+        self.assertTrue(vs)
+        for v in vs:
+            self.assertTrue(v.manual)                    # -> escalate emits MANUAL
+            self.assertIsNotNone(v.playbook)
+            self.assertEqual(v.report_type, "kernel_cve")
+            self.assertTrue(v.evidence)                  # why it matched
+            self.assertTrue(v.stages)                    # the arsenal PoC to stage
+
+    def test_reliable_routes_outrank_box_panicking_ones(self):
+        f = self.facts(kernel="5.15.0", suid={"pkexec"})
+        vs = [v for v in vectors_for(f, "10.0.0.5") if v.key.startswith("cve:")]
+        keys = [v.key for v in vs]
+        # Dirty Pipe / PwnKit (no memory corruption) rank above nf_tables (can panic)
+        self.assertLess(keys.index("cve:dirtypipe"), keys.index("cve:nftables"))
+        self.assertLess(keys.index("cve:pwnkit"), keys.index("cve:nftables"))
+        self.assertEqual(
+            [v.safety for v in vs if v.key == "cve:nftables"], ["crash-risk"])
+
+    def test_every_rule_names_a_real_arsenal_artifact_and_kb_type(self):
+        from fieldkit import reportkb
+        for rule in KERNEL_LPE:
+            self.assertIn(rule["component"], ("kernel", "sudo", "polkit", "glibc"))
+            self.assertTrue(rule["artifact"])
+            self.assertTrue(rule["cve"].startswith("CVE-"))
+        self.assertIn("kernel_cve", reportkb.KB)
 
 
 class WindowsDriverTest(unittest.TestCase):

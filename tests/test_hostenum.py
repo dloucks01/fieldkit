@@ -32,6 +32,11 @@ LINUX_OUT = {
     "find / -perm -4000 -type f 2>/dev/null": "/usr/bin/sudo\n/usr/bin/find\n/usr/bin/passwd\n",
     "getcap -r / 2>/dev/null": "/usr/bin/python3.8 = cap_setuid+ep\n",
     "uname -a": "Linux host 5.15.0-72-generic #79-Ubuntu SMP x86_64 GNU/Linux",
+    ("sudo -V 2>/dev/null | head -1; pkexec --version 2>/dev/null | head -1; "
+     "ldd --version 2>/dev/null | head -1"): (
+        "Sudo version 1.8.31\n"
+        "pkexec version 0.105\n"
+        "ldd (Ubuntu GLIBC 2.35-0ubuntu3.4) 2.35\n"),
 }
 
 WIN_OUT = {
@@ -102,7 +107,8 @@ class LinuxFactsTest(EnumTestCase):
         host, cred, hid = self.linux_host()
         report = run_enum(self.store, host, cred, run=make_runner(LINUX_OUT))
         self.assertIsNone(report.blocked)
-        self.assertEqual(set(report.ran), {"id", "sudo", "suid", "caps", "kernel"})
+        self.assertEqual(set(report.ran),
+                         {"id", "sudo", "suid", "caps", "kernel", "versions"})
         f = facts_for(self.store, hid)
         self.assertEqual((f.user, f.uid), ("svc", 1000))
         self.assertFalse(f.is_root)
@@ -113,6 +119,10 @@ class LinuxFactsTest(EnumTestCase):
         self.assertIn("find", f.suid)
         self.assertEqual(f.caps.get("python3.8"), "cap_setuid")
         self.assertEqual(f.kernel, "5.15.0")
+        # component versions the local-CVE matcher gates on
+        self.assertEqual(f.sudo_version, "1.8.31")
+        self.assertEqual(f.pkexec_version, "0.105")
+        self.assertEqual(f.glibc_version, "2.35")
 
     def test_sudo_all_detected(self):
         host, cred, hid = self.linux_host()

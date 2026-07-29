@@ -639,7 +639,7 @@ class FullFunnelTest(unittest.TestCase):
 
         # prep builds the payload and prints where to place it + the steps
         out = self.cli("prep", "10.0.0.7", "writablesvc:VulnSvc")
-        self.assertIn("built (attacker-side)", out)
+        self.assertIn("artifacts (attacker-side)", out)
         self.assertIn("place at: C:\\Apps\\vuln.exe", out)
         self.assertIn("sc stop VulnSvc", out)
         self.assertIn("restore", out.lower())
@@ -647,6 +647,67 @@ class FullFunnelTest(unittest.TestCase):
         # --stage also uploads it to the target
         staged = self.cli("prep", "10.0.0.7", "writablesvc:VulnSvc", "--stage", "--yes")
         self.assertIn("staged on target", staged)
+
+    def test_kernel_cve_is_matched_ranked_and_never_auto_fired(self):
+        """A matched local-CVE is explained and prepared — never blind-fired at a client host.
+
+        Safety-critical: even with `--allow crash-risk` (the widest gate there is), a kernel
+        exploit that can panic the box must stay a prepared route.
+        """
+        self.cli("init", "ACME Corp")
+        self.cli("add", "hosts", "10.0.0.5 app01")
+        self.cli("add", "cred", "svc:pw", "--yes")
+        hid = self.store().host_by_ip("10.0.0.5")["id"]
+        cid = self.store().credentials()[0]["id"]
+        self.store().add_host("10.0.0.5", os_name="linux")
+        self.store().add_access(hid, cid, "ssh", admin=False)
+        for label, cmd, out in (
+            ("enum:id", "id", "uid=1000(svc) gid=1000(svc) groups=1000(svc)"),
+            ("enum:kernel", "uname -a", "Linux app01 5.15.0-72-generic #79-Ubuntu x86_64"),
+            ("enum:suid", "find / -perm -4000", "/usr/bin/pkexec\n/usr/bin/passwd"),
+            ("enum:versions", "sudo -V", "Sudo version 1.8.31\npkexec version 0.105"),
+        ):
+            self.store().add_step(cmd, output=out, exit_code=0, host_id=hid, label=label)
+
+        # analyze matches on the captured version and says *why*
+        an = self.cli("analyze")
+        self.assertIn("CVE-2022-0847", an)                    # kernel 5.15.0 in range
+        self.assertIn("kernel 5.15.0 in 5.8", an)             # the evidence, not a guess
+        self.assertIn("CVE-2021-4034", an)                    # SUID pkexec present
+        self.assertIn("prep 10.0.0.5 cve:dirtypipe", an)      # routed to prep, not run
+
+        # even at the widest safety gate, nothing kernel-related is fired
+        esc = self.cli("escalate", "10.0.0.5", "--allow", "crash-risk", "--yes")
+        self.assertIn("manual", esc)
+        self.assertIn("cve:dirtypipe", esc)
+        self.assertEqual(self.store().counts()["proven_findings"], 0)   # nothing fired
+        self.assertFalse([s for s in self.store().steps()
+                          if "dirtypipe" in (s["cmd"] or "")])          # never executed
+
+        # prep renders concrete steps (and names the arsenal artifact it needs)
+        prep = self.cli("prep", "10.0.0.5", "cve:dirtypipe")
+        self.assertIn("place at:", prep)
+        self.assertIn("dirtypipe", prep)
+        self.assertIn("restore", prep.lower())
+
+    def test_patched_host_matches_no_local_cve(self):
+        """No false positives: a current kernel/sudo/glibc matches nothing."""
+        self.cli("init", "ACME Corp")
+        self.cli("add", "hosts", "10.0.0.6 app02")
+        self.cli("add", "cred", "svc:pw", "--yes")
+        hid = self.store().host_by_ip("10.0.0.6")["id"]
+        cid = self.store().credentials()[0]["id"]
+        self.store().add_host("10.0.0.6", os_name="linux")
+        self.store().add_access(hid, cid, "ssh", admin=False)
+        for label, cmd, out in (
+            ("enum:id", "id", "uid=1000(svc) gid=1000(svc) groups=1000(svc)"),
+            ("enum:kernel", "uname -a", "Linux app02 6.11.0-9-generic #9-Ubuntu x86_64"),
+            ("enum:suid", "find / -perm -4000", "/usr/bin/passwd"),
+            ("enum:versions", "sudo -V", "Sudo version 1.9.15p5\nldd (GNU libc) 2.39"),
+        ):
+            self.store().add_step(cmd, output=out, exit_code=0, host_id=hid, label=label)
+        an = self.cli("analyze")
+        self.assertNotIn("CVE-", an)
 
 
 if __name__ == "__main__":  # pragma: no cover
