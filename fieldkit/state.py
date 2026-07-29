@@ -469,6 +469,16 @@ class Store:
              int(bool(cred.local_auth)))).fetchone()
         return row
 
+    def credential_id(self, cred):
+        """Return the stored id for ``cred``, or None. Never inserts.
+
+        The escalation modules (mssql/postgres/mongodb) call this to attach ``access``
+        rows to the credential that just proved a login — the row is already there
+        from ``add_credential`` upstream; a lookup is what they actually want.
+        """
+        row = self.find_credential(cred)
+        return row["id"] if row else None
+
     # -- access -------------------------------------------------------------
 
     def add_access(self, host_id, cred_id, method, admin=False, integrity=None):

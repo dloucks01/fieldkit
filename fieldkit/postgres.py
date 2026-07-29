@@ -190,13 +190,12 @@ def _establish_exec(store, host, cred, ip, *, port, database, proof, report_type
                     title, evidence, extra_cleanups=()):
     """Record the proven OS-exec finding, upgrade the postgres access to admin, and
     record a reversible cleanup."""
-    from .mssql import _cred_id     # dedupe the id-lookup helper; same shape here
     with store.transaction():
         fid, _ = store.add_finding(report_type, title, host_id=host["id"],
                                    proven=True, evidence=evidence)
         store.add_step(cmd=f"psql -h {ip} -p {port} -d {database} -c \"{_EXEC_TEST}\"",
                        output=(proof or "").strip(), host_id=host["id"],
                        finding_id=fid, transport="psql")
-        store.add_access(host["id"], _cred_id(store, cred), "postgres", admin=True)
+        store.add_access(host["id"], store.credential_id(cred), "postgres", admin=True)
         for desc, cmd in extra_cleanups:
             store.add_artifact(desc, cleanup_cmd=cmd, host_id=host["id"], finding_id=fid)

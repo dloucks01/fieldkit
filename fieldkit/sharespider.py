@@ -414,7 +414,7 @@ def spider_and_scrub(store, host, cred, *, run=None, output_folder,
         for hit in scrub_corpus(output_folder):
             rep.files_scrubbed += 1
             rep.hits.append(hit)
-            step_id = store.add_step(
+            store.add_step(
                 cmd=f"scrub:{hit.kind}", output=f"{hit.share_path} — {hit.snippet}",
                 exit_code=0, host_id=host["id"],
                 label=f"sharespider:{hit.kind}")
@@ -424,7 +424,6 @@ def spider_and_scrub(store, host, cred, *, run=None, output_folder,
                 _, created = store.add_credential(hit.credential,
                                                   source=f"sharespider:{hit.kind}")
                 rep.creds_promoted += 1 if created else 0
-            _ = step_id
         if rep.creds_promoted:
             emit(f"  spider {host['ip']}: +{rep.creds_promoted} credential(s) promoted")
     return rep
