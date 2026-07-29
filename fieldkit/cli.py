@@ -1521,6 +1521,33 @@ def cmd_arsenal_check(args):
     return 0
 
 
+def _current_phase(counts):
+    """Where in the engagement workflow the state says we are."""
+    if not counts["hosts"] and not counts["credentials"]:
+        return "setup", f"`{PROG} add hosts <scope>` and `{PROG} add cred <cred>`"
+    if not counts["hosts"]:
+        return "setup", f"`{PROG} add hosts <scope>`"
+    if not counts["credentials"]:
+        return "setup", f"`{PROG} add cred <cred>` (or `{PROG} spray --wordlist`)"
+    if not counts["access"]:
+        return "spraying", f"`{PROG} spray` to validate stored credentials"
+    if not counts["findings"]:
+        return "enumeration", (
+            f"`{PROG} enum <host>` on a Pwn3d host, then `{PROG} analyze`")
+    if not counts["proven_findings"]:
+        return "exploitation", (
+            f"`{PROG} escalate <host> --allow config-change` to prove a vector")
+    return "reporting", f"`{PROG} report` and `{PROG} export-recce`"
+
+
+def _next_moves(store, cfg, limit=3):
+    """The top-``limit`` opportunities from analyze, ranked."""
+    items = list(kb_mod.analyze(store))
+    items += privesc_mod.vectors_from_state(store, **_stage_dirs(cfg))
+    items.sort(key=lambda x: -x.score)
+    return items[:limit]
+
+
 @needs_engagement
 def cmd_status(args, store):
     row = store.require_engagement()
@@ -1534,6 +1561,13 @@ def cmd_status(args, store):
     overrides = cfg.overrides()
     print(f"config:      {summary or '(unset — run `fieldkit config set lhost=…`)'}"
           + (f"   (+{_plural(len(overrides), 'subnet override')})" if overrides else ""))
+    scope_rules = store.scope_rules()
+    if scope_rules:
+        by_kind = {}
+        for r in scope_rules:
+            by_kind.setdefault(r["kind"], []).append(r["cidr"])
+        parts = [f"{k}={','.join(v)}" for k, v in sorted(by_kind.items())]
+        print(f"scope:       {' · '.join(parts)}")
     print()
 
     os_mix = "  ".join(f"{r['os'] or 'unfingerprinted'} {r['n']}"
@@ -1548,6 +1582,30 @@ def cmd_status(args, store):
     print(f"findings     {counts['findings']:>5}   {counts['proven_findings']} proven")
     print(f"loot         {counts['loot']:>5}")
 
+    # --- situational board: phase, top-3 next moves, preflight, blockers -----
+    phase, phase_hint = _current_phase(counts)
+    print(f"\nphase:       {phase}")
+    print(f"next:        {phase_hint}")
+
+    # Show top-3 ranked opportunities when there ARE any (skipped in setup phase
+    # to keep the empty-engagement output short).
+    if counts["access"]:
+        moves = _next_moves(store, cfg)
+        if moves:
+            print("\ntop moves (ranked):")
+            for m in moves:
+                where = f" [{m.host}]" if getattr(m, "host", None) else ""
+                mark = "manual" if getattr(m, "manual", False) else "run"
+                print(f"  {m.axes:<22} {m.title[:56]:<56}{where}  ({mark})")
+
+    # Preflight — surface missing required tools once here so the operator
+    # doesn't discover nxc is missing mid-run.
+    pf_missing = preflight_mod.missing_required(preflight_mod.check())
+    if pf_missing:
+        labels = ", ".join(r[0] for r in pf_missing)
+        print(f"\n⚠ required tools missing: {labels} — "
+              f"`{PROG} preflight` for the full list")
+
     if args.hosts:
         print("\nhosts:")
         for host in store.hosts():
@@ -1559,11 +1617,6 @@ def cmd_status(args, store):
         for row in store.credentials():
             cred = creds_mod.Credential.from_row(row)
             print(f"  {cred.principal:<32} {cred.secret_type:<9} source={row['source']}")
-
-    if not counts["hosts"]:
-        print(f"\nnext: {PROG} add hosts scope.txt")
-    elif not counts["credentials"]:
-        print(f"\nnext: {PROG} add cred 'CORP/jdoe:Winter2025!'")
     return 0
 
 
