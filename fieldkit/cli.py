@@ -366,14 +366,22 @@ def cmd_spray(args):
     with _open_store(args) as store:
         store.require_engagement()
         cfg = config_mod.load(store)
+        # wordlist mode: --userlist / --passlist (or the same config keys) present
+        userlist = args.userlist or cfg.get("userlist")
+        passlist = args.passlist or cfg.get("passlist")
+        if args.wordlist or (userlist and passlist and not store.credentials()):
+            return _cmd_spray_wordlist(args, store, cfg, userlist, passlist)
+
         hosts = store.hosts(subnet=args.subnet)
         creds = store.credentials()
         if not hosts:
-            _err("no hosts in scope" + (f" for {args.subnet}" if args.subnet else "")
+            _err("no hosts in the engagement"
+                 + (f" for {args.subnet}" if args.subnet else "")
                  + " — run `fieldkit add hosts` first")
             return 2
         if not creds:
-            _err("no credentials to spray — run `fieldkit add cred` first")
+            _err("no credentials to spray — run `fieldkit add cred` first, or run "
+                 "`fieldkit spray --wordlist` with a userlist + passlist")
             return 2
 
         question = (f"validate {_plural(len(creds), 'credential')} across "
@@ -397,6 +405,51 @@ def cmd_spray(args):
           f"recovered {_plural(report.creds_recovered, 'credential')}")
     if report.creds_recovered:
         print("re-run `fieldkit spray` to chase the recovered credentials further")
+    return 0
+
+
+def _cmd_spray_wordlist(args, store, cfg, userlist, passlist):
+    """Wordlist × password spray. Callable only from cmd_spray (the store is open)."""
+    if not userlist or not passlist:
+        _err("wordlist spray needs --userlist and --passlist (or `config set "
+             "userlist=<path> passlist=<path>`)")
+        return 2
+    hosts = store.hosts(subnet=args.subnet)
+    if not hosts:
+        _err("no hosts in the engagement"
+             + (f" for {args.subnet}" if args.subnet else "")
+             + " — run `fieldkit add hosts` first")
+        return 2
+
+    def _count(p):
+        return sum(1 for line in open(p, "r", errors="replace")
+                   if line.strip() and not line.startswith("#"))
+
+    try:
+        users, passwords = _count(userlist), _count(passlist)
+    except OSError as exc:
+        _err(f"wordlist read error: {exc}")
+        return 2
+    combos = users * passwords
+    question = (f"WORDLIST SPRAY on {args.proto}: {users} users × {passwords} "
+                f"passwords = {combos} combinations across "
+                f"{_plural(len(hosts), 'host')}. This CAN lock accounts if the "
+                "domain has a lockout policy. Continue?")
+    if not _confirm(question, args.yes):
+        print("aborted — nothing ran")
+        return 1
+    rep = spray_mod.wordlist_spray(
+        store, cfg, proto=args.proto, subnet=args.subnet,
+        userlist=userlist, passlist=passlist, dc_ip=args.dc,
+        allow_lockout_risk=args.allow_lockout_risk, timeout=args.timeout,
+        on_event=lambda m: print(m))
+    if rep.aborted:
+        _err(rep.aborted)
+        return 2
+    print(f"\nwordlist spray: {rep.valid} valid, {rep.admin} admin, "
+          f"{rep.creds_added} new credentials stored")
+    if rep.creds_added:
+        print("re-run `fieldkit spray` (stored mode) to chase the recovered credentials")
     return 0
 
 
@@ -1638,6 +1691,18 @@ the spec is missing that field. `--from-file` reads one credential per line.
                          help="per-command timeout in seconds (default: %(default)s)")
     p_spray.add_argument("-y", "--yes", action="store_true",
                          help="run without the confirm-back")
+    # wordlist-spray mode: switches from "stored creds, safe by construction" to
+    # "user × password combos, CAN lock accounts if the lockout policy is respected."
+    p_spray.add_argument("--wordlist", action="store_true",
+                         help="run wordlist × password spray instead of stored-cred spray "
+                              "(uses --userlist / --passlist, or the config keys)")
+    p_spray.add_argument("--userlist", metavar="FILE",
+                         help="path to a userlist for --wordlist (overrides config userlist)")
+    p_spray.add_argument("--passlist", metavar="FILE",
+                         help="path to a passlist for --wordlist (overrides config passlist)")
+    p_spray.add_argument("--allow-lockout-risk", action="store_true",
+                         help="proceed with --wordlist even when the passlist exceeds the "
+                              "lockout policy's safe attempts per window (accepts the risk)")
     p_spray.set_defaults(func=cmd_spray)
 
     p_spider = sub.add_parser(

@@ -20,6 +20,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from fieldkit import spray as spray_mod  # noqa: E402
 from fieldkit.config import load as load_config  # noqa: E402
 from fieldkit.creds import Credential  # noqa: E402
 from fieldkit.runner import RunResult  # noqa: E402
@@ -154,6 +155,87 @@ class RunnerFailureTest(LoopTestCase):
         rep = spray_loop(self.store, self.cfg, run=missing)
         self.assertIn("not found", rep.aborted)
         self.assertEqual(self.store.counts()["access"], 0)
+
+
+class WordlistSprayTest(LoopTestCase):
+    """Wordlist × password spray via nxc -u FILE -p FILE."""
+
+    def _write_wordlists(self, users=("jdoe", "admin"),
+                          passwords=("Winter2025!", "Summer2024!")):
+        u = os.path.join(self.tmp.name, "users.txt")
+        p = os.path.join(self.tmp.name, "passwords.txt")
+        open(u, "w").write("\n".join(users) + "\n")
+        open(p, "w").write("\n".join(passwords) + "\n")
+        return u, p
+
+    def _fake_wordlist_nxc(self, hits=(("10.0.0.7", "admin", "Winter2025!", True),)):
+        """Fake nxc: reads the wordlist files, emits Pwn3d! for the hits given."""
+        def run(argv, env=None):
+            if "--pass-pol" in argv:
+                return RunResult(argv, exit_code=0, stdout=POLICY)
+            lines = ["SMB   10.0.0.6   445   DC01   [*] Windows Server 2019",
+                     "SMB   10.0.0.7   445   WS02   [*] Windows 10"]
+            for ip, user, pw, admin in hits:
+                pwn = " (Pwn3d!)" if admin else ""
+                lines.append(f"SMB   {ip}   445   host   [+] {user}:{pw}{pwn}")
+            return RunResult(argv, exit_code=0, stdout="\n".join(lines))
+        return run
+
+    def test_wordlist_finds_and_stores_only_valid_creds(self):
+        u, p = self._write_wordlists()
+        rep = spray_mod.wordlist_spray(
+            self.store, self.cfg, userlist=u, passlist=p,
+            run=self._fake_wordlist_nxc())
+        self.assertIsNone(rep.aborted)
+        self.assertEqual(rep.valid, 1)
+        self.assertEqual(rep.admin, 1)
+        # only the hit was stored; the whole wordlist did NOT pollute state
+        # (initial cred + 1 recovered = 2)
+        self.assertEqual(self.store.counts()["credentials"], 2)
+
+    def test_missing_wordlist_files_are_reported(self):
+        rep = spray_mod.wordlist_spray(
+            self.store, self.cfg, userlist="/no/such.txt", passlist="/no/other.txt",
+            run=self._fake_wordlist_nxc())
+        self.assertIn("not found", rep.aborted)
+
+    def test_lockout_policy_blocks_run_unless_operator_opts_in(self):
+        # POLICY (fixture) has a lockout threshold that safe_attempts derives from;
+        # write a passlist with more entries than safe_attempts to force the block.
+        u = os.path.join(self.tmp.name, "u.txt")
+        p = os.path.join(self.tmp.name, "p.txt")
+        open(u, "w").write("jdoe\n")
+        open(p, "w").write("\n".join(f"pw{i}" for i in range(50)) + "\n")
+
+        rep = spray_mod.wordlist_spray(
+            self.store, self.cfg, userlist=u, passlist=p,
+            run=self._fake_wordlist_nxc())
+        self.assertIn("lockout policy", rep.aborted)
+        self.assertIn("safe attempts", rep.aborted)
+        # opting in with allow_lockout_risk skips the guard
+        rep2 = spray_mod.wordlist_spray(
+            self.store, self.cfg, userlist=u, passlist=p,
+            run=self._fake_wordlist_nxc(), allow_lockout_risk=True)
+        self.assertIsNone(rep2.aborted)
+
+    def test_nxc_invocation_includes_the_wordlist_flags(self):
+        u, p = self._write_wordlists()
+        seen = []
+
+        def capture(argv, env=None):
+            seen.append(argv)
+            if "--pass-pol" in argv:
+                return RunResult(argv, exit_code=0, stdout=POLICY)
+            return RunResult(argv, exit_code=0, stdout="")
+        spray_mod.wordlist_spray(self.store, self.cfg,
+                                  userlist=u, passlist=p, run=capture)
+        # find the wordlist call (not the policy call)
+        cmd = [a for a in seen if "-u" in a and "--pass-pol" not in a][0]
+        self.assertIn("-u", cmd)
+        self.assertIn(u, cmd)
+        self.assertIn("-p", cmd)
+        self.assertIn(p, cmd)
+        self.assertIn("--continue-on-success", cmd)
 
 
 if __name__ == "__main__":  # pragma: no cover
