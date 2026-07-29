@@ -364,7 +364,12 @@ def cmd_analyze(args):
         print(f"     {item.detail}")
         if isinstance(item, privesc_mod.Vector):
             print(f"     command: {item.command}")
-            print(f"     run: {PROG} run {item.host} {item.key}")
+            if item.manual:   # prepared route — escalate won't fire it; prep renders the steps
+                if item.evidence:
+                    print(f"     why: {item.evidence}")
+                print(f"     prep: {PROG} prep {item.host} {item.key}   (manual route)")
+            else:
+                print(f"     run: {PROG} run {item.host} {item.key}")
             if item.cleanup:
                 print(f"     cleanup: {item.cleanup}")
         else:
@@ -787,13 +792,16 @@ def cmd_prep(args):
             return 2
         vector = privesc_mod.find_vector(store, args.host, args.vector, **_stage_dirs(cfg))
         if vector is None:
-            available = [v.key for v in _host_vectors(store, cfg, args.host) if v.builds]
+            available = [v.key for v in _host_vectors(store, cfg, args.host)
+                         if v.builds or v.manual]
             _err(f"no vector {args.vector!r} on {args.host}"
-                 + (f" — with a buildable artifact: {', '.join(available)}" if available
+                 + (f" — preparable: {', '.join(available)}" if available
                     else " — run `fieldkit enum` then `fieldkit analyze` first"))
             return 2
-        if not vector.builds:
-            _err(f"{vector.key} has nothing to build — it's auto-fireable "
+        # preparable = fieldkit builds the artifact, or the route needs operator hands
+        # (a manual route's artifact comes from the arsenal instead of a build).
+        if not vector.builds and not vector.manual:
+            _err(f"{vector.key} has nothing to prepare — it's auto-fireable "
                  f"(`{PROG} run {args.host} {vector.key}` or `{PROG} escalate`)")
             return 2
 
@@ -807,6 +815,12 @@ def cmd_prep(args):
                 _err(f"build failed ({bres.tool}): {bres.detail}")
                 return 1
             built.append([fmt, out, remote, bres.tool, None])
+        # arsenal-sourced artifacts (a staged PoC, e.g. a lin-kernel exploit): resolve the
+        # local copy so prep can name it and optionally push it. Not fetched = say so.
+        for name, remote in vector.stages:
+            local = arsenal_mod.find(name)
+            built.append([name, local or f"<not in arsenal: exploits/fetch.sh --only {name}>",
+                          remote, "arsenal", None])
 
         if args.stage:
             if not _confirm(f"upload {_plural(len(built), 'artifact')} to {args.host} "
@@ -816,6 +830,9 @@ def cmd_prep(args):
             else:
                 for entry in built:
                     fmt, out, remote = entry[0], entry[1], entry[2]
+                    if not os.path.exists(out):     # unresolved arsenal artifact
+                        entry[4] = None
+                        continue
                     # put-file, or download-stage over the exec transport (e.g. MSSQL-only).
                     ok, how = _provision_to_target(
                         store, host, cred, out, remote, f"prep:{fmt}",
@@ -834,7 +851,7 @@ def _render_prep(vector, built):
     print(f"\n=== prep: {vector.title} ===")
     if pb:
         print(pb.summary)
-    print("\nbuilt (attacker-side):")
+    print("\nartifacts (attacker-side):")
     for fmt, out, remote, tool, staged in built:
         print(f"  {fmt:<4} {out}   (via {tool})")
         if staged:

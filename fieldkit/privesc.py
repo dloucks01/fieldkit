@@ -418,6 +418,165 @@ def _d_docker_group(facts, ctx):
             report_type="docker_group")
 
 
+# ------------------------------------------------- local CVE → staged PoC (Linux)
+
+#: The staged Linux LPE PoCs (``exploits/manifest.tsv``, category ``lin-kernel``) matched to
+#: the component version enum actually captured. Three of them target *userspace* components
+#: (sudo/polkit/glibc), not the kernel — matching those on ``uname`` would be guessing, so
+#: each rule names the component it gates on and the enum captures all four versions.
+#:
+#: Ranges are inclusive and deliberately conservative: a rule fires only when the captured
+#: version is provably inside it, and distro **backports** are called out where they break
+#: version-only reasoning (a patched 0.105 polkit still reports 0.105). So a match means
+#: "worth trying, here's why", not "confirmed vulnerable" — which is why every one of these
+#: is a *prepared* route (:class:`Playbook`): ``escalate`` ranks and explains it but will not
+#: blind-fire a kernel exploit at a client's box. ``fieldkit prep <ip> <key>`` renders steps.
+#:
+#: (key, cve, artifact, component, lo, hi, exploitability, safety, detection, title, note)
+KERNEL_LPE = (
+    dict(key="pwnkit", cve="CVE-2021-4034", artifact="pwnkit", component="polkit",
+         lo=None, hi=None, needs_suid="pkexec",
+         exploitability="high", safety="config-change", detection="moderate",
+         title="pkexec PwnKit → root",
+         note="pkexec is SUID-root and PwnKit needs no exotic preconditions — the most "
+              "reliable Linux local root of the set. polkit fixes are backported without a "
+              "version bump, so confirm the distro patch level rather than the version alone."),
+    dict(key="baronsamedit", cve="CVE-2021-3156", artifact="baronsamedit", component="sudo",
+         lo="1.8.2", hi="1.9.5p1",
+         exploitability="medium", safety="config-change", detection="moderate",
+         title="sudo heap overflow (Baron Samedit) → root",
+         note="sudoedit -s heap overflow. Reliable only with the right libc offsets for the "
+              "target distro — a wrong offset crashes sudo (harmless), not the host."),
+    dict(key="looneytunables", cve="CVE-2023-4911", artifact="looneytunables",
+         component="glibc", lo="2.34", hi="2.37",
+         exploitability="medium", safety="config-change", detection="moderate",
+         title="glibc GLIBC_TUNABLES buffer overflow → root",
+         note="ld.so tunables overflow. Distro backports patch 2.34–2.37 in place, so "
+              "confirm the package patch level."),
+    dict(key="dirtypipe", cve="CVE-2022-0847", artifact="dirtypipe", component="kernel",
+         lo="5.8", hi="5.16.11",
+         exploitability="high", safety="config-change", detection="moderate",
+         title="Dirty Pipe (page-cache overwrite) → root",
+         note="Overwrites read-only file content via the page cache — no memory corruption, "
+              "so it does not panic the box. Backport fixes land in 5.15.25 / 5.10.102: an "
+              "in-range version is not proof the host is unpatched."),
+    dict(key="nftables", cve="CVE-2024-1086", artifact="nftables", component="kernel",
+         lo="3.15", hi="6.8",
+         exploitability="medium", safety="crash-risk", detection="moderate",
+         title="nf_tables double-free → root",
+         note="Needs unprivileged user namespaces enabled "
+              "(`sysctl kernel.unprivileged_userns_clone`). Kernel heap corruption — a "
+              "failed attempt can panic the host."),
+    dict(key="stackrot", cve="CVE-2023-3269", artifact="stackrot", component="kernel",
+         lo="6.1", hi="6.4",
+         exploitability="medium", safety="crash-risk", detection="moderate",
+         title="StackRot (maple tree) → root",
+         note="Kernel stack expansion UAF. Narrow version window; can panic the host."),
+    dict(key="cve-2021-22555", cve="CVE-2021-22555", artifact="cve-2021-22555",
+         component="kernel", lo="2.6.19", hi="5.12",
+         exploitability="medium", safety="crash-risk", detection="moderate",
+         title="netfilter xt_compat heap OOB → root",
+         note="Lives under pocs/linux/cve-2021-22555 in the google/security-research clone. "
+              "Kernel heap corruption — can panic the host."),
+    dict(key="dirtycow", cve="CVE-2016-5195", artifact="dirtycow", component="kernel",
+         lo=None, hi="4.8.2",
+         exploitability="medium", safety="crash-risk", detection="moderate",
+         title="Dirty COW → root",
+         note="Legacy (<4.8.3). Known to destabilise the host and can leave it needing a "
+              "reboot — last resort, and only with the client's blessing."),
+)
+
+
+def _vtuple(version):
+    """A comparable tuple from a version string. ``1.9.5p2`` -> ``(1, 9, 5, 2)`` so a
+    ``p``-suffixed sudo release orders after its base; ``5.15.0`` -> ``(5, 15, 0)``."""
+    if not version:
+        return None
+    m = re.match(r"(\d+(?:\.\d+)*)(?:p(\d+))?", str(version).strip())
+    if not m:
+        return None
+    parts = [int(x) for x in m.group(1).split(".")]
+    parts.append(int(m.group(2)) if m.group(2) else 0)
+    return tuple(parts)
+
+
+def _in_range(version, lo, hi):
+    """True when ``version`` is inside the inclusive ``[lo, hi]`` window (None = unbounded).
+    Unparseable or absent versions never match — the matcher does not guess."""
+    v = _vtuple(version)
+    if v is None:
+        return False
+
+    def pad(a, b):    # compare on equal width so 5.16 vs 5.16.11 orders correctly
+        n = max(len(a), len(b))
+        return a + (0,) * (n - len(a)), b + (0,) * (n - len(b))
+
+    if lo is not None:
+        a, b = pad(v, _vtuple(lo))
+        if a < b:
+            return False
+    if hi is not None:
+        a, b = pad(v, _vtuple(hi))
+        if a > b:
+            return False
+    return True
+
+
+#: which HostFacts field each rule's component version comes from.
+_COMPONENT_FACT = {"kernel": "kernel", "sudo": "sudo_version",
+                   "polkit": "pkexec_version", "glibc": "glibc_version"}
+
+
+def kernel_candidates(facts):
+    """The :data:`KERNEL_LPE` rules whose preconditions the facts satisfy, with the reason.
+
+    Yields ``(rule, evidence)``. Pure and inspectable — the same ruleset drives `analyze`,
+    `escalate` (as a prepared route) and the tests.
+    """
+    for rule in KERNEL_LPE:
+        suid = rule.get("needs_suid")
+        if suid:
+            if suid not in facts.suid:      # facts.suid holds basenames
+                continue
+            yield rule, f"SUID {suid} present"
+            continue
+        got = getattr(facts, _COMPONENT_FACT[rule["component"]], None)
+        if not _in_range(got, rule["lo"], rule["hi"]):
+            continue
+        window = f"{rule['lo'] or '*'}–{rule['hi'] or '*'}"
+        yield rule, f"{rule['component']} {got} in {window}"
+
+
+def _d_kernel_lpe(facts, ctx):
+    """Match captured component versions to the staged lin-kernel PoCs."""
+    for rule, evidence in kernel_candidates(facts):
+        remote = f"{ctx.stage_lin}/{rule['key']}"
+        yield Vector(
+            key=f"cve:{rule['key']}", title=f"{rule['cve']} — {rule['title']}",
+            exploitability=rule["exploitability"], safety=rule["safety"],
+            detection=rule["detection"],
+            command=f"{remote} && id", shell="sh", host=ctx.host,
+            detail=f"{rule['note']} PoC: `{rule['artifact']}` (arsenal: lin-kernel).",
+            evidence=evidence,
+            safe_proof="the PoC runs `id` as root; nothing else is touched.",
+            cleanup=f"rm -f {remote}", report_type="kernel_cve",
+            stages=((rule["artifact"], remote),),
+            playbook=Playbook(
+                summary=(f"{rule['cve']} matched on {evidence}. The staged PoC is source — "
+                         "build it, push the binary, run it. Prepared rather than auto-fired: "
+                         f"this is a {rule['safety']} route against a client host."),
+                place=remote,
+                steps=(
+                    f"build it attacker-side from the arsenal copy of `{rule['artifact']}` "
+                    "(most ship a Makefile: `make`)",
+                    f"push the built binary to {remote} (`fieldkit prep {ctx.host} "
+                    f"cve:{rule['key']} --stage`, or scp it)",
+                    f"chmod +x {remote}",
+                    f"run `{remote}` and capture `id` proving uid=0",
+                ),
+                restore=f"rm -f {remote}"))
+
+
 def _d_sudo_env(facts, ctx):
     preload = facts.sudo_env_keep & {"LD_PRELOAD", "LD_LIBRARY_PATH"}
     if not preload:
@@ -598,7 +757,8 @@ def _d_win_dll_hijack(facts, ctx):
 
 #: OS -> the drivers that apply. Append to extend the knowledge base.
 DRIVERS = {
-    LINUX: (_d_sudo_all, _d_sudo_gtfo, _d_suid_gtfo, _d_caps, _d_docker_group, _d_sudo_env),
+    LINUX: (_d_sudo_all, _d_sudo_gtfo, _d_suid_gtfo, _d_caps, _d_docker_group, _d_sudo_env,
+            _d_kernel_lpe),
     WINDOWS: (_d_win_privs, _d_win_aie, _d_win_unquoted, _d_win_weak_service,
               _d_win_writable_service, _d_win_dll_hijack),
 }

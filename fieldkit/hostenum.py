@@ -40,6 +40,12 @@ ENUM_PLAN = {
         EnumCheck("suid", "find / -perm -4000 -type f 2>/dev/null"),
         EnumCheck("caps", "getcap -r / 2>/dev/null"),
         EnumCheck("kernel", "uname -a"),
+        # component versions the kernel/local-LPE matcher gates on — several staged PoCs
+        # target sudo/polkit/glibc, not the kernel, so matching on `uname` alone would be
+        # guessing. All three are read-only version prints (`-V`/`--version` never prompt).
+        EnumCheck("versions", "sudo -V 2>/dev/null | head -1; "
+                              "pkexec --version 2>/dev/null | head -1; "
+                              "ldd --version 2>/dev/null | head -1"),
     ),
     WINDOWS: (
         EnumCheck("priv", "whoami /priv"),
@@ -78,6 +84,9 @@ class HostFacts:
     suid: set = field(default_factory=set)             # basenames of SUID files
     caps: dict = field(default_factory=dict)           # binary basename -> capability
     kernel: str = None                                 # version, e.g. "5.15.0"
+    sudo_version: str = None                           # e.g. "1.8.31"   (CVE-2021-3156)
+    pkexec_version: str = None                         # polkit, e.g. "0.105" (CVE-2021-4034)
+    glibc_version: str = None                          # e.g. "2.35"     (CVE-2023-4911)
     # -- windows --
     privs: set = field(default_factory=set)            # SeImpersonatePrivilege, ...
     win_groups: set = field(default_factory=set)        # Administrators, Backup Operators, ...
@@ -199,6 +208,20 @@ def _p_kernel(facts, text):
         facts.kernel = m.group(1)
 
 
+def _p_versions(facts, text):
+    """sudo/pkexec(polkit)/glibc versions from the combined version print."""
+    m = re.search(r"Sudo version\s+(\S+)", text, re.I)
+    if m:
+        facts.sudo_version = m.group(1)
+    m = re.search(r"pkexec version\s+(\S+)", text, re.I)
+    if m:
+        facts.pkexec_version = m.group(1)
+    # "ldd (Ubuntu GLIBC 2.35-0ubuntu3) 2.35" — the trailing bare version is the reliable one
+    m = re.search(r"^ldd .*?(\d+\.\d+)\s*$", text, re.I | re.M)
+    if m:
+        facts.glibc_version = m.group(1)
+
+
 # -- windows parsers -------------------------------------------------------
 
 def _p_priv(facts, text):
@@ -295,6 +318,7 @@ def _p_svcperms(facts, text):
 
 _PARSERS = {
     "id": _p_id, "sudo": _p_sudo, "suid": _p_suid, "caps": _p_caps, "kernel": _p_kernel,
+    "versions": _p_versions,
     "priv": _p_priv, "groups": _p_groups, "aie": _p_aie, "services": _p_services,
     "svcperms": _p_svcperms,
 }
