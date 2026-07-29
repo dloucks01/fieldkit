@@ -73,6 +73,63 @@ KB = {
              "sysadmin and xp_cmdshell on another SQL host.",
         rem="Remove unnecessary linked servers; map linked-server logins to a least-privileged account "
             "(or 'not be made'); disable RPC out where not required; keep xp_cmdshell disabled."),
+    "postgres_copy_from_program": dict(sev="High", cwe="CWE-250", os="",
+        name="PostgreSQL COPY FROM PROGRAM yields OS command execution as the postgres user",
+        desc="A superuser (or a member of `pg_execute_server_program`, PG 11+) can run `COPY … FROM "
+             "PROGRAM 'cmd'`, executing arbitrary OS commands as the PostgreSQL server process — usually "
+             "the `postgres` local account, with read/write access to the entire data directory and often "
+             "to other secrets on the host.",
+        rem="Restrict superuser membership; do not grant `pg_execute_server_program` unless required; run "
+            "postgres under a least-privileged local account with SELinux/AppArmor confinement; audit "
+            "role changes (`ALTER ROLE ... SUPERUSER`, `GRANT pg_execute_server_program`); do not expose "
+            "the database to untrusted networks."),
+    "postgres_role_grant": dict(sev="High", cwe="CWE-269", os="",
+        name="PostgreSQL role membership escalates to superuser",
+        desc="A low-privileged login is a direct or transitive member of a role that holds `SUPERUSER`. "
+             "`SET ROLE <role>` assumes that identity within the session, from which `COPY FROM PROGRAM` "
+             "yields OS command execution as the postgres user.",
+        rem="Audit `pg_auth_members` and revoke superuser inheritance from application/service roles; "
+            "avoid granting `INHERIT` on privileged roles; require explicit `SET ROLE` and log it."),
+    "postgres_read_server_files": dict(sev="High", cwe="CWE-732", os="",
+        name="PostgreSQL pg_read_server_files reads arbitrary host files",
+        desc="A superuser or a member of `pg_read_server_files` can read any file the postgres process can "
+             "read via `pg_read_file()` / `COPY FROM`, harvesting `~/.pgpass`, SSH keys, cloud instance "
+             "metadata, or any world-readable secret on the host.",
+        rem="Restrict `pg_read_server_files` grants; run postgres with least privilege on disk; move "
+            "secrets out of world/postgres-readable locations."),
+    "postgres_unauth": dict(sev="Critical", cwe="CWE-306", os="",
+        name="PostgreSQL accessible without authentication",
+        desc="The PostgreSQL server accepts connections without a password (a `trust` entry in "
+             "`pg_hba.conf` reachable from the attacker's network), exposing every database and — for "
+             "superuser trust — direct OS command execution via `COPY FROM PROGRAM`.",
+        rem="Set `pg_hba.conf` methods to `scram-sha-256` (or `md5` as a stopgap) for every non-local "
+            "entry; require certificate auth for remote access; bind postgres to localhost or a trusted "
+            "management interface only."),
+    "mongodb_unauth": dict(sev="Critical", cwe="CWE-306", os="",
+        name="MongoDB accessible without authentication",
+        desc="The MongoDB instance accepts connections without credentials (no `security.authorization: "
+             "enabled` in `mongod.conf`). Any client can read/write every database, dump the credential "
+             "collection (`admin.system.users`), and — as `root`/cluster admin — reconfigure the cluster.",
+        rem="Enable authentication (`security.authorization: enabled`), create a `userAdminAnyDatabase` "
+             "account and then a per-service least-privileged user; bind mongod to localhost or a "
+             "management interface; require TLS for remote connections."),
+    "mongodb_admin": dict(sev="High", cwe="CWE-269", os="",
+        name="MongoDB privileged role yields full data + user administration",
+        desc="A login holds `root`, `__system`, `userAdminAnyDatabase`, or `dbOwner` on a data-holding "
+             "database — enough to read every collection (application user records with password hashes "
+             "or plaintext), rewrite `admin.system.users`, or reshape indexes to disrupt production.",
+        rem="Grant application accounts the least privilege they need (typically `readWrite` on one "
+            "database); reserve admin roles for a separate operator account; rotate credentials; audit "
+            "role assignments."),
+    "mongodb_data_extract": dict(sev="High", cwe="CWE-200", os="",
+        name="MongoDB application data yields recoverable credentials",
+        desc="Application user documents in a MongoDB database contain password material — a bcrypt/argon2 "
+             "hash suitable for offline cracking, or (frequently on custom apps) a plaintext password "
+             "field. Recovered account credentials often re-authenticate against the application, SSO, or "
+             "adjacent services.",
+        rem="Store passwords hashed with argon2id or bcrypt at appropriate cost; never persist plaintext; "
+            "restrict application accounts to the smallest collection surface; rotate any exposed "
+            "credentials and enforce MFA."),
     "sebackup": dict(sev="High", cwe="CWE-250", os="win",
         name="SeBackup/Backup Operators enables credential hive theft",
         desc="Membership in Backup Operators (or SeBackupPrivilege/SeRestorePrivilege) lets a user read the "
@@ -562,6 +619,13 @@ RISK = {
     "hivenightmare": "read-only", "readable_shadow": "read-only", "private_key_exposure": "read-only",
     "cmdline_creds": "read-only", "default_credentials": "read-only", "password_reuse": "read-only",
     "mssql_linked_server": "read-only",   # an enumerated observation, not exploited
+    "postgres_copy_from_program": "reversible",
+    "postgres_role_grant": "reversible",   # SET ROLE lives inside the session only
+    "postgres_read_server_files": "read-only",
+    "postgres_unauth": "read-only",         # the connection itself proves it
+    "mongodb_unauth": "read-only",          # the connection itself proves it
+    "mongodb_admin": "read-only",
+    "mongodb_data_extract": "read-only",
     # reversible (shell-spawn / minor artifact, easily undone)
     "mssql_impersonation": "reversible",  # add/drop a sysadmin role member
     "mssql_xpcmdshell": "reversible",     # enable/disable xp_cmdshell
