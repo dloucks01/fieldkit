@@ -145,6 +145,32 @@ class RenderTest(ReportTestCase):
         self.assertIn("No privilege-escalation", md)
         self.assertIn("absence of findings is not proof", md.lower())
 
+    def test_recovered_credentials_render_as_audit_trail(self):
+        # add creds recovered by different mechanisms; manual creds should NOT appear
+        from fieldkit.creds import Credential
+        self.store.add_credential(Credential("jdoe", "manual", domain="corp"),
+                                  source="manual")
+        self.store.add_credential(Credential("svcadmin", "S3cret!", domain="corp"),
+                                  source="sharespider:gpp-cpassword")
+        self.store.add_credential(Credential("app", "deadbeef00", secret_type="nt"),
+                                  source="dump:sam")
+        eng, findings = build(self.store, self.cfg)
+        self.assertEqual(len(eng["recovered_credentials"]), 2)
+        md = render_markdown(eng, findings)
+        self.assertIn("Credentials recovered during testing", md)
+        self.assertIn("sharespider:gpp-cpassword", md)
+        self.assertIn("dump:sam", md)
+        self.assertIn("corp\\svcadmin", md.lower())          # domain\user shown
+        self.assertNotIn("| `jdoe`", md.lower())              # manual creds excluded
+        self.assertNotIn("manual", md.lower().split("credentials recovered")[1][:400])
+
+    def test_no_credentials_section_when_nothing_recovered(self):
+        from fieldkit.creds import Credential
+        self.store.add_credential(Credential("jdoe", "manual"), source="manual")
+        eng, findings = build(self.store, self.cfg)
+        md = render_markdown(eng, findings)
+        self.assertNotIn("Credentials recovered during testing", md)
+
 
 class CleanupTest(ReportTestCase):
     def test_manifest_lists_artifact_and_removal(self):
