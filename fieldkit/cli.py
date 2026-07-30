@@ -1632,6 +1632,49 @@ def cmd_wordlist(args):
     return 0
 
 
+def cmd_usernames(args):
+    """Generate a username list from first/last name pairs using common schemas."""
+    first, last = list(args.first or []), list(args.last or [])
+    if args.first_file:
+        try:
+            with open(args.first_file, "r", errors="replace") as fh:
+                first.extend(w.strip() for w in fh
+                             if w.strip() and not w.startswith("#"))
+        except OSError as exc:
+            _err(f"--first-file {args.first_file}: {exc}")
+            return 2
+    if args.last_file:
+        try:
+            with open(args.last_file, "r", errors="replace") as fh:
+                last.extend(w.strip() for w in fh
+                            if w.strip() and not w.startswith("#"))
+        except OSError as exc:
+            _err(f"--last-file {args.last_file}: {exc}")
+            return 2
+    if not first or not last:
+        _err("need at least one --first and one --last name (or --first-file / "
+             "--last-file). E.g.: `fieldkit usernames --first john jane --last "
+             "doe smith`")
+        return 2
+    users = wordlist_mod.usernames(first, last,
+                                    patterns=args.patterns or None)
+    if args.out:
+        try:
+            with open(args.out, "w") as fh:
+                fh.write("\n".join(users) + "\n")
+        except OSError as exc:
+            _err(f"--out {args.out}: {exc}")
+            return 2
+        print(f"wrote {args.out}  ({_plural(len(users), 'username')} from "
+              f"{_plural(len(first), 'first')} × {_plural(len(last), 'last')})")
+        print(f"  use it: `{PROG} spray --wordlist --userlist {args.out} "
+              "--passlist <password-list>`")
+    else:
+        for u in users:
+            print(u)
+    return 0
+
+
 def cmd_arsenal_list(args):
     st = arsenal_mod.staged()
     root = arsenal_mod.arsenal_dir()
@@ -2332,6 +2375,37 @@ Examples:
                             default=wordlist_mod.DEFAULT_MAX_OUTPUT, metavar="N",
                             help=f"maximum total words (default: {wordlist_mod.DEFAULT_MAX_OUTPUT})")
     p_wordlist.set_defaults(func=cmd_wordlist)
+
+    p_usernames = sub.add_parser(
+        "usernames", help="generate a userlist from first/last name pairs "
+                          "(schemas: first.last, flast, ...)",
+        description="""Common username patterns from first + last names. Defaults
+cover: first, last, first.last, firstlast, flast, first_last, lastf, last.first.
+
+Examples:
+
+  fieldkit usernames --first john jane --last doe smith
+  fieldkit usernames --first-file firsts.txt --last-file lasts.txt --out users.txt
+  fieldkit usernames --first john --last doe --patterns '{f}{last}'  # only jdoe
+
+The default schema-set matches ~90%% of real-world corporate patterns. Override
+with --patterns for banks (flast), schools (first.last), or a client-specific
+convention.""",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p_usernames.add_argument("--first", nargs="+", metavar="NAME",
+                             help="first name(s)")
+    p_usernames.add_argument("--last", nargs="+", metavar="NAME",
+                             help="last name(s)")
+    p_usernames.add_argument("--first-file", metavar="PATH",
+                             help="read first names from a file (one per line, # comments OK)")
+    p_usernames.add_argument("--last-file", metavar="PATH",
+                             help="read last names from a file (one per line, # comments OK)")
+    p_usernames.add_argument("--patterns", nargs="+", metavar="TMPL",
+                             help="username templates (variables: {first} {last} {f} {l}); "
+                                  "overrides the default schema set")
+    p_usernames.add_argument("--out", metavar="FILE",
+                             help="output file (default: print to stdout)")
+    p_usernames.set_defaults(func=cmd_usernames)
 
     p_arsenal = sub.add_parser(
         "arsenal", help="what tools/exploits are staged, and what each route needs")
