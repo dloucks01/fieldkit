@@ -375,6 +375,56 @@ class StatusTest(CliTestCase):
         self.assertIn("10.0.0.0/24", out)
 
 
+class WordlistCliTest(CliTestCase):
+    """`fieldkit wordlist` — the CLI wrapper over the mutation module.
+
+    No engagement required; wordlist gen is a pre-engagement task.
+    """
+
+    def test_positional_seeds_print_to_stdout(self):
+        out = self.run_cli("wordlist", "Acme", "--years", "2024")
+        self.assertIn("Acme2024", out)
+        self.assertIn("Acme2024!", out)
+
+    def test_out_file_gets_written_and_message_points_at_spray(self):
+        out_path = os.path.join(self.tmp.name, "p.txt")
+        out = self.run_cli("wordlist", "Acme", "--years", "2024",
+                            "--out", out_path)
+        self.assertTrue(os.path.exists(out_path))
+        with open(out_path) as fh:
+            words = fh.read().splitlines()
+        self.assertIn("Acme2024", words)
+        self.assertIn("spray --wordlist", out)  # hints the next command
+
+    def test_from_file_reads_seeds_per_line(self):
+        seeds_path = os.path.join(self.tmp.name, "seeds.txt")
+        with open(seeds_path, "w") as fh:
+            fh.write("# a comment\nAcme\nWidget\n\n")
+        out = self.run_cli("wordlist", "--from-file", seeds_path, "--years", "2024")
+        self.assertIn("Acme2024", out)
+        self.assertIn("Widget2024", out)
+        self.assertNotIn("comment2024", out)   # # lines ignored
+
+    def test_from_text_extracts_words(self):
+        out = self.run_cli("wordlist", "--from-text",
+                            "About Acme Widgets - since 1987", "--years", "2024")
+        self.assertIn("Acme2024", out)
+        self.assertIn("Widgets2024", out)
+
+    def test_no_seeds_reports_the_three_input_paths(self):
+        out = self.run_cli("wordlist", expect=2)
+        self.assertIn("--from-file", out)
+        self.assertIn("--from-text", out)
+        self.assertIn("--rules", out)
+
+    def test_rules_lists_every_mutation(self):
+        out = self.run_cli("wordlist", "--rules")
+        self.assertIn("cases", out)
+        self.assertIn("leet", out)
+        self.assertIn("suffix", out)
+        self.assertIn("combine", out)
+
+
 class WorkflowTest(CliTestCase):
     """The Phase-0 acceptance check, start to finish."""
 

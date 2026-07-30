@@ -32,7 +32,8 @@ from . import (__version__, adcs as adcs_mod, arsenal as arsenal_mod,
                postgres as postgres_mod, preflight as preflight_mod,
                privesc as privesc_mod, provision as provision_mod,
                report as report_mod, scope as scope_mod,
-               sharespider as sharespider_mod, spray as spray_mod)
+               sharespider as sharespider_mod, spray as spray_mod,
+               wordlist as wordlist_mod)
 from .errors import ConfirmationError, FieldkitError
 from .state import DB_ENV_VAR, Store, default_db_path
 
@@ -1468,6 +1469,61 @@ def cmd_export_recce(args, store):
     return 0
 
 
+def cmd_wordlist(args):
+    """Generate a targeted wordlist from seed words + inspectable mutation rules."""
+    if getattr(args, "rules", False):
+        print("wordlist mutation rules (all pure, inspectable):\n")
+        for r in wordlist_mod.RULES:
+            print(f"  {r.name:<10} {r.description}")
+        print("\nseed input:")
+        print("  positional args, --from-file <path>, --from-text <text> (any/all)")
+        print("\ndefaults:  cases + leet + suffix ON; prefix/combine/season OFF")
+        return 0
+
+    seeds = list(args.seeds or [])
+    if args.from_file:
+        try:
+            with open(args.from_file, "r", errors="replace") as fh:
+                for line in fh:
+                    w = line.strip()
+                    if w and not w.startswith("#"):
+                        seeds.append(w)
+        except OSError as exc:
+            _err(f"--from-file {args.from_file}: {exc}")
+            return 2
+    if args.from_text:
+        seeds.extend(wordlist_mod.seeds_from_text(args.from_text))
+    if not seeds:
+        _err("no seeds — give words as positional args, `--from-file <path>`, or "
+             "`--from-text \"<about-page copy>\"`. `fieldkit wordlist --rules` "
+             "shows how each seed will be expanded.")
+        return 2
+
+    years = args.years or ()
+    rep = wordlist_mod.generate(
+        seeds, years=years, seasons=args.seasons, combine=args.combine,
+        cases=not args.no_cases, leet=not args.no_leet, suffixes=not args.no_suffixes,
+        prefixes=args.prefixes, extra_suffixes=args.suffix or (),
+        extra_prefixes=args.prefix or (),
+        min_len=args.min_len, max_len=args.max_len, max_output=args.max)
+
+    if args.out:
+        try:
+            with open(args.out, "w") as fh:
+                fh.write("\n".join(rep.words) + "\n")
+        except OSError as exc:
+            _err(f"--out {args.out}: {exc}")
+            return 2
+        note = " (truncated at --max)" if rep.truncated else ""
+        print(f"wrote {args.out}  ({rep.total} words from "
+              f"{_plural(len(seeds), 'seed')}; rules: {', '.join(rep.rules)}){note}")
+        print(f"  use it: `{PROG} spray --wordlist --passlist {args.out}`")
+    else:
+        for w in rep.words:
+            print(w)
+    return 0
+
+
 def cmd_arsenal_list(args):
     st = arsenal_mod.staged()
     root = arsenal_mod.arsenal_dir()
@@ -2081,6 +2137,60 @@ the spec is missing that field. `--from-file` reads one credential per line.
     p_recce.add_argument("--all", action="store_true",
                          help="include unproven findings (default: proven only)")
     p_recce.set_defaults(func=cmd_export_recce)
+
+    p_wordlist = sub.add_parser(
+        "wordlist", help="generate a targeted wordlist from seeds via inspectable mutation rules",
+        description="""Build a password wordlist from seed words (company name, product,
+common word) by applying an inspectable mutation ruleset — cases + leet + suffixes
+by default, prefixes/combine/seasons opt-in. Pipes directly into `fieldkit spray
+--wordlist`.
+
+Examples:
+
+  fieldkit wordlist Acme Widget --years 2024 2025 --out passwords.txt
+  fieldkit wordlist Acme --seasons --combine --max 10000 --out passwords.txt
+  fieldkit wordlist --from-text "$(cat about-page.html)" --years 2024 2025 --out p.txt
+  fieldkit wordlist --from-file seeds.txt --out p.txt
+  fieldkit wordlist --rules      # print the ruleset""",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p_wordlist.add_argument("seeds", nargs="*", metavar="SEED",
+                            help="seed words to mutate (e.g. company name, product)")
+    p_wordlist.add_argument("--rules", action="store_true",
+                            help="print the mutation ruleset and exit")
+    p_wordlist.add_argument("--out", metavar="FILE",
+                            help="output file (default: print to stdout)")
+    p_wordlist.add_argument("--from-file", metavar="PATH",
+                            help="read seed words from a file (one per line, # comments OK)")
+    p_wordlist.add_argument("--from-text", metavar="TEXT",
+                            help="extract seed words from a text blob (paste in About-page copy)")
+    p_wordlist.add_argument("--years", nargs="+", type=int, metavar="YEAR",
+                            help="years to append as suffixes (e.g. --years 2024 2025)")
+    p_wordlist.add_argument("--suffix", nargs="+", metavar="STR",
+                            help="extra suffix(es) to append (adds to the built-in set)")
+    p_wordlist.add_argument("--prefix", nargs="+", metavar="STR",
+                            help="extra prefix(es) to prepend")
+    p_wordlist.add_argument("--seasons", action="store_true",
+                            help="add every season + month to the seed pool")
+    p_wordlist.add_argument("--combine", action="store_true",
+                            help="also concat seed pairs (Acme+Widget → AcmeWidget). "
+                                 "Combinatorial — bounded by --max")
+    p_wordlist.add_argument("--prefixes", action="store_true",
+                            help="apply prefix rule (uses --prefix + --years); off by default "
+                                 "because corporate patterns are almost all suffix-heavy")
+    p_wordlist.add_argument("--no-cases", action="store_true",
+                            help="disable capitalization variants (First, UPPER)")
+    p_wordlist.add_argument("--no-leet", action="store_true",
+                            help="disable leet substitutions (o→0, e→3, ...)")
+    p_wordlist.add_argument("--no-suffixes", action="store_true",
+                            help="disable the built-in suffix set (rarely useful)")
+    p_wordlist.add_argument("--min-len", type=int, default=6, metavar="N",
+                            help="minimum word length (default: 6)")
+    p_wordlist.add_argument("--max-len", type=int, default=32, metavar="N",
+                            help="maximum word length (default: 32)")
+    p_wordlist.add_argument("--max", type=int,
+                            default=wordlist_mod.DEFAULT_MAX_OUTPUT, metavar="N",
+                            help=f"maximum total words (default: {wordlist_mod.DEFAULT_MAX_OUTPUT})")
+    p_wordlist.set_defaults(func=cmd_wordlist)
 
     p_arsenal = sub.add_parser(
         "arsenal", help="what tools/exploits are staged, and what each route needs")
