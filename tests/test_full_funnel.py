@@ -425,6 +425,12 @@ class FullFunnelTest(unittest.TestCase):
         # the finding carries the *captured* PoC output, not a paraphrase
         proven = [f for f in self.store().findings() if f["proven"]]
         self.assertIn("nt authority\\system", proven[0]["evidence"].lower())
+        # AND the closing note points at the natural next moves — new SYSTEM
+        # context opens up new enum surface (hives, etc.) and re-ranks vectors.
+        self.assertIn("next moves opened up", run)
+        self.assertIn("enum 10.0.0.7", run)
+        self.assertIn("analyze", run)
+        self.assertIn("report", run)
         # and the captured step is LINKED to the finding, so anti-fabrication passes for
         # an escalate-proven finding (regression: escalate used to record it unlinked)
         self.assertTrue(self.store().steps(finding_id=proven[0]["id"]))
