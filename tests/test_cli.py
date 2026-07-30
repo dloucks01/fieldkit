@@ -423,6 +423,28 @@ class WordlistCliTest(CliTestCase):
         self.assertIn("leet", out)
         self.assertIn("suffix", out)
         self.assertIn("combine", out)
+        self.assertIn("walks", out)
+        self.assertIn("wrapped", out)
+
+    def test_walks_only_works_without_seeds(self):
+        # --walks --min-len 8 produces standalone keyboard walks; no seeds needed
+        out = self.run_cli("wordlist", "--walks", "--min-len", "8", "--max-len", "20")
+        self.assertIn("qazwsxedc", out)
+        self.assertIn("Password2024!", out)
+
+    def test_long_preset_narrows_to_12_16_and_enables_walks_wrapped(self):
+        # --long alone: 12-16 char walks only
+        out = self.run_cli("wordlist", "--long")
+        for w in out.strip().splitlines():
+            self.assertGreaterEqual(len(w), 12, f"{w!r} shorter than 12")
+            self.assertLessEqual(len(w), 16, f"{w!r} longer than 16")
+        # a real 12+ char walk lands
+        self.assertIn("1qaz2wsx3edc", out)
+
+    def test_long_with_seeds_produces_wrapped_shapes(self):
+        out = self.run_cli("wordlist", "Password", "--long", "--years", "2024")
+        # !Password2024! is 14 chars — right in the 12-16 band
+        self.assertIn("!Password2024!", out)
 
 
 class WorkflowTest(CliTestCase):
