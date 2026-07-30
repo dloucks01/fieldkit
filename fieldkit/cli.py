@@ -1706,6 +1706,17 @@ def cmd_status(args, store):
     print(f"\nphase:       {phase}")
     print(f"next:        {phase_hint}")
 
+    # Where am I hot? A tester coming back after a break wants to know THE IPS,
+    # not just the count. "3 admin on 3 hosts" hides which ones — this line
+    # names them so `enum <ip>` / `escalate <ip>` are one glance away.
+    if counts["admin_hosts"]:
+        pwned = store.admin_hosts()
+        labels = [(f"{h['ip']} ({h['hostname']})" if h["hostname"] else h["ip"])
+                  + (" — DC" if h["is_dc"] else "")
+                  for h in pwned[:8]]
+        more = f" (+{len(pwned) - 8} more)" if len(pwned) > 8 else ""
+        print(f"pwned:       {', '.join(labels)}{more}")
+
     # Show top-3 ranked opportunities when there ARE any (skipped in setup phase
     # to keep the empty-engagement output short).
     if counts["access"]:
