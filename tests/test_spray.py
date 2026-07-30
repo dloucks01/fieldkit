@@ -156,6 +156,24 @@ class RunnerFailureTest(LoopTestCase):
         self.assertIn("not found", rep.aborted)
         self.assertEqual(self.store.counts()["access"], 0)
 
+    def test_missing_nxc_at_policy_read_aborts_before_the_round_header(self):
+        # If nxc isn't on PATH at all, the policy call is the first thing to fail.
+        # spray_loop MUST abort right there — not print a "round 1: spraying..."
+        # header and then error out on the first credential (which produced the
+        # same message N+1 times and looked like the loop was still running).
+        events = []
+
+        def totally_missing(argv, env=None):
+            return RunResult(argv, error="nxc: not found — is it installed and on PATH?")
+        rep = spray_loop(self.store, self.cfg, run=totally_missing,
+                          on_event=events.append)
+        self.assertIn("not found", rep.aborted)
+        self.assertEqual(rep.creds_sprayed, 0)               # nothing was attempted
+        # No round header emitted — the tester should see one clean error,
+        # not a spraying-in-progress message before the failure.
+        self.assertFalse(any("round" in e.lower() for e in events),
+                          f"unexpected 'round' emit: {events}")
+
 
 class WordlistSprayTest(LoopTestCase):
     """Wordlist × password spray via nxc -u FILE -p FILE."""

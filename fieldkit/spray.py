@@ -68,8 +68,13 @@ def _targets_arg(ips):
 
 
 def read_policy(store, cred, run, *, dc_ip=None):
-    """Read the domain password policy from a DC before spraying. Returns
-    ``(PassPolicy | None, note)``."""
+    """Read the domain password policy from a DC before spraying.
+
+    Returns ``(PassPolicy | None, note, tool_missing)``. ``tool_missing`` is True
+    when the runner reported the driven tool (nxc) is not on PATH — the caller
+    should abort the spray, not try again per credential and produce the same
+    error N times.
+    """
     dc = dc_ip
     if dc is None:
         dcs = [h for h in store.hosts() if h["is_dc"]]
@@ -78,15 +83,17 @@ def read_policy(store, cred, run, *, dc_ip=None):
         hosts = store.hosts()
         dc = hosts[0]["ip"] if hosts else None
     if dc is None:
-        return None, "no host to read a policy from"
+        return None, "no host to read a policy from", False
     rendered = render_nxc(cred, "smb", target=dc, extra=["--pass-pol"])
     result = run(rendered.argv, rendered.env)
     if not result.ok:
-        return None, result.error or "policy read failed"
+        err = result.error or "policy read failed"
+        tool_missing = "not found" in err                     # runner's "tool: not found" string
+        return None, err, tool_missing
     policy = parse_pass_policy(result.output)
     if policy is None:
-        return None, f"{dc} returned no readable policy"
-    return policy, None
+        return None, f"{dc} returned no readable policy", False
+    return policy, None, False
 
 
 def _spray_one(store, cred_row, ips, proto, run, source, report, on_event):
@@ -157,8 +164,15 @@ def spray_loop(store, config, *, proto="smb", subnet=None, run=None, loot=True,
 
     if with_policy:
         first = store.credentials()[0]
-        policy, note = read_policy(store, Credential.from_row(first), run, dc_ip=dc_ip)
+        policy, note, tool_missing = read_policy(
+            store, Credential.from_row(first), run, dc_ip=dc_ip)
         report.policy, report.policy_note = policy, note
+        # If nxc itself isn't installed, bail NOW — spraying every credential
+        # would produce the same "not found" error N times, and the round
+        # header would print before the failure surfaces. Abort cleanly.
+        if tool_missing:
+            report.aborted = note
+            return report
         if policy is not None:
             _emit(report, on_event,
                   f"policy {policy.domain or ''}: lockout "
@@ -278,8 +292,12 @@ def wordlist_spray(store, config, *, proto="smb", subnet=None, userlist=None,
     # safe_attempts per user, refuse unless the operator opted in.
     if store.credentials():
         first = store.credentials()[0]
-        policy, note = read_policy(store, Credential.from_row(first), run, dc_ip=dc_ip)
+        policy, note, tool_missing = read_policy(
+            store, Credential.from_row(first), run, dc_ip=dc_ip)
         rep.policy, rep.policy_note = policy, note
+        if tool_missing:
+            rep.aborted = note
+            return rep
         if policy is not None and policy.has_lockout:
             per_user_attempts = _count_lines(passlist)
             if per_user_attempts > policy.safe_attempts and not allow_lockout_risk:
