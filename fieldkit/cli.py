@@ -1477,7 +1477,10 @@ def cmd_wordlist(args):
             print(f"  {r.name:<10} {r.description}")
         print("\nseed input:")
         print("  positional args, --from-file <path>, --from-text <text> (any/all)")
-        print("\ndefaults:  cases + leet + suffix ON; prefix/combine/season OFF")
+        print("\ndefaults:  cases + leet + suffix ON; "
+              "prefix/combine/season/walks/wrapped OFF")
+        print("presets:   --long  →  min-len 12, max-len 16, walks+wrapped ON "
+              "(modern ≥12-char engagement shape)")
         return 0
 
     seeds = list(args.seeds or [])
@@ -1493,15 +1496,29 @@ def cmd_wordlist(args):
             return 2
     if args.from_text:
         seeds.extend(wordlist_mod.seeds_from_text(args.from_text))
-    if not seeds:
-        _err("no seeds — give words as positional args, `--from-file <path>`, or "
-             "`--from-text \"<about-page copy>\"`. `fieldkit wordlist --rules` "
-             "shows how each seed will be expanded.")
+    # --walks alone produces a standalone list; no seeds required. Same for --long
+    # when the operator wants just keyboard walks in the 12-16 band.
+    if not seeds and not args.walks and not args.long:
+        _err("no seeds — give words as positional args, `--from-file <path>`, "
+             "`--from-text \"<about-page copy>\"`, or use `--walks` for a "
+             "seedless keyboard-walk list. `fieldkit wordlist --rules` shows "
+             "how each seed will be expanded.")
         return 2
 
     years = args.years or ()
+    # --long is a preset for the modern ≥12-char engagement shape the operator
+    # described: keyboard walks + phrase wrapped by symbols/numbers, in the
+    # 12–16 char band. It layers on top; explicit --min-len/--max-len still win.
+    if args.long:
+        if not args.walks and not args.wrapped:
+            args.walks = args.wrapped = True
+        if args.min_len == 6:            # only if operator didn't override
+            args.min_len = 12
+        if args.max_len == 32:
+            args.max_len = 16
     rep = wordlist_mod.generate(
         seeds, years=years, seasons=args.seasons, combine=args.combine,
+        walks=args.walks, wrapped=args.wrapped,
         cases=not args.no_cases, leet=not args.no_leet, suffixes=not args.no_suffixes,
         prefixes=args.prefixes, extra_suffixes=args.suffix or (),
         extra_prefixes=args.prefix or (),
@@ -2174,6 +2191,19 @@ Examples:
     p_wordlist.add_argument("--combine", action="store_true",
                             help="also concat seed pairs (Acme+Widget → AcmeWidget). "
                                  "Combinatorial — bounded by --max")
+    p_wordlist.add_argument("--walks", action="store_true",
+                            help="include keyboard walks (qwerty/qazwsx/1qaz2wsx families, "
+                                 "shift-mix, common non-walks like Password1) as standalone "
+                                 "passwords in the output")
+    p_wordlist.add_argument("--wrapped", action="store_true",
+                            help="wrap seeds with symbols+numbers before/after: "
+                                 "!Password2024!, #Winter@, 2024Password!, etc. Best paired "
+                                 "with --min-len 12 for modern policies")
+    p_wordlist.add_argument("--long", action="store_true",
+                            help="preset for modern ≥12-char engagements: enables --walks + "
+                                 "--wrapped, sets --min-len 12 --max-len 16 (both still "
+                                 "overridable). One shape among others; keep in mind real "
+                                 "policies vary")
     p_wordlist.add_argument("--prefixes", action="store_true",
                             help="apply prefix rule (uses --prefix + --years); off by default "
                                  "because corporate patterns are almost all suffix-heavy")

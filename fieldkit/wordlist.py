@@ -78,7 +78,88 @@ RULES = (
     Rule("prefix", "prepend a chosen prefix (off by default — corporate patterns are almost all suffix-heavy)"),
     Rule("combine", "concat two seeds (off by default; combinatorial. Opt-in with --combine)"),
     Rule("season", "add every season/month to the seed pool (opt-in with --seasons)"),
+    Rule("walks", "keyboard walks (qwerty/qazwsx/1qaz2wsx families, incl. shift-mix). Opt-in with --walks"),
+    Rule("wrapped", "wrap seed with symbols+numbers before/after: !Password2024!, #Winter@, 2024Password!"),
 )
+
+
+# ------------------------------------------------------------- keyboard walks
+
+#: Curated keyboard walks. These are STANDALONE passwords, not seeds — a walk
+#: like ``1qaz@WSX3edc`` is itself the credential someone chose. Modern policies
+#: force ≥12 chars, and walks are the top-3 way users cope. Grouped by shape so
+#: the operator can filter with --min-len/--max-len.
+KEYBOARD_WALKS = (
+    # horizontal, single row (US-QWERTY)
+    "qwerty", "qwertyuiop", "asdfgh", "asdfghjkl", "zxcvbn", "zxcvbnm",
+    "1234567890", "0987654321",
+    "QWERTY", "QWERTYUIOP", "ASDFGH", "ASDFGHJKL",
+    # shift-of-numeric-row
+    "!@#$%^", "!@#$%^&*", "!@#$%^&*()",
+    # diagonal, top-left → bottom-right (the classic "1qaz" family)
+    "qaz", "qazwsx", "qazwsxedc", "qazwsxedcrfv", "qazwsxedcrfvtgb",
+    "1qaz2wsx", "1qaz2wsx3edc", "1qaz2wsx3edc4rfv", "1qaz2wsx3edc4rfv5tgb",
+    "1qaz@WSX", "1qaz@WSX3edc", "1qaz@WSX3edc$RFV",
+    "!QAZ@wsx", "!QAZ2wsx", "!QAZ2wsx#EDC",
+    # diagonal, top-right → bottom-left (rarer but real)
+    "poi", "poiuyt", "poiuytre", "poiuytrewq",
+    "0okm", "0okm9ijn", "0okm9ijn8uhb",
+    # column pairs
+    "qazxsw", "qazxsw2", "1qazxsw2", "1qazxsw2!QAZXSW@",
+    # numeric-row + row-below hybrid
+    "1q2w3e", "1q2w3e4r", "1q2w3e4r5t", "1q2w3e4r5t6y",
+    "1Q2W3E", "1Q2W3E4R", "1Q2W3E4R5T",
+    # popular non-walks that behave like walks (very common)
+    "password", "Password", "Password1", "Password!", "Passw0rd",
+    "Passw0rd!", "P@ssw0rd", "P@ssw0rd!",
+    "welcome", "Welcome", "Welcome1", "Welcome!", "Welcome@123",
+    "letmein", "Letmein1", "Letmein!",
+    "changeme", "Changeme1", "Changeme!",
+    "admin", "admin123", "Admin@123",
+    # add-year variants of the two most common
+    "Password2024", "Password2024!", "Password2025", "Password2025!",
+    "Welcome2024", "Welcome2024!", "Welcome2025", "Welcome2025!",
+)
+
+
+# ------------------------------------------------------------- wrapper phrases
+
+#: Wrapper elements. Small, curated — the point is not "every character" but
+#: the shapes users actually pick. Order = most common first.
+_WRAP_SYMBOLS = ("!", "@", "#", "$", "*", "?", "!!", "@@", "##", "!@#", "!@#$")
+_WRAP_NUMBERS = ("1", "12", "123", "1234", "12345", "007", "01", "02",
+                 "2024", "2025", "2023", "2022")
+
+
+def _wrap_seed(seed, years=(), max_variants_per_seed=30):
+    """Emit wrapper-shaped variants of one seed. Shapes covered (in order):
+
+        <sym><seed><num>          !Password2024
+        <sym><seed><num><sym>     !Password2024!
+        <num><seed><sym>          2024Password!
+        <sym><seed><sym>          !Password!
+        <sym><sym><seed><num>     !!Password2024
+        <seed><sym><num><sym>     Password!2024!
+
+    Bounded to `max_variants_per_seed` to keep single-seed output reasonable.
+    """
+    # Prepend the operator's chosen years to the number pool so they dominate.
+    numbers = [str(y) for y in years] + [n for n in _WRAP_NUMBERS
+                                          if n not in {str(y) for y in years}]
+    out = []
+    for sym in _WRAP_SYMBOLS:
+        for num in numbers:
+            for shape in (
+                f"{sym}{seed}{num}",
+                f"{sym}{seed}{num}{sym}",
+                f"{num}{seed}{sym}",
+                f"{sym}{seed}{sym}",
+                f"{seed}{sym}{num}{sym}",
+            ):
+                out.append(shape)
+                if len(out) >= max_variants_per_seed:
+                    return out
+    return out
 
 
 # ------------------------------------------------------------------ generator
@@ -98,7 +179,8 @@ DEFAULT_MAX_OUTPUT = 5000           # generous but not runaway; ~15 min at 3 att
 
 def generate(seeds, *, years=(), extra_suffixes=(), extra_prefixes=(),
              cases=True, leet=True, suffixes=True, prefixes=False, combine=False,
-             seasons=False, min_len=6, max_len=32, max_output=DEFAULT_MAX_OUTPUT):
+             seasons=False, walks=False, wrapped=False,
+             min_len=6, max_len=32, max_output=DEFAULT_MAX_OUTPUT):
     """Expand ``seeds`` into a wordlist by applying the enabled rules.
 
     Every combination is filtered by ``min_len``/``max_len`` (default 6–32, which
@@ -107,13 +189,19 @@ def generate(seeds, *, years=(), extra_suffixes=(), extra_prefixes=(),
     from ``seeds`` × the rule order, so more-likely hits land earlier — matters
     when the operator caps the output.
 
+    ``walks=True`` — include :data:`KEYBOARD_WALKS` (standalone passwords, not
+    mutations); ``wrapped=True`` — apply the wrapper pattern (``!Password2024!``,
+    ``#Winter@``, ``2024Password!``, etc). Both are OFF by default because they
+    push output length toward the 12–16 range and duplicate work when the seed
+    set is short-corporate-style; toggle them on for modern ≥12-char policies.
+
     Returns a :class:`WordlistReport`.
     """
-    if not seeds:
+    if not seeds and not walks:
         return WordlistReport(seeds=(), total=0)
     seed_pool = list(seeds)
     if seasons:
-        seed_pool = list(seeds) + list(SEASONS) + list(MONTHS)
+        seed_pool = list(seed_pool) + list(SEASONS) + list(MONTHS)
     all_suffixes = list(BASE_SUFFIXES) + list(extra_suffixes or ())
     # Auto-add year suffixes when the operator names years (e.g. --years 2024 2025):
     # generate both the year alone and year+symbol variants.
@@ -134,6 +222,10 @@ def generate(seeds, *, years=(), extra_suffixes=(), extra_prefixes=(),
         applied.append("combine")
     if seasons:
         applied.append("season")
+    if walks:
+        applied.append("walks")
+    if wrapped:
+        applied.append("wrapped")
 
     seen = set()
     ordered = []                    # preserve insertion order (dedupe with set)
@@ -212,6 +304,23 @@ def generate(seeds, *, years=(), extra_suffixes=(), extra_prefixes=(),
                 else:
                     add(a + b)
                     add(b + a)
+
+    # Pass 5: keyboard walks (opt-in). Standalone passwords, not mutations —
+    # a walk like 1qaz@WSX3edc is itself the credential a user picked.
+    if walks and len(ordered) < max_output:
+        for w in KEYBOARD_WALKS:
+            if len(ordered) >= max_output:
+                break
+            add(w)
+
+    # Pass 6: wrapper phrases (opt-in). The shape modern ≥12-char policies
+    # push users toward: !Password2024!, #Winter@, 2024Password!, etc.
+    if wrapped and len(ordered) < max_output:
+        for w in seed_variants:
+            for shape in _wrap_seed(w, years=years):
+                if len(ordered) >= max_output:
+                    break
+                add(shape)
 
     total_generated = len(ordered)
     truncated = 0

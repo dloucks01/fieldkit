@@ -92,6 +92,72 @@ class GenerateTest(unittest.TestCase):
             self.assertIn(pat, rep.words, f"missing {pat}")
 
 
+class WalksAndWrapperTest(unittest.TestCase):
+    """The 12-16 char shape modern engagements crack on: keyboard walks +
+    phrases wrapped by symbols/numbers before/after."""
+
+    def test_walks_only_needs_no_seeds(self):
+        rep = wordlist.generate([], walks=True, min_len=8, max_len=20)
+        self.assertGreater(rep.total, 30)
+        # classic walks are present
+        self.assertIn("qazwsxedc", rep.words)
+        self.assertIn("1qaz2wsx3edc", rep.words)
+        # shift-mix is present
+        self.assertIn("1qaz@WSX3edc", rep.words)
+        # common non-walks that behave like walks
+        self.assertIn("Password2024!", rep.words)
+
+    def test_walks_respect_length_filter(self):
+        # 12-16 char band — only long walks land
+        rep = wordlist.generate([], walks=True, min_len=12, max_len=16)
+        for w in rep.words:
+            self.assertGreaterEqual(len(w), 12)
+            self.assertLessEqual(len(w), 16)
+        # a full 16-char walk is there
+        self.assertIn("1qaz2wsx3edc4rfv", rep.words)
+        # a 6-char walk is NOT there
+        self.assertNotIn("qwerty", rep.words)
+
+    def test_wrapped_emits_the_shape_the_user_described(self):
+        # !Password2024!, #Winter@, 2024Password!, etc.
+        rep = wordlist.generate(["Password"], years=[2024], wrapped=True,
+                                 cases=False, leet=False, suffixes=False)
+        # sym+seed+num
+        self.assertTrue(any(w == "!Password2024" for w in rep.words))
+        # sym+seed+num+sym
+        self.assertTrue(any(w == "!Password2024!" for w in rep.words))
+        # num+seed+sym
+        self.assertTrue(any(w == "2024Password!" for w in rep.words))
+        # sym+seed+sym
+        self.assertTrue(any(w == "!Password!" or w == "#Password#" for w in rep.words))
+
+    def test_wrapped_uses_operator_years_before_default_years(self):
+        # Passing --years 2026 should put 2026 wrappers ahead of the default 2024/2025
+        rep = wordlist.generate(["Winter"], years=[2026], wrapped=True,
+                                 cases=False, leet=False, suffixes=False)
+        # 2026 lands before 2024 in the wrapper output
+        idx_2026 = next((i for i, w in enumerate(rep.words) if "2026" in w), None)
+        idx_2024 = next((i for i, w in enumerate(rep.words) if "2024" in w), None)
+        self.assertIsNotNone(idx_2026)
+        if idx_2024 is not None:
+            self.assertLess(idx_2026, idx_2024)
+
+    def test_long_shape_from_wrapper_reaches_12_to_16(self):
+        # a normal seed with wrapping + 12-16 filter should produce output in that band
+        rep = wordlist.generate(["Password"], years=[2024, 2025],
+                                 wrapped=True, walks=True,
+                                 min_len=12, max_len=16)
+        self.assertGreater(rep.total, 20)
+        for w in rep.words:
+            self.assertGreaterEqual(len(w), 12)
+            self.assertLessEqual(len(w), 16)
+
+    def test_rules_registry_includes_walks_and_wrapped(self):
+        names = {r.name for r in wordlist.RULES}
+        self.assertIn("walks", names)
+        self.assertIn("wrapped", names)
+
+
 class CaseAndLeetTest(unittest.TestCase):
     def test_cases_covers_first_upper_lower(self):
         variants = set(wordlist._cases("Winter"))
