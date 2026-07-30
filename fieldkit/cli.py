@@ -374,9 +374,31 @@ def cmd_spray(args):
     if args.proto not in spray_mod.PROTOCOLS:
         _err(f"unknown proto {args.proto!r} — one of {', '.join(spray_mod.PROTOCOLS)}")
         return 2
+    # --tmp: one-shot mode. Create a fresh engagement under /tmp so the tester
+    # can spray a wordlist / new hosts without ceremony. State is still recorded
+    # (evidence capture is load-bearing), just in a location that says "one-shot".
+    if getattr(args, "tmp", False):
+        import tempfile
+        args.db = os.path.join(tempfile.mkdtemp(prefix="fk-oneshot-"), "engagement.db")
+        with Store.create(args.db) as store:
+            store.init_engagement("one-shot")
+        print(f"one-shot engagement at {args.db}"
+              f"  (inspect later: `{PROG} --db {args.db} status`)")
     with _open_store(args) as store:
         store.require_engagement()
         cfg = config_mod.load(store)
+        # --hosts: add these IPs/CIDRs inline before spraying (skips the separate
+        # `add hosts` step for a quick run).
+        if args.hosts:
+            targets, errors = scope_mod.read_targets(args.hosts)
+            for origin, lineno, line, message in errors:
+                _err(f"{origin}:{lineno}: {message}  ({line})")
+            with store.transaction():
+                for ip, hostname in targets:
+                    if store.in_scope(ip):
+                        store.add_host(ip, hostname=hostname or None)
+            if targets:
+                print(f"  scoped in {_plural(len(targets), 'host')} for this run")
         # wordlist mode: --userlist / --passlist (or the same config keys) present
         userlist = args.userlist or cfg.get("userlist")
         passlist = args.passlist or cfg.get("passlist")
@@ -388,7 +410,7 @@ def cmd_spray(args):
         if not hosts:
             _err("no hosts in the engagement"
                  + (f" for {args.subnet}" if args.subnet else "")
-                 + " — run `fieldkit add hosts` first")
+                 + " — run `fieldkit add hosts` first (or pass `--hosts <IP|CIDR>`)")
             return 2
         if not creds:
             _err("no credentials to spray — run `fieldkit add cred` first, or run "
@@ -1918,6 +1940,15 @@ the spec is missing that field. `--from-file` reads one credential per line.
                          help=f"protocol: {', '.join(spray_mod.PROTOCOLS)} (default: smb)")
     p_spray.add_argument("--subnet", metavar="CIDR", help="limit to one segment")
     p_spray.add_argument("--dc", metavar="IP", help="read the lockout policy from this DC")
+    # one-shot ergonomics: add hosts inline / auto-create a temp engagement.
+    # The tester who wants "just spray these IPs once" gets it in one command.
+    p_spray.add_argument("--hosts", nargs="+", metavar="IP|CIDR",
+                         help="add these hosts to the engagement before spraying "
+                              "(skips the separate `add hosts` step)")
+    p_spray.add_argument("--tmp", action="store_true",
+                         help="one-shot mode: create a fresh engagement under /tmp for "
+                              "this run (records evidence there; inspect later with "
+                              "`fieldkit --db <that-path> status`)")
     p_spray.add_argument("--no-loot", action="store_true",
                          help="do not dump SAM/LSA on owned hosts")
     p_spray.add_argument("--no-policy", action="store_true",
