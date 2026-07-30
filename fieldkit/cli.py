@@ -126,6 +126,15 @@ def cmd_init(args):
         row = store.init_engagement(name)
         print(f"created {path}")
         print(f"engagement: {row['name']}  (schema v{store.schema_version()})")
+
+    # Inline preflight so a tester learns about a missing required tool RIGHT HERE,
+    # not five commands later when spray/enum/loot mysteriously errors out.
+    pf_missing = preflight_mod.missing_required(preflight_mod.check())
+    if pf_missing:
+        print(f"\n⚠ required tools missing: {', '.join(r[0] for r in pf_missing)}")
+        print(f"  the credential loop depends on them — install, then re-run "
+              f"`{PROG} preflight` to confirm.")
+
     print(f"\nnext: {PROG} config set lhost=<your ip> lport=443 domain=<ad domain>")
     print(f"      {PROG} add hosts scope.txt")
     return 0
@@ -994,7 +1003,7 @@ def _render_prep(vector, built):
 def cmd_preflight(args):
     rows = preflight_mod.check()
     print("preflight — external tools fieldkit drives:\n")
-    for label, found, alts, required in rows:
+    for name, purpose, found, alts, required in rows:
         if found:
             mark, val = "OK ", found
         elif required:
@@ -1002,7 +1011,8 @@ def cmd_preflight(args):
         else:
             mark, val = "-- ", "not installed"
         alt = f"   (any of: {', '.join(alts)})" if not found and len(alts) > 1 else ""
-        print(f"  {mark} {label:<40} {val}{alt}")
+        label = f"{name} ({purpose})"
+        print(f"  {mark} {label:<42} {val}{alt}")
     missing = preflight_mod.missing_required(rows)
     print("\nbuild toolchain detail: `fieldkit poc --check`   ·   "
           "staged exploits: `fieldkit arsenal check`")
