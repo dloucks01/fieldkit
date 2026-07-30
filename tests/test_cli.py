@@ -384,6 +384,30 @@ class StatusTest(CliTestCase):
         self.assertIn("scope:", out)
         self.assertIn("10.0.0.0/24", out)
 
+    def test_pwned_line_names_the_hot_hosts(self):
+        # "3 admin on 3 hosts" hides which IPs. The tester returning after a
+        # break wants to see the actual hosts — one glance from `enum <ip>`.
+        self.init()
+        self.run_cli("add", "hosts", "10.0.0.7", "10.0.0.10")
+        self.run_cli("add", "cred", "svc:pw", "--yes")
+        s = self.store()
+        cid = s.credentials()[0]["id"]
+        s.add_host("10.0.0.7", hostname="WS02")
+        s.add_host("10.0.0.10", is_dc=True, hostname="DC01")
+        s.add_access(s.host_by_ip("10.0.0.7")["id"], cid, "smb", admin=True)
+        s.add_access(s.host_by_ip("10.0.0.10")["id"], cid, "smb", admin=True)
+        out = self.run_cli("status")
+        self.assertIn("pwned:", out)
+        self.assertIn("10.0.0.7 (WS02)", out)
+        self.assertIn("10.0.0.10 (DC01)", out)
+        self.assertIn("— DC", out)                            # DC flag surfaced
+
+    def test_no_pwned_line_when_no_admin_access(self):
+        self.init()
+        self.run_cli("add", "hosts", "10.0.0.5")
+        out = self.run_cli("status")
+        self.assertNotIn("pwned:", out)
+
 
 class WordlistCliTest(CliTestCase):
     """`fieldkit wordlist` — the CLI wrapper over the mutation module.
