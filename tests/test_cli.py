@@ -481,6 +481,46 @@ class WordlistCliTest(CliTestCase):
         self.assertIn("!Password2024!", out)
 
 
+class UsernamesCliTest(CliTestCase):
+    def test_default_schemas_from_positional_names(self):
+        out = self.run_cli("usernames", "--first", "John", "--last", "Doe")
+        # every common schema is present
+        for expected in ("john", "doe", "john.doe", "johndoe", "jdoe", "j.doe"):
+            self.assertIn(expected, out, f"missing {expected}")
+
+    def test_first_and_last_files_are_read(self):
+        firsts = os.path.join(self.tmp.name, "firsts.txt")
+        lasts = os.path.join(self.tmp.name, "lasts.txt")
+        with open(firsts, "w") as fh:
+            fh.write("# hr-supplied first names\nJohn\nJane\n")
+        with open(lasts, "w") as fh:
+            fh.write("Doe\nSmith\n")
+        out = self.run_cli("usernames", "--first-file", firsts,
+                            "--last-file", lasts)
+        self.assertIn("jane.smith", out)
+        self.assertIn("jdoe", out)
+
+    def test_custom_patterns_override_defaults(self):
+        # e.g. a bank uses ONLY flast — no first.last, no firstlast
+        out = self.run_cli("usernames", "--first", "John",
+                            "--last", "Doe", "--patterns", "{f}{last}")
+        self.assertEqual(out.strip(), "jdoe")
+
+    def test_out_file_gets_written_and_points_at_spray(self):
+        out_path = os.path.join(self.tmp.name, "users.txt")
+        out = self.run_cli("usernames", "--first", "John", "Jane",
+                            "--last", "Doe", "--out", out_path)
+        self.assertTrue(os.path.exists(out_path))
+        self.assertIn("wrote", out)
+        self.assertIn("spray --wordlist --userlist", out)   # points at the next command
+
+    def test_missing_names_explains_itself(self):
+        out = self.run_cli("usernames", expect=2)
+        self.assertIn("--first", out)
+        self.assertIn("--last", out)
+        self.assertIn("fieldkit usernames", out)
+
+
 class WorkflowTest(CliTestCase):
     """The Phase-0 acceptance check, start to finish."""
 
