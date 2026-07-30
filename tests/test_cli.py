@@ -635,6 +635,36 @@ class ResolveTargetErrorsTest(CliTestCase):
         self.assertIn("dry-run", out)
 
 
+class ReportCliTest(CliTestCase):
+    """The report cmd's empty-state behavior — used to give false-OK on --check
+    and to write three empty files to CWD when there was nothing to report."""
+
+    def setUp(self):
+        super().setUp()
+        self.init()
+
+    def test_check_with_zero_findings_reports_nothing_to_check(self):
+        out = self.run_cli("report", "--check", expect=1)
+        self.assertIn("nothing to check", out)
+        self.assertIn("no findings recorded yet", out)
+        self.assertNotIn("CHECK OK", out)                  # no false confidence
+
+    def test_report_with_zero_findings_refuses_to_write(self):
+        # the whole point: no cluttering the tester's CWD with empty deliverables
+        out = self.run_cli("report", "--out", "empty", expect=1)
+        self.assertIn("nothing to report yet", out)
+        self.assertFalse(os.path.exists("empty.md"))
+        self.assertFalse(os.path.exists("empty.docx"))
+
+    def test_report_force_writes_the_empty_template(self):
+        # operator opt-in for "yes, I know it's empty, I'm testing the render"
+        out_path = os.path.join(self.tmp.name, "tpl")
+        out = self.run_cli("report", "--out", out_path, "--force",
+                            "--formats", "md")
+        self.assertIn("wrote", out)
+        self.assertTrue(os.path.exists(out_path + ".md"))
+
+
 class PostureCliTest(CliTestCase):
     def test_posture_defaults_to_assume_caught(self):
         self.init()

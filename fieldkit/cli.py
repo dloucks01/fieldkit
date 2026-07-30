@@ -1436,6 +1436,15 @@ def cmd_report(args, store):
     proven = [f for f in findings if f.get("proven", True)]
     errors, warns = report_mod.check(findings)
     if args.check:
+        # A --check with zero findings is not a real OK — it's a nothing-to-check.
+        # The old "CHECK OK: 0 proven findings" read as green even though nothing
+        # had been proven; a tester ran --check before doing any work and got
+        # false confidence. Say what actually happened.
+        if not findings:
+            print("nothing to check — no findings recorded yet. Run "
+                  "`fieldkit escalate` / `fieldkit run` to prove a vector first, "
+                  "then re-run `fieldkit report --check`.")
+            return 1
         for tag, m in errors:
             print(f"  ERROR  [{tag}] {m}")
         for tag, m in warns:
@@ -1462,6 +1471,16 @@ def cmd_report(args, store):
              "(a proven finding without captured proof). Fix them, or pass --force.")
         return 2
 
+    # Refuse to write empty deliverables. Producing three near-empty files
+    # (report.md, report.docx, report.pdf) in CWD before the engagement has any
+    # findings just clutters the tester's workspace. --force is the operator
+    # opt-in for "yes, write it anyway (I'm checking a template render)".
+    if not findings and not args.force:
+        _err("nothing to report yet — no findings recorded. Run `fieldkit escalate` "
+             "or `fieldkit run` to prove a vector first, or pass --force to write "
+             "an empty template.")
+        return 1
+
     formats = [x.strip() for x in args.formats.split(",") if x.strip()]
     md = report_mod.render_markdown(engagement, findings)
     md_path = f"{args.out}.md"
@@ -1474,9 +1493,7 @@ def cmd_report(args, store):
         print(line)
     if not proven:
         print("note: no proven findings yet — run `fieldkit run`/`escalate` to prove vectors "
-              "(the report currently holds only observations)."
-              if findings else
-              "note: nothing to report yet — spray/enum/escalate first.")
+              "(the report currently holds only observations).")
     return 0
 
 
