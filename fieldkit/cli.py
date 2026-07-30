@@ -906,6 +906,13 @@ def _print_escalation_outcome(outcome):
         v = outcome.proven
         print(f"PROVEN: {v.title} elevated on {v.host}. Recorded as a finding"
               + (f"; cleanup: {v.cleanup}" if v.cleanup else "") + ".")
+        # New elevated context on this host means new enum surface (SeBackup
+        # can now dump hives, SYSTEM can read every file, etc.). Point the
+        # tester at the next natural move — the loop's convergence step.
+        print(f"\nnext moves opened up:")
+        print(f"  {PROG} enum {v.host}         # re-enum in the new elevated context")
+        print(f"  {PROG} analyze              # re-rank now that you're admin here")
+        print(f"  {PROG} report               # once you've gathered enough")
     elif outcome.stopped == "surfaced":
         print("STOPPED: a result the classifier does not recognise — shown above. "
               "Inspect it before continuing (`fieldkit arsenal rules`).")
