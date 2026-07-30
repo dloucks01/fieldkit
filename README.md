@@ -38,6 +38,24 @@ add cred/hosts → spray (loop: loot → promote → re-spray) → enum → anal
 - **Assume-caught.** Evasion is a ranking axis: every technique is red until a Defender lab
   proves it clean; a live catch marks it red and the loop falls back.
 
+## Install
+
+Two ways, pick whichever fits:
+
+```bash
+# 1) run from a clone (no install — the shim just runs `python3 -m fieldkit`)
+git clone https://github.com/dloucks01/fieldkit && cd fieldkit
+bin/fieldkit preflight
+
+# 2) install as a system tool with pipx (puts `fieldkit` on PATH)
+pipx install git+https://github.com/dloucks01/fieldkit.git
+fieldkit preflight
+```
+
+fieldkit is Python-3-stdlib-only — nothing to resolve, nothing to `pip install`.
+The tools it *drives* (netexec, impacket, msfvenom, evil-winrm, ...) are your
+own kit; `fieldkit preflight` checks which are on `$PATH`.
+
 ## Quick start
 
 ```bash
