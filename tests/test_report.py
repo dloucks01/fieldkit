@@ -171,6 +171,40 @@ class RenderTest(ReportTestCase):
         md = render_markdown(eng, findings)
         self.assertNotIn("Credentials recovered during testing", md)
 
+    def test_reached_via_line_names_the_authenticating_credential(self):
+        from fieldkit.creds import Credential
+        cid, _ = self.store.add_credential(
+            Credential("svcadmin", "S3cret!", domain="corp"),
+            source="sharespider:gpp-cpassword")
+        self.store.add_access(self.hid, cid, "smb", admin=True)
+        self.proven_finding()
+        eng, findings = build(self.store, self.cfg)
+        # build() attaches reached_via
+        self.assertEqual(findings[0]["reached_via"]["principal"], "corp\\svcadmin")
+        self.assertEqual(findings[0]["reached_via"]["source"],
+                         "sharespider:gpp-cpassword")
+        md = render_markdown(eng, findings)
+        self.assertIn("### Reached via", md)
+        self.assertIn("corp\\svcadmin", md)
+        self.assertIn("sharespider:gpp-cpassword", md)
+        # exec summary carries the chain sentence
+        self.assertIn("Demonstrated attack chain", md)
+
+    def test_reached_via_manual_cred_does_not_claim_a_chain(self):
+        # a proven finding via an operator-provided cred is NOT a chain
+        from fieldkit.creds import Credential
+        cid, _ = self.store.add_credential(
+            Credential("jdoe", "pw", domain="corp"), source="manual")
+        self.store.add_access(self.hid, cid, "smb", admin=True)
+        self.proven_finding()
+        eng, findings = build(self.store, self.cfg)
+        md = render_markdown(eng, findings)
+        # per-finding line still there and honest
+        self.assertIn("### Reached via", md)
+        self.assertIn("operator-provided", md)
+        # BUT the exec summary chain sentence is skipped (no recovery happened)
+        self.assertNotIn("Demonstrated attack chain", md)
+
 
 class CleanupTest(ReportTestCase):
     def test_manifest_lists_artifact_and_removal(self):
