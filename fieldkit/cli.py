@@ -891,6 +891,22 @@ def cmd_escalate(args):
         provision_mod.record_proof(store, outcome, prov.results, host)
 
     _print_escalation_outcome(outcome)
+
+    # If manual routes surfaced and we're interactive, offer to run `prep` on
+    # the first one right here — saves a context-switch to `fieldkit prep <ip>
+    # <key>`, which is the follow-up the tester almost always wants. `--yes`
+    # suppresses the prompt (non-interactive/scripted runs are unchanged).
+    manual = [a for a in outcome.attempts if a.action == escalate_mod.MANUAL]
+    if manual and not args.yes and sys.stdin.isatty():
+        first = manual[0].vector
+        if _confirm(f"\nprep the first manual route now? "
+                    f"({first.key} on {first.host})", assume_yes=False):
+            # invoke cmd_prep with the vector args synthesized, so all the
+            # build/resolve/render logic runs unchanged.
+            args.vector = first.key
+            args.host = first.host
+            args.stage = False
+            return cmd_prep(args)
     return 0 if outcome.ok else 1
 
 
@@ -909,7 +925,7 @@ def _print_escalation_outcome(outcome):
         # New elevated context on this host means new enum surface (SeBackup
         # can now dump hives, SYSTEM can read every file, etc.). Point the
         # tester at the next natural move — the loop's convergence step.
-        print(f"\nnext moves opened up:")
+        print("\nnext moves opened up:")
         print(f"  {PROG} enum {v.host}         # re-enum in the new elevated context")
         print(f"  {PROG} analyze              # re-rank now that you're admin here")
         print(f"  {PROG} report               # once you've gathered enough")
