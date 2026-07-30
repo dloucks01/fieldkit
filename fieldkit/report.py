@@ -80,6 +80,27 @@ def build(store, config, *, proven_only=True):
                   "transport": s["transport"]} for s in store.steps(finding_id=f["id"])]
         arts = [{"desc": a["description"], "remove": a["cleanup_cmd"]}
                 for a in store.artifacts() if a["finding_id"] == f["id"]]
+        # Attack-chain hint: the credential(s) that had access on this host.
+        # Best-effort — the executor doesn't record cred_id per step, so we go by
+        # "who has proven access on this host". Prefer admin; then whichever came
+        # in first. When the auth cred was itself recovered, that's a real chain.
+        reached_via = None
+        if host is not None:
+            access_rows = store.access_on(host["id"])
+            # sort: admin first (already ordered by SQL), then oldest cred
+            for a in access_rows:
+                cred = store.credential_by_id(a["cred_id"])
+                if cred is None:
+                    continue
+                principal = (f"{cred['domain']}\\{cred['username']}"
+                             if cred["domain"] else cred["username"])
+                reached_via = {
+                    "principal": principal,
+                    "method": a["method"],
+                    "admin": bool(a["admin"]),
+                    "source": (cred["source"] or "manual").strip() or "manual",
+                }
+                break
         findings.append({
             "title": f["title"],
             "vector_type": f["vector_type"],
@@ -91,6 +112,7 @@ def build(store, config, *, proven_only=True):
             "references": "",
             "steps": steps,
             "artifacts": arts,
+            "reached_via": reached_via,
         })
     return engagement, findings
 
@@ -179,6 +201,33 @@ def _impact(f):
     return IMPACT.get(_sev(f), IMPACT["Info"])
 
 
+def _reached_via(w, f):
+    """Render the "Reached via" one-liner: which credential authenticated the
+    exploitation, and — the audit-trail hook — where that credential came from.
+
+    Skipped when nothing is known (a finding recorded before access was proven).
+    A manual-source credential produces the terse form ("as jdoe (operator-provided)");
+    a recovered credential shows the recovery source verbatim so the chain reads
+    end-to-end when this section and the "Credentials recovered" table are read
+    together.
+    """
+    via = f.get("reached_via")
+    if not via:
+        return
+    admin_tag = " (admin)" if via.get("admin") else ""
+    method = via.get("method") or "?"
+    source = via.get("source") or "manual"
+    if source == "manual":
+        origin = "operator-provided"
+    else:
+        origin = f"recovered — `{source}`"
+    w("### Reached via")
+    w("")
+    w(f"Authenticated to `{f.get('affected_host', '')}` over `{method}` as "
+      f"`{via['principal']}`{admin_tag} ({origin}).")
+    w("")
+
+
 def _shot(w, caption):
     """A screenshot placeholder — fieldkit captures text; this marks where the operator
     should paste the matching terminal screenshot for the polished deliverable."""
@@ -216,6 +265,7 @@ def _render_finding(w, i, f):
     w("")
     w(k["desc"])
     w("")
+    _reached_via(w, f)
     w("### Impact")
     w("")
     w(_impact(f))
@@ -383,6 +433,23 @@ def render_markdown(engagement, findings):
             w("")
         elif proven:
             w(f"The overall risk is assessed as **{top_sev}**. See each finding for impact.")
+            w("")
+
+        # Chain sentence: name one proven finding that was reached via a RECOVERED
+        # credential — that's the demonstrated attack chain the exec summary should
+        # lead with. Silently skipped when no proven finding used a recovered cred.
+        chained = [f for f in proven
+                   if f.get("reached_via") and f["reached_via"].get("source")
+                   and f["reached_via"]["source"] != "manual"]
+        if chained:
+            f = chained[0]
+            via = f["reached_via"]
+            w(f"**Demonstrated attack chain:** authenticated to "
+              f"`{f.get('affected_host', '')}` as `{via['principal']}` — a credential "
+              f"recovered during testing (`{via['source']}`) — and proved "
+              f"*{f.get('title', '')}*. See *Credentials recovered during testing* "
+              "for the full audit trail and *Reached via* on each finding for the "
+              "step-by-step chain.")
             w("")
 
     w("### How to read this report")
