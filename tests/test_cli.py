@@ -83,6 +83,16 @@ class InitTest(CliTestCase):
         out = self.run_cli("add", "hosts", "10.0.0.5", expect=2)
         self.assertIn("database error", out)
 
+    def test_init_runs_preflight_inline(self):
+        # nxc is not installed in the CI env, so the preflight warning must
+        # appear right at init — a tester should learn about the missing spine
+        # tool now, not five commands later.
+        out = self.init("ACME")
+        self.assertIn("required tools missing", out)
+        self.assertIn("netexec", out)                # tool NAME, not the wordy label
+        self.assertNotIn("spray / exec / loot", out)  # the confusing old label form
+        self.assertIn("fieldkit preflight", out)      # the follow-up command
+
 
 class ConfigCommandTest(CliTestCase):
 
