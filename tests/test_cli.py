@@ -592,6 +592,49 @@ class RunCliTest(CliTestCase):
         self.assertIn("not in the engagement", out)
 
 
+class ResolveTargetErrorsTest(CliTestCase):
+    """The `_resolve_target` failure paths — these are the errors testers see
+    most often; they used to be ambiguous. Pinned here so they can't rot."""
+
+    def setUp(self):
+        super().setUp()
+        self.init()
+
+    def test_zero_credentials_stored_points_at_add_cred(self):
+        self.run_cli("add", "hosts", "10.0.0.5")
+        out = self.run_cli("enum", "10.0.0.5", "--yes", expect=2)
+        self.assertIn("no credentials in the engagement", out)
+        self.assertIn("add cred", out)
+
+    def test_credentials_stored_but_not_proven_points_at_spray(self):
+        self.run_cli("add", "hosts", "10.0.0.5")
+        self.run_cli("add", "cred", "svc:pw", "--yes")
+        out = self.run_cli("enum", "10.0.0.5", "--yes", expect=2)
+        self.assertIn("stored", out)
+        self.assertIn("none is proven", out)
+        self.assertIn("fieldkit spray", out)
+
+    def test_escalate_dry_run_does_not_require_proven_cred(self):
+        # --dry-run is plan-only: the operator wants to see WHAT escalate would
+        # do before committing (and often before running spray to prove a cred).
+        # Blocking on "no proven cred" defeats the point.
+        self.run_cli("add", "hosts", "10.0.0.5", "--os", "linux")
+        self.run_cli("add", "cred", "svc:pw", "--yes")
+        # simulate a captured enum showing sudo:ALL — no proven cred yet.
+        store = self.store()
+        hid = store.host_by_ip("10.0.0.5")["id"]
+        store.add_step(cmd="id", output="uid=1000(svc) gid=1000(svc)",
+                       host_id=hid, label="enum:id")
+        store.add_step(cmd="sudo -l", output="(ALL) NOPASSWD: ALL",
+                       host_id=hid, label="enum:sudo")
+        out = self.run_cli("escalate", "10.0.0.5", "--dry-run")
+        # the plan renders — that's the whole point of dry-run
+        self.assertIn("escalation plan", out)
+        self.assertIn("sudo:ALL", out)
+        # the dry-run note honestly says why cred isn't proven
+        self.assertIn("dry-run", out)
+
+
 class PostureCliTest(CliTestCase):
     def test_posture_defaults_to_assume_caught(self):
         self.init()

@@ -614,11 +614,17 @@ def cmd_analyze(args, store):
 def _resolve_target(store, ip):
     """(host_row, cred_row) for a target, or an error string. Shared by enum/run.
 
-    Two distinct failures the error message MUST NOT conflate:
-      * ``ip`` is not in the engagement database — the operator needs to
-        ``add hosts`` first (or the arg is a CIDR passed to a single-host command);
-      * ``ip`` is not in scope by an active :meth:`Store.scope_rules` allow/deny
-        pair — that's an engagement-scope violation and the error says so.
+    Distinct failures the error message MUST NOT conflate:
+      * ``ip`` looks like a CIDR (this command takes one IP);
+      * ``ip`` is outside :meth:`Store.scope_rules` allow/deny (scope violation);
+      * ``ip`` is not in the engagement database (needs ``add hosts``);
+      * the engagement has NO credentials at all (needs ``add cred``);
+      * credentials exist but none is proven to work on THIS host (needs a spray
+        or an ingest of a prior nxc result to prove one).
+
+    The last two are the ones testers most commonly confuse — the old message
+    said "no credential is proven on X" for both, which read as "no cred exists"
+    when the tester had just added one.
     """
     if "/" in ip:
         return None, None, (f"{ip} looks like a CIDR — this command takes a single "
@@ -634,8 +640,16 @@ def _resolve_target(store, ip):
                             "scope file)")
     cred = store.credential_with_access_on(host["id"])
     if cred is None:
-        return host, None, (f"no credential is proven on {ip} — spray/validate one there "
-                            "first (enum runs as a credential that already works)")
+        n_creds = store.counts()["credentials"]
+        if n_creds == 0:
+            note = ("no credentials in the engagement — add one with `fieldkit "
+                    "add cred 'jdoe:Winter2025!'`, or spray a wordlist with "
+                    "`fieldkit spray --wordlist --userlist … --passlist …`")
+        else:
+            note = (f"{_plural(n_creds, 'credential')} stored, but none is proven "
+                    f"to work on {ip} yet — run `fieldkit spray` to validate them "
+                    f"there (this command runs as a credential that ALREADY works)")
+        return host, None, note
     return host, cred, None
 
 
@@ -781,9 +795,14 @@ def cmd_escalate(args):
         store.require_engagement()
         cfg = config_mod.load(store)
         host, cred, err = _resolve_target(store, args.host)
-        if err:
+        # --dry-run is plan-only: proceed even when no credential is yet proven
+        # on this host, as long as the host itself is resolvable. The plan is
+        # what the operator wanted to see before committing.
+        if err and not (args.dry_run and host is not None):
             _err(err)
             return 2
+        if args.dry_run and cred is None:
+            print(f"(dry-run: {err}) — showing the plan anyway\n")
         vectors = _host_vectors(store, cfg, args.host)
         if not vectors:
             _err(f"no privesc vectors on {args.host} — run `fieldkit enum {args.host}` "
