@@ -689,6 +689,44 @@ class ReportCliTest(CliTestCase):
         self.assertTrue(os.path.exists(out_path + ".md"))
 
 
+class OneShotSprayTest(CliTestCase):
+    """`spray --tmp` / `--hosts` — one-shot ergonomics that skip the init +
+    add-hosts ceremony for a quick sweep."""
+
+    def test_hosts_flag_scopes_in_before_spraying(self):
+        # a real spray needs nxc; we're just checking `--hosts` registered them
+        self.init()
+        self.run_cli("add", "cred", "svc:pw", "--yes")
+        # nxc missing → spray_loop aborts, but --hosts should still add the hosts
+        self.run_cli("spray", "--hosts", "10.0.0.5", "10.0.0.7",
+                      "--yes", expect=2)
+        s = self.store()
+        self.assertIsNotNone(s.host_by_ip("10.0.0.5"))
+        self.assertIsNotNone(s.host_by_ip("10.0.0.7"))
+
+    def test_tmp_creates_a_fresh_engagement_in_a_temp_dir(self):
+        # no `init` in setUp — this is the "no engagement anywhere" scenario
+        import tempfile
+        # keep the tmp DB out of self.db so we can inspect the auto-created path
+        out = self.run_cli("spray", "--tmp", "--hosts", "10.0.0.5",
+                            "--yes", expect=2)  # nxc missing → aborts, but --tmp printed
+        self.assertIn("one-shot engagement at", out)
+        self.assertIn("fk-oneshot-", out)
+        # the tmp DB should exist and hold the host we just added
+        import re
+        m = re.search(r"one-shot engagement at (\S+)", out)
+        self.assertIsNotNone(m)
+        tmp_db = m.group(1)
+        try:
+            from fieldkit.state import Store
+            with Store.open(tmp_db) as store:
+                self.assertIsNotNone(store.host_by_ip("10.0.0.5"))
+                self.assertEqual(store.engagement()["name"], "one-shot")
+        finally:
+            import shutil
+            shutil.rmtree(os.path.dirname(tmp_db), ignore_errors=True)
+
+
 class PostureCliTest(CliTestCase):
     def test_posture_defaults_to_assume_caught(self):
         self.init()
