@@ -269,10 +269,20 @@ def scrub_filename(local, share_path, _text):
 #: High-signal for `.ps1` / `.bat` / `.ini` / `.env` — a scripted login checked into a
 #: share. The token before ``password`` may be a sigil (``$``, ``-``, none).
 _KV_PATTERNS = (
+    # quoted values — the classic "password: 'xyz'" / password="xyz" shape
     re.compile(r"[\s;#$-]?(password|pwd|passwd|api[_-]?key|secret|token)\s*"
                r"[:=]\s*['\"]([^'\"]{4,80})['\"]", re.I | re.M),
+    # PowerShell/cmd flag form: -Password 'xyz'
     re.compile(r"(?:^|\s)-(password|pwd|passwd)\s+['\"]([^'\"]{4,80})['\"]",
                re.I | re.M),
+    # unquoted values — very common in .env / systemd unit / properties files.
+    # Group 1: the full key (may contain password/pwd/secret/token/api_key anywhere
+    # in it — DB_PASSWORD, AWS_SECRET_ACCESS_KEY, GITHUB_TOKEN, X_API_KEY).
+    # Group 2: the unquoted value; 8+ non-whitespace chars to reduce placeholder
+    # false positives like "changeme" (which still slips through — real engagements
+    # want to see literal "changeme" in a config file anyway).
+    re.compile(r"(?:^|[\s;#])([\w-]*(?:password|pwd|passwd|secret|token|"
+               r"api[_-]?key)[\w-]*)\s*=\s*(\S{8,200})(?:\s|$)", re.I | re.M),
 )
 #: Matches DB_USER=/user:/-User/-Username/$user= — any leading tokens ending in USER.
 _KV_USER = re.compile(r"(?:^|[\s;#$])-?[\w]*(?:user(?:name)?)\s*"

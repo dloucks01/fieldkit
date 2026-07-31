@@ -63,6 +63,28 @@ class ScrubKvTest(unittest.TestCase):
         self.assertEqual((h.credential.username, h.credential.secret),
                          ("appsvc", "YamlSecret!"))
 
+    def test_unquoted_dotenv_secrets_land(self):
+        # Real .env files often have UNQUOTED values. The initial pattern only
+        # matched quoted values; smoke-audit caught this. All four should hit.
+        env = (
+            "DB_PASSWORD='S3cret!'\n"                                 # quoted, ends in `password`
+            "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY\n"  # unquoted, `secret` in middle
+            "GITHUB_TOKEN=ghp_1234567890abcdefghij1234567890abcdef1234\n"       # unquoted, `token` at end
+            "X_API_KEY=abcdef123456abcdef\n"                          # unquoted, `api_key` at end
+        )
+        kinds = [h.snippet for h in self._hit("/t/.env", "APP\\.env", env)]
+        # each secret category surfaces
+        self.assertTrue(any(s.startswith("DB_PASSWORD") for s in kinds))
+        self.assertTrue(any("AWS_SECRET_ACCESS_KEY" in s for s in kinds))
+        self.assertTrue(any("GITHUB_TOKEN" in s for s in kinds))
+        self.assertTrue(any("X_API_KEY" in s for s in kinds))
+
+    def test_short_placeholder_values_dont_match(self):
+        # "changeme" is 8 chars → catches (arguably right — real engagements
+        # care about literal changeme). Anything < 8 chars value does not.
+        env = "password=xyz\napi_key=short"
+        self.assertEqual(self._hit("/t/.env", "APP\\.env", env), [])
+
     def test_secret_snippet_is_redacted(self):
         # a captured step must not leak the full secret verbatim
         h = self._hit("/t/a.ps1", "A\\a.ps1", "$password='Winter2025!'")[0]
