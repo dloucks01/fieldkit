@@ -28,7 +28,8 @@ from . import (__version__, adcs as adcs_mod, arsenal as arsenal_mod,
                executor as executor_mod, fs_scrub as fs_scrub_mod,
                hostenum as hostenum_mod, ingest as ingest_mod,
                kb as kb_mod, kerberos as kerberos_mod, lab as lab_mod,
-               mongodb as mongodb_mod, mssql as mssql_mod, poc as poc_mod,
+               mongodb as mongodb_mod, mssql as mssql_mod, nmap as nmap_mod,
+               poc as poc_mod,
                postgres as postgres_mod, preflight as preflight_mod,
                privesc as privesc_mod, provision as provision_mod,
                report as report_mod, scope as scope_mod,
@@ -367,6 +368,59 @@ def cmd_ingest_nxc(args):
           + f"; {rep.access_added} new access {_word(rep.access_added, 'record')}"
           + (f" ({rep.admin_added} admin)" if rep.admin_added else "")
           + f"; {rep.hosts_added} hosts added, {rep.hosts_enriched} enriched")
+    return 0
+
+
+def cmd_ingest_nmap(args):
+    """Read nmap XML and fold discovered hosts + services into state."""
+    if args.file and args.file != "-":
+        try:
+            with open(args.file, "r", errors="replace") as fh:
+                text = fh.read()
+        except OSError as exc:
+            _err(f"{args.file}: {exc}")
+            return 2
+    elif sys.stdin.isatty():
+        _err("no capture given — pass an nmap -oX file or pipe XML on stdin "
+             "(`nmap -oX - <targets> | fieldkit ingest nmap -`)")
+        return 2
+    else:
+        text = sys.stdin.read()
+
+    intent = nmap_mod.parse(text)
+    if not intent.hosts:
+        _err("no usable hosts in that XML — either not nmap output, or all "
+             "hosts were down. `nmap -oX` writes the format this reads.")
+        return 2
+
+    n_services = sum(len(h.services) for h in intent.hosts)
+    print(f"read {_plural(len(intent.hosts), 'up host')} with "
+          f"{_plural(n_services, 'open service')}"
+          + (f" — {intent.scanner}" if intent.scanner else ""))
+    for h in intent.hosts[:12]:
+        os_tag = f" ({h.os})" if h.os else ""
+        ports = ", ".join(str(s.port) for s in h.services[:8])
+        more = f" (+{len(h.services) - 8})" if len(h.services) > 8 else ""
+        print(f"  {h.ip:<15} {h.hostname or '':<24}{os_tag}  {ports}{more}")
+    if len(intent.hosts) > 12:
+        print(f"  ... (+{len(intent.hosts) - 12} more)")
+
+    if not _confirm("record into the engagement?", args.yes):
+        print("aborted — nothing was stored")
+        return 1
+
+    with _open_store(args) as store:
+        store.require_engagement()
+        rep = nmap_mod.apply(store, intent)
+    print(f"stored {_plural(rep.hosts_added, 'host')}"
+          + (f" ({rep.hosts_enriched} enriched)" if rep.hosts_enriched else "")
+          + f", {_plural(rep.services_added, 'service')}"
+          + (f" ({rep.services_enriched} enriched)" if rep.services_enriched else ""))
+    if rep.out_of_scope:
+        preview = ", ".join(rep.out_of_scope[:5]) + (
+            f" (+{len(rep.out_of_scope) - 5} more)" if len(rep.out_of_scope) > 5 else "")
+        _err(f"{len(rep.out_of_scope)} host(s) skipped — outside engagement scope: "
+             f"{preview}. See `fieldkit scope show`.")
     return 0
 
 
@@ -1970,6 +2024,19 @@ the spec is missing that field. `--from-file` reads one credential per line.
                        help="where these results came from (default: spray)")
     i_nxc.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
     i_nxc.set_defaults(func=cmd_ingest_nxc)
+
+    i_nmap = ingest_sub.add_parser(
+        "nmap", help="record hosts + open services from an nmap XML scan",
+        description="Reads nmap's XML output (`nmap -oX <file>`) and folds every "
+                    "up host + open service into the engagement. Respects scope "
+                    "rules — out-of-scope IPs are dropped with a warning. "
+                    "Idempotent: re-ingesting the same scan doesn't duplicate.")
+    i_nmap.add_argument("file", nargs="?",
+                        help="nmap XML file (or `-` / stdin — `nmap -oX - <targets> | "
+                             "fieldkit ingest nmap -`)")
+    i_nmap.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
+    i_nmap.set_defaults(func=cmd_ingest_nmap)
+
     p_ingest.set_defaults(func=lambda a: _missing(p_ingest))
 
     p_spray = sub.add_parser(
