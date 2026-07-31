@@ -269,9 +269,20 @@ def _p_sysinfo(facts, text):
 
 
 def _p_hotfixes(facts, text):
-    """`wmic qfe get HotFixID /format:list` → HotFixID=KB1234567 per line."""
-    for m in re.finditer(r"HotFixID\s*=\s*(KB\d+)", text, re.I):
-        facts.hotfixes.add(m.group(1).upper())
+    """Extract KB IDs from Windows hotfix output — format-flexible.
+
+    Handles three shapes fieldkit or a tester might feed:
+      * ``wmic qfe get HotFixID /format:list`` — ``HotFixID=KB1234567`` per line
+        (what fieldkit issues; deterministic).
+      * ``wmic qfe list brief`` — tabular; KB is in a column.
+      * ``Get-HotFix`` PowerShell — tabular; KB in the ``HotFixID`` column.
+
+    We accept any ``KBnnnnnnn`` token (7+ digits) that isn't clearly inside a URL
+    or path — this covers all three formats without being tricked by a URL like
+    ``http://.../?kbid=5031364`` (that lacks the KB prefix and is not matched).
+    """
+    for m in re.finditer(r"\bKB(\d{6,})\b", text):
+        facts.hotfixes.add("KB" + m.group(1))
 
 
 def _p_services(facts, text):
