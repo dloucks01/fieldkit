@@ -20,7 +20,8 @@ import sys
 
 from datetime import datetime, timezone
 
-from . import (__version__, adcs as adcs_mod, arsenal as arsenal_mod,
+from . import (__version__, adcs as adcs_mod, archive as archive_mod,
+               arsenal as arsenal_mod,
                bloodhound as bloodhound_mod, bridge as bridge_mod,
                classify as classify_mod, config as config_mod, creds as creds_mod,
                delegation as delegation_mod, escalate as escalate_mod,
@@ -1691,6 +1692,29 @@ def cmd_export_recce(args, store):
     return 0
 
 
+@needs_engagement
+def cmd_archive(args, store):
+    """Package the engagement into one tarball for handoff / long-term retention."""
+    cfg = config_mod.load(store)
+    formats = [x.strip() for x in (args.formats or "md,docx,pdf").split(",")
+               if x.strip()]
+    out_path, bundled, warnings = archive_mod.build_archive(
+        store, cfg, out_path=args.out, formats=formats)
+
+    size_kb = os.path.getsize(out_path) / 1024
+    print(f"wrote {out_path}  ({size_kb:.1f} KB, "
+          f"{_plural(len(bundled), 'file')} bundled)")
+    for name in bundled:
+        print(f"  {name}")
+    for warn in warnings:
+        print(f"  ⚠ {warn}")
+    print()
+    print("this archive is INTERNAL — contains the cleanup manifest, the raw "
+          "SQLite state (with recovered hashes/creds), and the full evidence "
+          "trail. The client-facing deliverable is report.docx separately.")
+    return 0
+
+
 def cmd_wordlist(args):
     """Generate a targeted wordlist from seed words + inspectable mutation rules."""
     if getattr(args, "rules", False):
@@ -2466,6 +2490,23 @@ the spec is missing that field. `--from-file` reads one credential per line.
     p_recce.add_argument("--all", action="store_true",
                          help="include unproven findings (default: proven only)")
     p_recce.set_defaults(func=cmd_export_recce)
+
+    p_archive = sub.add_parser(
+        "archive", help="package the whole engagement into one tarball (handoff / retention)",
+        description="Assembles a single .tar.gz with everything: the SQLite DB, "
+                    "the rendered report (md/docx/pdf), the internal cleanup "
+                    "manifest, the recce export, and a JSONL of every captured "
+                    "step. Includes a MANIFEST.md describing the contents, the "
+                    "fieldkit version, and the schema version. The archive is "
+                    "INTERNAL — it contains cleanup + raw DB (with hashes); the "
+                    "customer-facing deliverable is report.docx separately.")
+    p_archive.add_argument("--out", metavar="PATH",
+                           help="tarball path (default: "
+                                "<engagement-slug>-<YYYY-MM-DD>.tar.gz in CWD)")
+    p_archive.add_argument("--formats", default="md,docx,pdf", metavar="LIST",
+                           help="report formats to render into the archive "
+                                "(default: md,docx,pdf; pandoc needed for docx/pdf)")
+    p_archive.set_defaults(func=cmd_archive)
 
     p_wordlist = sub.add_parser(
         "wordlist", help="generate a targeted wordlist from seeds via inspectable mutation rules",
