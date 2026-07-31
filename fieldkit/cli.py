@@ -26,7 +26,7 @@ from . import (__version__, adcs as adcs_mod, arsenal as arsenal_mod,
                delegation as delegation_mod, escalate as escalate_mod,
                evasion as evasion_mod,
                executor as executor_mod, fs_scrub as fs_scrub_mod,
-               hostenum as hostenum_mod, ingest as ingest_mod,
+               hashcat as hashcat_mod, hostenum as hostenum_mod, ingest as ingest_mod,
                kb as kb_mod, kerberos as kerberos_mod, lab as lab_mod,
                mongodb as mongodb_mod, mssql as mssql_mod, nmap as nmap_mod,
                poc as poc_mod,
@@ -368,6 +368,66 @@ def cmd_ingest_nxc(args):
           + f"; {rep.access_added} new access {_word(rep.access_added, 'record')}"
           + (f" ({rep.admin_added} admin)" if rep.admin_added else "")
           + f"; {rep.hosts_added} hosts added, {rep.hosts_enriched} enriched")
+    return 0
+
+
+def cmd_ingest_hashcat(args):
+    """Read a hashcat potfile and promote cracked hashes to credentials.
+
+    Matches each cracked ``hash:plaintext`` line against loot rows we already
+    dumped (SAM/NTDS) — a match becomes a promoted credential ready to spray.
+    A cracked hash we don't have loot for is kept as a `cracked_hash` loot row
+    so a later dump can attribute it.
+    """
+    if args.file and args.file != "-":
+        try:
+            with open(args.file, "r", errors="replace") as fh:
+                text = fh.read()
+        except OSError as exc:
+            _err(f"{args.file}: {exc}")
+            return 2
+    elif sys.stdin.isatty():
+        _err("no potfile given — pass a hashcat potfile or pipe on stdin "
+             "(`cat hashcat.potfile | fieldkit ingest hashcat -`)")
+        return 2
+    else:
+        text = sys.stdin.read()
+
+    entries = hashcat_mod.parse_potfile(text)
+    if not entries:
+        _err("no `hash:plaintext` lines in that file — either not a hashcat "
+             "potfile, or empty. Format is one `<hash>:<plaintext>` per line.")
+        return 2
+
+    types = {}
+    for e in entries:
+        types[e.hash_type] = types.get(e.hash_type, 0) + 1
+    type_summary = ", ".join(f"{n} {t}" for t, n in sorted(types.items(),
+                                                            key=lambda p: -p[1]))
+    n = len(entries)
+    print(f"read {n} cracked hash{'' if n == 1 else 'es'}  ({type_summary})")
+
+    if not _confirm("attribute against loot and promote to credentials?",
+                    args.yes):
+        print("aborted — nothing was stored")
+        return 1
+
+    with _open_store(args) as store:
+        store.require_engagement()
+        rep = hashcat_mod.apply(store, entries)
+    print(f"matched {rep.matched}/{rep.entries} cracked hashes to loot; "
+          f"promoted {_plural(rep.creds_promoted, 'new credential')}"
+          + (f"; kept {rep.unmatched_stored} unmatched pair(s) as loot"
+             if rep.unmatched_stored else ""))
+    if rep.matches:
+        print("\nnewly attributed:")
+        for (domain, user), plain, host_id in rep.matches[:10]:
+            principal = f"{domain}\\{user}" if domain else user
+            print(f"  {principal:<32} → {plain}")
+        if len(rep.matches) > 10:
+            print(f"  ... (+{len(rep.matches) - 10} more)")
+    if rep.creds_promoted:
+        print(f"\nnext: `{PROG} spray` to chase the newly promoted credentials")
     return 0
 
 
@@ -2036,6 +2096,18 @@ the spec is missing that field. `--from-file` reads one credential per line.
                              "fieldkit ingest nmap -`)")
     i_nmap.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
     i_nmap.set_defaults(func=cmd_ingest_nmap)
+
+    i_hashcat = ingest_sub.add_parser(
+        "hashcat", help="promote cracked hashes from a hashcat potfile to credentials",
+        description="Reads a hashcat potfile (one `<hash>:<plaintext>` per line), "
+                    "matches each cracked hash against loot we already dumped "
+                    "(SAM/NTDS/LSA), and promotes matches to full credentials "
+                    "ready to spray. Hashes without a loot match are kept as a "
+                    "`cracked_hash` loot row so a later dump can attribute them.")
+    i_hashcat.add_argument("file", nargs="?",
+                           help="hashcat potfile (or `-` / stdin)")
+    i_hashcat.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
+    i_hashcat.set_defaults(func=cmd_ingest_hashcat)
 
     p_ingest.set_defaults(func=lambda a: _missing(p_ingest))
 
