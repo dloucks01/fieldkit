@@ -274,8 +274,19 @@ _IMPERSONATION_PRIVS = {"SeImpersonatePrivilege", "SeAssignPrimaryTokenPrivilege
 #: wrapper is needed. A functional miss advances to the next tool; an AV catch on the on-disk
 #: method climbs to the reflective rungs. The C++ tools (PrintSpoofer/JuicyPotatoNG) aren't
 #: .NET assemblies, so they have no reflective-load rung (native-exe only).
-#: (slug, tool, dotnet, args, note) — ``args`` is the argv list, rendered for the .exe and as
-#: a PowerShell ``string[]`` for the reflective ``EntryPoint.Invoke``.
+#:
+#: The ``args`` here are the CLI args passed to both the .exe rung (as argv) and the
+#: reflective rung (as a PowerShell ``string[]`` handed to ``EntryPoint.Invoke``). Argument
+#: shapes verified against each tool's upstream README (2026-07); if a tool's CLI changes,
+#: this table is the one place to update.
+#:
+#: Known caveat for the reflective rung: if a Potato's Main calls
+#: ``Environment.Exit(0)`` at the end (some .NET tools do), it will terminate the enclosing
+#: PowerShell process cleanly on success — the tester sees the output land AND the shell die.
+#: That's an oddity, not a bug; the finding is still recorded because output is captured
+#: before Exit fires. On the affected tools, prefer the native rung when the on-disk
+#: signature isn't caught.
+#: (slug, tool, dotnet, args, note)
 _POTATOES = (
     ("godpotato", "GodPotato", True, ["-cmd", "cmd /c whoami"],
      "GodPotato (RPC/DCOM, .NET) — broad: Server 2012–2022, Win8–11."),
