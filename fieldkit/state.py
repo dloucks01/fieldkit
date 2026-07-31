@@ -443,6 +443,43 @@ class Store:
     def host_by_id(self, host_id):
         return self.conn.execute("SELECT * FROM host WHERE id = ?", (host_id,)).fetchone()
 
+    # -- services ------------------------------------------------------------
+
+    def add_service(self, host_id, port, proto="tcp", product=None, version=None,
+                     banner=None):
+        """Insert or enrich a service, keyed on (host_id, port, proto).
+
+        Returns ``(service_id, created)``. Enrichment never overwrites a known
+        field with None — a later nmap-service scan can fill in a version that
+        an earlier port scan didn't have, without erasing the product name.
+        """
+        with self._write():
+            row = self.conn.execute(
+                "SELECT * FROM service WHERE host_id = ? AND port = ? AND proto = ?",
+                (host_id, port, proto)).fetchone()
+            if row is None:
+                cur = self.conn.execute(
+                    "INSERT INTO service (host_id, port, proto, product, version, banner) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (host_id, port, proto, product, version, banner))
+                return cur.lastrowid, True
+            fields = {"product": product, "version": version, "banner": banner}
+            updates = {k: v for k, v in fields.items() if v is not None and row[k] != v}
+            if updates:
+                self.conn.execute(
+                    "UPDATE service SET "
+                    + ", ".join(f"{k} = ?" for k in updates)
+                    + " WHERE id = ?",
+                    list(updates.values()) + [row["id"]])
+            return row["id"], False
+
+    def services(self, host_id=None):
+        if host_id is not None:
+            return self.conn.execute(
+                "SELECT * FROM service WHERE host_id = ? ORDER BY port",
+                (host_id,)).fetchall()
+        return self.conn.execute("SELECT * FROM service ORDER BY host_id, port").fetchall()
+
     # -- scope enforcement --------------------------------------------------
 
     def scope_add(self, cidr, kind="allow", notes=None):
