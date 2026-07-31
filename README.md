@@ -117,7 +117,7 @@ a wrong-format credential is caught at input, not forty hosts into a spray (`--y
 | `bin/fieldkit` | run it from a clone without installing |
 | `tests/` | the test suite (~490, ~2s, no network/tools needed) |
 | `exploits/` | operator-staged binaries/PoCs (air-gap); see `SUPPLIED-BINARIES.md` |
-| `QUICKSTART.md` · `WORKFLOW.md` · `TECHNICAL-GUIDE.md` | operator docs; `CLAUDE.md` = architecture notes |
+| `QUICKSTART.md` · `WORKFLOW.md` · `TECHNICAL-GUIDE.md` | operator docs; `ARCHITECTURE.md` = architecture notes |
 | `package.sh` | bundle source + staged exploits into one archive for an air-gapped box |
 
 The engagement database holds client credentials **in the clear** — treat it as loot

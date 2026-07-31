@@ -1,4 +1,4 @@
-# CLAUDE.md — architecture & working notes for the fieldkit v2 engine
+# ARCHITECTURE.md — architecture & working notes for the fieldkit v2 engine
 
 fieldkit is a **stateful internal-AD execution engine** for **authorized** penetration
 testing: from one credential/foothold it drives proven external tools (netexec,

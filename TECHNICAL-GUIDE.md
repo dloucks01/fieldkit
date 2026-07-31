@@ -1,7 +1,7 @@
 # fieldkit — technical guide
 
 The deep reference. For the one-page runbook see **`QUICKSTART.md`**; for the visual map,
-**`WORKFLOW.md`**. Architecture/dev notes live in **`CLAUDE.md`**.
+**`WORKFLOW.md`**. Architecture/dev notes live in **`ARCHITECTURE.md`**.
 
 **Authorized engagements only.** Every command that touches a target is captured and gated.
 

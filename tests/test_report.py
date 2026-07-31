@@ -268,7 +268,7 @@ class ExportTest(unittest.TestCase):
 
 
 class ArchitectureTest(unittest.TestCase):
-    """The load-bearing invariants from CLAUDE.md, checked mechanically so they can't rot."""
+    """The load-bearing invariants from ARCHITECTURE.md, checked mechanically so they can't rot."""
 
     def _package_files(self):
         pkg = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
