@@ -680,12 +680,23 @@ def cmd_spider(args, store, host, cred):
 
 @needs_target
 def cmd_scrub(args, store, host, cred):
-    """On-box filesystem scrub: sweep /etc, /opt, $HOME, /var/www for cleartext
-    secrets on a Linux foothold. Uses the same scrubbers as `spider`."""
-    paths = args.paths or None      # None -> DEFAULT_LINUX_PATHS
+    """On-box filesystem scrub: sweep common config paths for cleartext secrets.
+
+    Linux: /etc, /opt, /root, /home, /var/www, /srv (`find | cat` pipeline).
+    Windows: C:\\ProgramData, C:\\Users, C:\\inetpub, C:\\Program Files, ...
+    (PowerShell `Get-ChildItem` pipeline).
+
+    Uses the same scrubbers as `spider` — GPP cpassword, unattend.xml,
+    web.config, kv-secrets in scripts, sensitive filenames.
+    """
+    default = (fs_scrub_mod.DEFAULT_WINDOWS_PATHS
+               if (host["os"] or "linux") == "windows"
+               else fs_scrub_mod.DEFAULT_LINUX_PATHS)
+    paths = args.paths or None      # None -> default_paths for the OS
+    shown = paths or default
     question = (f"scrub {host['ip']} for on-box secrets in "
-                f"{', '.join(paths or fs_scrub_mod.DEFAULT_LINUX_PATHS)}? "
-                "(read-only; runs one find | cat pipeline on the target)")
+                f"{', '.join(shown)}? "
+                "(read-only; runs one pipeline on the target)")
     if not _confirm(question, args.yes):
         print("aborted — nothing ran")
         return 1

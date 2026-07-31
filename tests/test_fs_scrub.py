@@ -114,16 +114,6 @@ class DriverTest(unittest.TestCase):
         self.assertEqual(len(promoted), 1)
         self.assertTrue(promoted[0]["source"].startswith("fs-scrub:"))
 
-    def test_windows_host_is_refused_with_helpful_message(self):
-        self.store.add_host("10.0.0.7", os_name="windows")
-        wcid, _ = self.store.add_credential(Credential("jdoe", "pw", domain="corp"))
-        self.store.add_access(self.store.host_by_ip("10.0.0.7")["id"], wcid, "smb")
-        rep = fs_scrub.fs_scrub(
-            self.store, self.store.host_by_ip("10.0.0.7"),
-            self.store.credential_by_id(wcid), run=self._fake_ssh(""))
-        self.assertIn("Linux-only", rep.aborted)
-        self.assertIn("spider", rep.aborted)   # points at the right tool
-
     def test_command_shape_uses_the_default_paths_and_delimiters(self):
         seen = []
 
@@ -138,6 +128,47 @@ class DriverTest(unittest.TestCase):
         self.assertIn("/opt", cmd_str)
         self.assertIn("==FK-FS==", cmd_str)      # sentinel
         self.assertIn("head -c", cmd_str)         # per-file cap
+
+    def test_windows_host_uses_powershell_pipeline(self):
+        # Windows scrub is supported now — Get-ChildItem PowerShell pipeline,
+        # same FK-FS delimiters so the parser is reused unchanged.
+        self.store.add_host("10.0.0.7", os_name="windows")
+        wcid, _ = self.store.add_credential(Credential("jdoe", "pw", domain="corp"))
+        self.store.add_access(self.store.host_by_ip("10.0.0.7")["id"],
+                              wcid, "smb", admin=True)
+        # also need a winrm/smb transport the executor recognizes for PowerShell —
+        # smb+admin gives us cmd/powershell access. Verify the command shape by
+        # spying on argv.
+        seen = []
+
+        def capture(argv, env=None):
+            seen.append(argv)
+            # Return canned output so apply() completes without crashing
+            return RunResult(argv, exit_code=0, stdout="")
+        rep = fs_scrub.fs_scrub(
+            self.store, self.store.host_by_ip("10.0.0.7"),
+            self.store.credential_by_id(wcid), run=capture)
+        self.assertIsNone(rep.aborted)
+        cmd_str = " ".join(a for argv in seen for a in argv)
+        # PowerShell shape — Get-ChildItem + FK-FS sentinels
+        self.assertIn("Get-ChildItem", cmd_str)
+        self.assertIn("==FK-FS==", cmd_str)
+        # default Windows paths appear
+        self.assertIn("C:\\ProgramData", cmd_str)
+        # NOT the Linux find pipeline
+        self.assertNotIn("head -c", cmd_str)
+
+    def test_unsupported_os_is_refused_with_helpful_message(self):
+        # BSD / macOS / anything not linux+windows should refuse cleanly
+        self.store.add_host("10.0.0.99", os_name="freebsd")
+        fcid, _ = self.store.add_credential(Credential("root", "pw"))
+        self.store.add_access(self.store.host_by_ip("10.0.0.99")["id"],
+                              fcid, "ssh")
+        rep = fs_scrub.fs_scrub(
+            self.store, self.store.host_by_ip("10.0.0.99"),
+            self.store.credential_by_id(fcid), run=self._fake_ssh(""))
+        self.assertIn("freebsd", rep.aborted)
+        self.assertIn("linux + windows", rep.aborted)
 
 
 if __name__ == "__main__":  # pragma: no cover
