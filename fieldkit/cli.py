@@ -432,7 +432,12 @@ def cmd_ingest_hashcat(args):
 
 
 def cmd_ingest_nmap(args):
-    """Read nmap XML and fold discovered hosts + services into state."""
+    """Read nmap output and fold discovered hosts + services into state.
+
+    Format auto-detects: ``-oX`` (XML, richest), ``-oN`` (normal), ``-oG``
+    (grepable). ``-oA <prefix>`` writes all three; pass any of the resulting
+    files (or pipe on stdin) and this figures out which format it is.
+    """
     if args.file and args.file != "-":
         try:
             with open(args.file, "r", errors="replace") as fh:
@@ -441,16 +446,17 @@ def cmd_ingest_nmap(args):
             _err(f"{args.file}: {exc}")
             return 2
     elif sys.stdin.isatty():
-        _err("no capture given — pass an nmap -oX file or pipe XML on stdin "
-             "(`nmap -oX - <targets> | fieldkit ingest nmap -`)")
+        _err("no capture given — pass an nmap output file or pipe on stdin. "
+             "Supports -oX (xml), -oN (normal), -oG (grepable). E.g.: "
+             "`nmap -oX - <targets> | fieldkit ingest nmap -`.")
         return 2
     else:
         text = sys.stdin.read()
 
     intent = nmap_mod.parse(text)
     if not intent.hosts:
-        _err("no usable hosts in that XML — either not nmap output, or all "
-             "hosts were down. `nmap -oX` writes the format this reads.")
+        _err("no usable hosts in that file — either not nmap output, or all "
+             "hosts were down. Supports -oX / -oN / -oG (auto-detected).")
         return 2
 
     n_services = sum(len(h.services) for h in intent.hosts)
@@ -2097,14 +2103,16 @@ the spec is missing that field. `--from-file` reads one credential per line.
     i_nxc.set_defaults(func=cmd_ingest_nxc)
 
     i_nmap = ingest_sub.add_parser(
-        "nmap", help="record hosts + open services from an nmap XML scan",
-        description="Reads nmap's XML output (`nmap -oX <file>`) and folds every "
-                    "up host + open service into the engagement. Respects scope "
-                    "rules — out-of-scope IPs are dropped with a warning. "
+        "nmap", help="record hosts + open services from an nmap scan (XML / normal / grepable)",
+        description="Reads nmap output and folds every up host + open service "
+                    "into the engagement. Format auto-detects: -oX (xml, "
+                    "richest — includes OS detection), -oN (normal, the default "
+                    "human-readable text), -oG (grepable, single-line-per-host). "
+                    "Respects scope rules — out-of-scope IPs drop with a warning. "
                     "Idempotent: re-ingesting the same scan doesn't duplicate.")
     i_nmap.add_argument("file", nargs="?",
-                        help="nmap XML file (or `-` / stdin — `nmap -oX - <targets> | "
-                             "fieldkit ingest nmap -`)")
+                        help="nmap output file (any of -oX / -oN / -oG), or `-`/stdin "
+                             "(`nmap -oX - <targets> | fieldkit ingest nmap -`)")
     i_nmap.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
     i_nmap.set_defaults(func=cmd_ingest_nmap)
 
