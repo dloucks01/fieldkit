@@ -103,6 +103,115 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(intent.hosts, [])                       # ipv6-only hosts skip
 
 
+NORMAL_OUTPUT = """\
+# Nmap 7.94 scan initiated Sun Jul 20 11:00:00 2026 as: nmap -sV -oN out.txt 10.0.0.0/28
+Nmap scan report for app01 (10.0.0.5)
+Host is up (0.0012s latency).
+Not shown: 998 closed ports
+PORT     STATE SERVICE VERSION
+22/tcp   open  ssh     OpenSSH 8.9p1 Ubuntu 3ubuntu0.1
+80/tcp   open  http    nginx 1.24.0
+
+Nmap scan report for 10.0.0.6
+Host seems down.
+
+Nmap scan report for 10.0.0.7
+Host is up (0.0015s latency).
+PORT     STATE SERVICE VERSION
+445/tcp  open  microsoft-ds
+3389/tcp open  ms-wbt-server
+8443/tcp open  ssl/https-alt
+
+Nmap done: 3 IP addresses (2 hosts up) scanned in 3.42 seconds
+"""
+
+GREPABLE_OUTPUT = """\
+# Nmap 7.94 scan initiated Sun Jul 20 11:00:00 2026 as: nmap -sV -oG out.grep 10.0.0.0/28
+Host: 10.0.0.5 (app01)\tStatus: Up
+Host: 10.0.0.5 (app01)\tPorts: 22/open/tcp//ssh//OpenSSH 8.9p1 Ubuntu 3ubuntu0.1/, 80/open/tcp//http//nginx 1.24.0/
+Host: 10.0.0.6 ()\tStatus: Down
+Host: 10.0.0.7 ()\tStatus: Up
+Host: 10.0.0.7 ()\tPorts: 445/open/tcp//microsoft-ds///, 3389/open/tcp//ms-wbt-server///, 8443/open/tcp//ssl|https-alt///
+# Nmap done at Sun Jul 20 11:00:03 2026 -- 3 IP addresses (2 hosts up) scanned in 3.42 seconds
+"""
+
+
+class NormalFormatTest(unittest.TestCase):
+    """`nmap -oN` — the default human-readable text output most testers save."""
+
+    def test_up_hosts_land_down_hosts_drop(self):
+        intent = nmap.parse_normal(NORMAL_OUTPUT)
+        ips = [h.ip for h in intent.hosts]
+        self.assertEqual(sorted(ips), ["10.0.0.5", "10.0.0.7"])     # 10.0.0.6 down
+
+    def test_all_open_ports_land_across_multi_host(self):
+        # Real bug the smoke-test caught: `\s+` in the port regex bled across
+        # newlines and swallowed the next port. Pin all 3 ports on host 2.
+        intent = nmap.parse_normal(NORMAL_OUTPUT)
+        by_ip = {h.ip: h for h in intent.hosts}
+        self.assertEqual(sorted(s.port for s in by_ip["10.0.0.5"].services),
+                         [22, 80])
+        self.assertEqual(sorted(s.port for s in by_ip["10.0.0.7"].services),
+                         [445, 3389, 8443])
+
+    def test_hostname_when_present_bare_ip_when_not(self):
+        intent = nmap.parse_normal(NORMAL_OUTPUT)
+        by_ip = {h.ip: h for h in intent.hosts}
+        self.assertEqual(by_ip["10.0.0.5"].hostname, "app01")
+        self.assertIsNone(by_ip["10.0.0.7"].hostname)
+
+    def test_scanner_and_args_from_preamble(self):
+        intent = nmap.parse_normal(NORMAL_OUTPUT)
+        self.assertEqual(intent.scanner, "nmap 7.94")
+        self.assertIn("-oN", intent.args)
+
+
+class GrepableFormatTest(unittest.TestCase):
+    """`nmap -oG` — single-line-per-host, scriptable pipelines."""
+
+    def test_up_hosts_land_down_hosts_drop(self):
+        intent = nmap.parse_grepable(GREPABLE_OUTPUT)
+        self.assertEqual(sorted(h.ip for h in intent.hosts),
+                         ["10.0.0.5", "10.0.0.7"])
+
+    def test_ports_field_parsed_service_and_version_captured(self):
+        intent = nmap.parse_grepable(GREPABLE_OUTPUT)
+        by_ip = {h.ip: h for h in intent.hosts}
+        ssh = [s for s in by_ip["10.0.0.5"].services if s.port == 22][0]
+        self.assertEqual(ssh.product, "ssh")
+        self.assertIn("OpenSSH", ssh.version)
+
+    def test_hostname_from_parenthesized_field(self):
+        intent = nmap.parse_grepable(GREPABLE_OUTPUT)
+        by_ip = {h.ip: h for h in intent.hosts}
+        self.assertEqual(by_ip["10.0.0.5"].hostname, "app01")
+
+
+class AutoDetectTest(unittest.TestCase):
+    """`parse(text)` picks the right sub-parser."""
+
+    def test_xml_head_routes_to_xml(self):
+        intent = nmap.parse(BASIC_XML)
+        self.assertEqual(len(intent.hosts), 2)   # same as parse_xml
+        # XML gives us OS labels; text formats don't
+        self.assertEqual({h.os for h in intent.hosts if h.os},
+                         {"linux", "windows"})
+
+    def test_grepable_head_routes_to_grepable(self):
+        intent = nmap.parse(GREPABLE_OUTPUT)
+        self.assertEqual(sorted(h.ip for h in intent.hosts),
+                         ["10.0.0.5", "10.0.0.7"])
+
+    def test_normal_head_routes_to_normal(self):
+        intent = nmap.parse(NORMAL_OUTPUT)
+        self.assertEqual(sorted(h.ip for h in intent.hosts),
+                         ["10.0.0.5", "10.0.0.7"])
+
+    def test_empty_and_random_input_return_empty_intent(self):
+        self.assertEqual(nmap.parse("").hosts, [])
+        self.assertEqual(nmap.parse("hello world").hosts, [])
+
+
 class ApplyTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
