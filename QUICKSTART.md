@@ -21,6 +21,10 @@ fieldkit add hosts 10.0.0.0/24
 
 # 3 — a credential you have (autodetects password / NT hash / LM:NT / domain / UPN / local)
 fieldkit add cred 'corp.local/jdoe:Winter2025!'
+# already ran nmap / cracked something in hashcat / have an employee list? fold it straight in:
+fieldkit ingest nmap scan.xml                            # also -oN / -oG
+fieldkit ingest hashcat hashcat.potfile                  # cracked → promoted creds
+fieldkit usernames < employees.txt > users.txt           # first.last / flast / f.last / …
 
 # 4 — validate credentials across scope; the loop finds admins, loots them,
 #     promotes recovered secrets, and re-sprays until dry
@@ -54,6 +58,7 @@ fieldkit report --check                                 # anti-fabrication gate
 fieldkit report --formats md,docx -o report             # Findings + Observations
 fieldkit report --cleanup -o report                     # INTERNAL revert checklist
 fieldkit export-recce recce.json                        # fold proven findings back to recce
+fieldkit archive                                        # one .tar.gz for handoff/retention (DB + report + cleanup + recce + steps)
 ```
 
 Run **`fieldkit status`** anytime — one command shows the phase, top-3 next moves,
@@ -80,5 +85,6 @@ which hosts you're pwned on, and any missing spine tools.
 - `report.md` / `.docx` / `.pdf` — the customer report (proven **Findings** + **Observations** + **Credentials recovered during testing**, with a "Reached via" line under each finding so the audit trail is inline). Add `--proven-only` for a Findings-only version.
 - `report.cleanup.md` — **internal** checklist of every change to revert. Do not send to the client.
 - `recce.json` — proven findings for the recce triage tool.
+- `<engagement>-<date>.tar.gz` — one-command bundle of the whole engagement (DB + report + cleanup + recce + full evidence trail) from `fieldkit archive`. **Internal**, not for the client.
 
 More detail: **`TECHNICAL-GUIDE.md`** · the visual map: **`WORKFLOW.md`**.

@@ -68,6 +68,9 @@ bin/fieldkit config set lhost=10.10.14.7 lport=443 domain=corp.local
 # tell it what you know (creds in whatever form you have them)
 bin/fieldkit add cred 'CORP/jdoe:Winter2025!'      # DOMAIN\user, user@corp.local, user:LM:NT, …
 bin/fieldkit add hosts scope.txt                   # a single IP, a CIDR, or a file of them
+bin/fieldkit ingest nmap scan.xml                  # also -oN / -oG; folds hosts + services into state
+bin/fieldkit ingest hashcat hashcat.potfile        # cracked hashes → promoted credentials
+bin/fieldkit usernames < employees.txt             # generate first.last / flast / etc. username lists
 
 # run the loop, then escalate a foothold
 bin/fieldkit spray smb                             # reads the lockout policy first
@@ -86,6 +89,7 @@ bin/fieldkit report --check                        # anti-fabrication gate
 bin/fieldkit report -o report                      # report.md (+ .docx/.pdf via pandoc)
 bin/fieldkit report --cleanup -o report            # internal artifact-removal manifest
 bin/fieldkit export-recce recce.json               # fold proven findings into recce
+bin/fieldkit archive                               # one .tar.gz for handoff/retention (DB + report + cleanup + recce + steps)
 
 bin/fieldkit status                                # the board, any time
 ```
@@ -113,9 +117,9 @@ a wrong-format credential is caught at input, not forty hosts into a spray (`--y
 
 | Path | What |
 |---|---|
-| `fieldkit/` | the engine — state/config/creds/scope, the loop (`netexec`, `ingest`, `spray`, `dump`, `kb`), execution (`transport`, `executor`, `runner`, `hostenum`, `privesc`, `poc`, `classify`, `escalate`, `staging`, `mssql`), AD depth (`kerberos`, `delegation`, `adcs`, `bloodhound`), evasion (`evasion`, `lab`), reporting (`report`, `reportkb`, `bridge`), and the thin `cli` |
+| `fieldkit/` | the engine — state/config/creds/scope, the loop (`netexec`, `ingest`, `spray`, `dump`, `sharespider`, `fs_scrub`, `wordlist`, `kb`), execution (`transport`, `executor`, `runner`, `hostenum`, `privesc`, `poc`, `classify`, `escalate`, `staging`, `mssql`, `postgres`, `mongodb`), AD depth (`kerberos`, `delegation`, `adcs`, `bloodhound`), evasion (`evasion`, `lab`), reporting (`report`, `reportkb`, `bridge`, `archive`), and the thin `cli` |
 | `bin/fieldkit` | run it from a clone without installing |
-| `tests/` | the test suite (~490, ~2s, no network/tools needed) |
+| `tests/` | the test suite (~720, ~8s, no network/tools needed) |
 | `exploits/` | operator-staged binaries/PoCs (air-gap); see `SUPPLIED-BINARIES.md` |
 | `QUICKSTART.md` · `WORKFLOW.md` · `TECHNICAL-GUIDE.md` | operator docs; `ARCHITECTURE.md` = architecture notes |
 | `package.sh` | bundle source + staged exploits into one archive for an air-gapped box |
