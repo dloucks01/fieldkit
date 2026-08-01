@@ -101,7 +101,12 @@ canonical model: liberal parse in, strict per-tool renderers out (`render_nxc` /
 ```bash
 fieldkit spray smb                 # the default proto; also winrm ssh rdp mssql ldap ftp
 fieldkit spray smb --subnet 10.0.0.0/24 --no-loot --no-policy --timeout 30
+fieldkit spray --wordlist --userlist u.txt --passlist p.txt        # no cred yet? spray a generated wordlist
+fieldkit wordlist Acme Corp --years 2024 2025 --long -o p.txt      # curated mutations for ≥12-char policies
 fieldkit ingest nxc run.log        # fold a prior netexec capture into state
+fieldkit ingest nmap scan.xml      # nmap -oX / -oN / -oG all supported (auto-detected)
+fieldkit ingest hashcat pot.txt    # cracked hashes → promoted credentials (NT / LM:NT)
+fieldkit usernames < names.txt     # generate first.last / flast / f.last / … user lists
 ```
 
 What `spray` does, per round:
@@ -116,6 +121,16 @@ What `spray` does, per round:
    round finds nothing new (**until dry**).
 
 `ingest nxc` is the same fold without spraying — feed it a capture you already have.
+`ingest nmap` folds hosts + open services into state (schema v5 `service` rows), and
+`ingest hashcat` promotes plaintext-cracked NT / LM:NT hashes to first-class credentials
+that immediately re-enter the spray loop.
+
+`fieldkit wordlist` builds a targeted password list keyed on the client's own tokens
+(company name, product names, current + prior year) run through a curated rule set:
+capitalization, leetspeak, common suffixes, keyboard walks, and wrapped-phrase forms
+tuned for modern ≥12-character policies (`--long`). `fieldkit wordlist --rules` prints
+every mutation; `fieldkit usernames` generates matching `first.last / flast / f.last /
+first_last` username permutations from a list of full names.
 
 ## 7. Transports (how commands reach a host)
 
@@ -157,6 +172,35 @@ non-sysadmin mssql login.
 On a *pure-MSSQL* foothold there's no `--put-file` path — the loop **download-stages**
 instead (serves the artifact and the target fetches it via certutil over xp_cmdshell), so
 mssql→SYSTEM is autonomous when `config lhost` is set (§11).
+
+### PostgreSQL and MongoDB
+
+Same shape as the MSSQL path, one command per DB:
+
+```bash
+fieldkit postgres escalate 10.0.0.11 --allow config-change   # SET ROLE → COPY FROM PROGRAM → OS exec
+fieldkit mongodb  escalate 10.0.0.12                          # unauth probe + role enum + user dump
+```
+
+`postgres.py` drives a login → superuser (`SET ROLE`) → OS command execution via
+`COPY … FROM PROGRAM`, recording proven findings + reversible cleanup. `mongodb.py`
+probes for unauth access, enumerates roles, and dumps `system.users` (all creds land
+back in the loop as promoted secrets).
+
+### On-box scrub (SMB shares + local filesystems)
+
+```bash
+fieldkit spider 10.0.0.7           # nxc -M spider_plus → GPP cpassword, unattend, k=v secrets, script creds
+fieldkit scrub  10.0.0.5           # /etc /opt /home /var/www on a Linux foothold; PowerShell pipeline on Windows
+```
+
+`sharespider.py` runs `nxc -M spider_plus`, downloads every file under the size cap,
+and pushes the corpus through `SCRUBBERS` — GPP cpassword decryption, unattend
+`<AdministratorPassword>`, key=value secrets (including unquoted `.env` entries),
+partnered `user`+`password` in scripts, connection strings. `fs_scrub.py` runs the
+same scrubber suite over the local filesystem via `find` on Linux or a
+`Get-ChildItem` pipeline on Windows. Everything that proves a login is promoted to
+a credential; everything else is captured as loot with a scrubbed snippet.
 
 ## 8. enum
 
@@ -337,6 +381,7 @@ fieldkit report --check                              # anti-fabrication gate (ex
 fieldkit report --formats md,docx,pdf -o report      # the customer report
 fieldkit report --proven-only -o report              # Findings only (tight deliverable)
 fieldkit report --cleanup -o report                  # INTERNAL revert manifest
+fieldkit archive                                     # bundle everything into one .tar.gz
 ```
 
 The report separates two deliberately distinct results, and **includes both by default**:
@@ -354,6 +399,14 @@ only — Observations changed nothing); do not send it to the client. `--force` 
 check errors. Severity/CWE/description/remediation are auto-filled from the KB (~80
 `vector_type`s) so a finding records → renders → bridges with no hand-mapping. DOCX/PDF need
 `pandoc` (+ `weasyprint` for PDF).
+
+`fieldkit archive` packages the whole engagement into one `.tar.gz` named
+`<engagement-slug>-<YYYY-MM-DD>.tar.gz`: the DB (via SQLite's online backup, so WAL pages
+land), the rendered report, the cleanup manifest, the recce export, `steps.jsonl` (every
+captured command + output, one JSON per line), and a `MANIFEST.md` that names the
+fieldkit + schema versions. Regenerates report/cleanup/recce fresh on each run so the
+tarball always reflects current state. **Internal** — contains cleanup + hashes; the
+customer-facing deliverable is `report.docx` (or `.pdf`) alone.
 
 ## 18. recce integration
 
