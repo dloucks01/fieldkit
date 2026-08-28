@@ -118,8 +118,12 @@ Older DBs upgrade in place on open. SQLite can't drop NOT NULL — rebuild the t
 `export-recce` emits `{"_recce_import": 1, "source": "fieldkit", "engagement": {...},
 "findings": [{..., "_recce": {ip, hostname, port, severity, cwe, cwes, remediation,
 description, risk, confidence: "confirmed", ids}}]}`. Pinned by `tests/test_bridge.py`
-(v2) and `tests/test_integration_recce.py` (v1). Pairs with the recce tool
-(`recce fieldkit-export` seeds triage; `recce fieldkit-import` folds findings back).
+(v2) and `tests/test_integration_recce.py` (v1). recce is the survey-plan-catch-report
+platform that stops at the trigger (read-only on-target, non-evasive by design); fieldkit is
+the autonomous executor past it. `recce fieldkit-export` seeds triage with confirmed, ranked
+findings; `recce fieldkit-import` folds fieldkit's proven findings back. recce owns C2/pivot,
+so the intended direction is for fieldkit to *drive* a recce session as a transport rather than
+rebuild one; that transport backend and a `recce-bridge.json` ingest are the two open seams.
 
 ## Lineage
 

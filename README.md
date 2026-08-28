@@ -129,10 +129,15 @@ The engagement database holds client credentials **in the clear** — treat it a
 
 ## Companion: recce
 
-Pairs with [**recce**](https://github.com/dloucks01/recce), the enumeration/reporting half.
-`recce fieldkit-export` seeds triage with confirmed-vulnerable hosts; `fieldkit export-recce`
-→ `recce fieldkit-import` folds your proven findings back into recce's workbook + report. See
-**[`INTEGRATION.md`](INTEGRATION.md)**.
+Pairs with [**recce**](https://github.com/dloucks01/recce). recce is the survey-plan-catch-
+report platform — it sweeps the network, confirms and prioritizes vulnerabilities (KEV/EPSS),
+synthesizes attack paths, catches and holds shells (C2, SOCKS pivots), and writes the customer
+report. By design it stops at the trigger: its on-target work is **read-only** and it does not
+engineer evasion. fieldkit is the half past the trigger — the autonomous operator that walks
+recce's ranked plan, fires each move, mutates target state to **prove** the compromise, and
+prices every step in detection risk. `recce fieldkit-export` seeds triage with confirmed-
+vulnerable hosts; `fieldkit export-recce` → `recce fieldkit-import` folds your proven findings
+back into recce's workbook + report. See **[`INTEGRATION.md`](INTEGRATION.md)**.
 
 ## Scope
 
