@@ -162,8 +162,8 @@ def _p_version_range(facts, value):
 
     ``value`` is a dict ``{field: spec}`` where:
       * ``field`` names a HostFacts version attribute (kernel, sudo_version,
-        pkexec_version, glibc_version) OR a dotted path into a dict-valued
-        attribute (``services.apache``, ``services.openssh``);
+        pkexec_version, glibc_version, win_build) OR a dotted path into a
+        dict-valued attribute (``services.apache``, ``services.openssh``);
       * ``spec`` is a comma-separated list of constraints, each of the form
         ``<op><version>`` where op is one of ``<``, ``<=``, ``>``, ``>=``,
         ``==``, ``!=``. All constraints on a field are AND-ed; all fields
@@ -174,10 +174,11 @@ def _p_version_range(facts, value):
     gated exploit.
 
     Returns ``(matched, payload)`` where ``payload`` (on match) is
-    ``{"field": <first-declared-field-name>, "version": <host-version-str>}``
-    — used by the evidence-template renderer so a kernel-CVE TTP's
-    ``report.evidence: "{{field}} {{version}} in {{lo}}–{{hi}}"`` renders
-    "kernel 5.15.0 in 5.8–5.16.11" against a matching host.
+    ``{"field": <first-declared-field-name>, "version": <host-version-str>,
+    "lo": <derived-lo>, "hi": <derived-hi>}`` — the derived bounds let the
+    evidence-template renderer produce
+    ``"kernel 5.15.0 in 5.8–5.16.11"`` without walking ``ttp.detect.value``
+    (important for compound `all_of` predicates that wrap version_range).
     """
     if not isinstance(value, dict):
         return False, None
@@ -195,8 +196,61 @@ def _p_version_range(facts, value):
             if not op_fn(host_v, target_v):
                 return False, None
         if payload is None:
-            payload = {"field": field_name, "version": str(raw_host_val)}
+            lo, hi = _derive_lo_hi(spec)
+            payload = {"field": field_name, "version": str(raw_host_val),
+                       "lo": lo, "hi": hi}
     return True, payload
+
+
+def _p_no_hotfix_from(facts, value):
+    """Matches when NONE of the listed Windows KBs are installed on the target.
+
+    ``value`` is a list of KB IDs (e.g. ``["KB4601319", "KB4601315"]``). The
+    predicate returns True when ``facts.hotfixes ∩ value == ∅`` — i.e. the
+    target has not received any of the fixes that would close the CVE this
+    predicate guards.
+
+    Mirrors the inlined ``win_lpe_candidates``: an empty ``facts.hotfixes``
+    (the enumerator didn't capture the KB list) still counts as "no fix
+    installed" and lets the rule fire — the analyze report notes this
+    caveat. Refusing to fire on missing enum would silently under-report
+    on hosts where the operator hasn't run ``wmic qfe get``.
+    """
+    if not isinstance(value, (list, tuple)):
+        return False, None
+    installed = set(getattr(facts, "hotfixes", set()) or set())
+    if installed & set(value):
+        return False, None
+    return True, None
+
+
+def _p_all_of(facts, value):
+    """Compound predicate: matches when every sub-predicate in ``value``
+    matches. ``value`` is a list of single-entry dicts, each of the shape a
+    top-level ``detect:`` block takes (``{"version_range": {...}}``,
+    ``{"no_hotfix_from": [...]}``, etc.).
+
+    Propagates the first sub-predicate's non-None payload up, so a TTP that
+    combines ``version_range`` (which returns lo/hi/version) with
+    ``no_hotfix_from`` (which returns None) can still render an evidence
+    template referencing ``{{version}}`` / ``{{lo}}`` / ``{{hi}}``.
+    """
+    if not isinstance(value, list) or not value:
+        return False, None
+    propagated = None
+    for entry in value:
+        if not isinstance(entry, dict) or len(entry) != 1:
+            return False, None
+        (kind, sub_value), = entry.items()
+        sub = _PREDICATES.get(kind)
+        if sub is None:
+            return False, None
+        matched, sub_payload = sub(facts, sub_value)
+        if not matched:
+            return False, None
+        if propagated is None and sub_payload is not None:
+            propagated = sub_payload
+    return True, propagated
 
 
 def _derive_lo_hi(spec):
@@ -222,14 +276,16 @@ def _derive_lo_hi(spec):
 
 
 _PREDICATES = {
-    "always":        _p_always,
-    "sudo_allows":   _p_sudo_allows,
-    "suid":          _p_suid,
-    "capability":    _p_capability,
-    "facts_match":   _p_facts_match,
-    "privilege":     _p_privilege,
-    "group_member":  _p_group_member,
-    "version_range": _p_version_range,
+    "always":         _p_always,
+    "sudo_allows":    _p_sudo_allows,
+    "suid":           _p_suid,
+    "capability":     _p_capability,
+    "facts_match":    _p_facts_match,
+    "privilege":      _p_privilege,
+    "group_member":   _p_group_member,
+    "version_range":  _p_version_range,
+    "no_hotfix_from": _p_no_hotfix_from,
+    "all_of":         _p_all_of,
 }
 
 
@@ -303,13 +359,14 @@ def _render_evidence(ttp, payload, facts):
         return f"detected via TTP {ttp.technique} ({ttp.detect.kind})"
     out = template
     if isinstance(payload, dict):
-        field_name = payload.get("field", "")
-        version = payload.get("version", "")
-        out = out.replace("{{field}}", field_name).replace("{{version}}", version)
-        if ttp.detect.kind == "version_range" and isinstance(ttp.detect.value, dict):
-            spec = ttp.detect.value.get(field_name, "")
-            lo, hi = _derive_lo_hi(spec)
-            out = out.replace("{{lo}}", lo).replace("{{hi}}", hi)
+        # version_range (or a compound predicate that wraps it) hands back
+        # field/version/lo/hi already extracted, so rendering the template
+        # doesn't need to walk ttp.detect.value — that walk gets fragile
+        # under `all_of` where the version_range spec lives one level down.
+        out = out.replace("{{field}}",   payload.get("field", ""))
+        out = out.replace("{{version}}", payload.get("version", ""))
+        out = out.replace("{{lo}}",      payload.get("lo", "*"))
+        out = out.replace("{{hi}}",      payload.get("hi", "*"))
     elif isinstance(payload, str):
         out = out.replace("{{binary}}", payload)
     _ = facts

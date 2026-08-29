@@ -223,14 +223,17 @@ class AdapterEvidenceTemplateTest(unittest.TestCase):
         self.assertEqual(_derive_lo_hi("==1.9.5p1"), ("1.9.5p1", "1.9.5p1"))
 
     def test_p_version_range_payload_carries_field_and_version(self):
-        # The new payload shape is `{"field": str, "version": str}` so the
-        # evidence template can render "{{field}} {{version}} in ...".
+        # The payload shape is `{"field": str, "version": str, "lo": str,
+        # "hi": str}` so the evidence template can render lo/hi without
+        # walking `ttp.detect.value` — important for compound predicates
+        # (`all_of`) where the version_range spec lives one level down.
         from fieldkit.hostenum import HostFacts, LINUX
         from fieldkit.ttps.adapter import _p_version_range
         facts = HostFacts(os=LINUX, user="alice", uid=1000, kernel="5.15.0")
         matched, payload = _p_version_range(facts, {"kernel": ">=5.8,<=5.16.11"})
         self.assertTrue(matched)
-        self.assertEqual(payload, {"field": "kernel", "version": "5.15.0"})
+        self.assertEqual(payload, {"field": "kernel", "version": "5.15.0",
+                                    "lo": "5.8", "hi": "5.16.11"})
 
     def test_p_version_range_returns_none_payload_on_miss(self):
         from fieldkit.hostenum import HostFacts, LINUX
