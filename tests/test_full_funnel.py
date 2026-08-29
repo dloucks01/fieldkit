@@ -683,7 +683,13 @@ class FullFunnelTest(unittest.TestCase):
         self.assertIn("prep 10.0.0.5 cve:dirtypipe", an)      # routed to prep, not run
 
         # even at the widest safety gate, nothing kernel-related is fired
-        esc = self.cli("escalate", "10.0.0.5", "--allow", "crash-risk", "--yes")
+        # Exit 1 after C2: the loot-hunt TTPs (T1552 read-only) auto-fire
+        # first at read-only gate, none prove elevation against the mock
+        # target, then the manual kernel routes stay prepare-only. `escalate`
+        # exits 1 when no vector proved elevation — that's the honest
+        # signal here (not a broken behavior).
+        esc = self.cli("escalate", "10.0.0.5", "--allow", "crash-risk", "--yes",
+                        expect=1)
         self.assertIn("manual", esc)
         self.assertIn("cve:dirtypipe", esc)
         self.assertEqual(self.store().counts()["proven_findings"], 0)   # nothing fired
