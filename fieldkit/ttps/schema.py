@@ -108,11 +108,40 @@ class Cleanup:
 class Report:
     """How the report renders findings from this technique. ``vector_type`` is
     the same key the engine uses for finding-table dedup. ``refs`` are the
-    CVEs / T-codes to link to."""
+    CVEs / T-codes to link to.
+
+    ``evidence`` (optional) is a template rendered into the Vector.evidence
+    string, replacing ``{{field}}``, ``{{version}}``, ``{{lo}}``, ``{{hi}}``
+    (from version_range predicates) and ``{{binary}}`` (from
+    suid/capability/sudo_allows predicates). When empty, the adapter falls
+    back to a generic ``"detected via TTP T… (kind)"`` string. Kernel-CVE
+    ports use ``"{{field}} {{version}} in {{lo}}–{{hi}}"`` so the inlined
+    driver's evidence format is preserved (``"kernel 5.15.0 in 5.8–5.16.11"``).
+    """
     vector_type: str
     description: str = ""
     remediation: str = ""
     refs: tuple = ()
+    evidence: str = ""
+
+
+@dataclass(frozen=True)
+class Playbook:
+    """Operator steps for a TTP that fieldkit prepares but can't safely one-shot.
+
+    Mirrors :class:`fieldkit.privesc.Playbook` — kernel-CVE routes against a
+    client host are ranked and explained but never blind-fired, so they carry
+    a playbook the operator follows.
+
+    Template substitution is the same shape as ``execute.command``:
+    ``{{stage}}`` becomes ctx.stage_lin (linux) or ctx.stage_win (windows),
+    ``{{binary}}`` the matched-payload binary, ``{{artifact}}`` the arsenal
+    artifact name (from the first `execute.stages` entry).
+    """
+    summary: str
+    place: str
+    steps: tuple
+    restore: str = ""
 
 
 @dataclass(frozen=True)
@@ -142,6 +171,11 @@ class TTP:
     #: presents. Marking a caught technique red keeps the loop from re-burning
     #: it. Empty means "no specific delivery technique" (a plain nxc command).
     delivery: str = field(default="")
+    #: Operator playbook for prepare-only routes (kernel CVEs against a client
+    #: host). When set, the emitted Vector carries a `playbook` and reports as
+    #: `manual` — the escalate loop won't auto-fire it; `fieldkit prep` renders
+    #: the steps. Most TTPs omit this (they auto-fire cleanly).
+    playbook: object = field(default=None)
     #: Source path of the YAML file — populated by the loader, used in error
     #: messages when a TTP misbehaves at runtime.
     source_path: str = field(default="")

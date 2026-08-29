@@ -147,7 +147,7 @@ class DirtyCowTTPTest(unittest.TestCase):
         vs = vectors_for(
             HostFacts(os=LINUX, user="alice", uid=1000, kernel=kernel),
             "10.0.0.7")
-        return any(v.key == "kernel_lpe:dirtycow" for v in vs)
+        return any(v.key == "cve:dirtycow" for v in vs)
 
     def test_fires_on_ancient_kernel(self):
         self.assertTrue(self._dirty_cow_fires_on("2.6.32"))
@@ -155,20 +155,26 @@ class DirtyCowTTPTest(unittest.TestCase):
         self.assertTrue(self._dirty_cow_fires_on("4.4.0"))
 
     def test_fires_at_last_vulnerable_version(self):
-        # 4.8.3 is the last vulnerable upstream; mainline fix landed at 4.8.4.
-        self.assertTrue(self._dirty_cow_fires_on("4.8.3"))
+        # Port from KERNEL_LPE mirrors its hi="4.8.2": 4.8.2 is the last
+        # vulnerable upstream release, 4.8.3 landed the fix. (An earlier
+        # version of this YAML used a hand-tuned window that included
+        # 4.8.3; the ported YAML tracks the authoritative table.)
+        self.assertTrue(self._dirty_cow_fires_on("4.8.2"))
 
     def test_does_not_fire_at_first_patched_version(self):
-        self.assertFalse(self._dirty_cow_fires_on("4.8.4"))
+        self.assertFalse(self._dirty_cow_fires_on("4.8.3"))
 
     def test_does_not_fire_on_modern_kernel(self):
         self.assertFalse(self._dirty_cow_fires_on("5.15.0"))
         self.assertFalse(self._dirty_cow_fires_on("6.1.0"))
 
-    def test_does_not_fire_on_ancient_pre_bug_kernel(self):
-        # Pre-2.6.22 kernels didn't have the COW code path that introduced
-        # the race. Refusing to fire below the lower bound is honest.
-        self.assertFalse(self._dirty_cow_fires_on("2.6.20"))
+    def test_fires_on_pre_bug_kernel_via_port(self):
+        # The ported window (KERNEL_LPE hi="4.8.2" with no lo) fires on
+        # any old kernel below the fix, including pre-COW-optimization
+        # kernels — matches the inlined driver's decision-making. The
+        # operator-side note calls out that same-version backports may
+        # already carry the fix.
+        self.assertTrue(self._dirty_cow_fires_on("2.6.20"))
 
     def test_missing_kernel_fact_doesnt_fire(self):
         # A host we haven't enum'd → no dirty cow claim.
