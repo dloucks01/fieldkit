@@ -13,7 +13,7 @@ import yaml   # vendored — fieldkit/__init__.py puts fieldkit/vendor on sys.pa
 from .schema import (
     SCHEMA_VERSION, VALID_DETECTION, VALID_EXPLOITABILITY, VALID_PLATFORMS,
     VALID_SAFETY,
-    Cleanup, Detect, Execute, Ranking, Report, TTP, Verify,
+    Cleanup, Detect, Execute, Playbook, Ranking, Report, TTP, Verify,
 )
 
 #: Directory the built-in TTP files live in. Callers can override to load from
@@ -154,8 +154,35 @@ def _parse_report(doc, source):
     refs = tuple(r.get("refs") or ())
     if refs and not all(isinstance(x, str) for x in refs):
         raise LoaderError(f"{source}: report.refs must be a list of strings, got {refs!r}")
+    evidence = r.get("evidence") or ""
+    if evidence and not isinstance(evidence, str):
+        raise LoaderError(f"{source}: report.evidence must be a string, got {evidence!r}")
     return Report(vector_type=vector_type, description=description,
-                  remediation=remediation, refs=refs)
+                  remediation=remediation, refs=refs, evidence=evidence)
+
+
+def _parse_playbook(doc, source):
+    """Optional top-level `playbook:` block for prepare-only routes. When
+    absent, returns None and the emitted Vector has no playbook (auto-fires
+    if safety allows). When present, `summary` + `place` + `steps` are all
+    required; `restore` is optional."""
+    p = doc.get("playbook")
+    if p is None:
+        return None
+    if not isinstance(p, dict):
+        raise LoaderError(f"{source}: playbook must be a mapping, got {p!r}")
+    summary = _require_str(p, "summary", "playbook", source)
+    place = _require_str(p, "place", "playbook", source)
+    steps_raw = _require_list(p, "steps", "playbook", source)
+    for i, s in enumerate(steps_raw):
+        if not isinstance(s, str) or not s.strip():
+            raise LoaderError(
+                f"{source}: playbook.steps[{i}] must be a non-empty string, got {s!r}")
+    restore = p.get("restore") or ""
+    if restore and not isinstance(restore, str):
+        raise LoaderError(f"{source}: playbook.restore must be a string, got {restore!r}")
+    return Playbook(summary=summary, place=place,
+                    steps=tuple(steps_raw), restore=restore)
 
 
 # ---- public loaders -------------------------------------------------------
@@ -212,6 +239,7 @@ def load_file(path):
         key=key,
         family=family,
         delivery=delivery,
+        playbook=_parse_playbook(doc, source),
         source_path=path,
     )
 

@@ -948,9 +948,17 @@ def _reset_ttp_cache_for_tests():
 #: `_d_win_privs` was retired at Phase B4.2 completion — the 5 WIN_PRIVS entries,
 #: the Backup Operators group, and all 8 WIN_IMPERSONATION Potato ladder rungs
 #: are now covered by TTP YAMLs (T1003.002-*, T1068-*, T1134.002-seimpersonate-*).
+#:
+#: `_d_kernel_lpe` was retired at Phase B5c completion — every entry in the
+#: :data:`KERNEL_LPE` table (pwnkit, baronsamedit, looneytunables, dirtypipe,
+#: nftables, stackrot, cve-2021-22555, dirtycow) is now covered by
+#: T1068-CVE-*.yaml TTPs using the `version_range` predicate (or `suid` for
+#: pwnkit). The :data:`KERNEL_LPE` tuple and :func:`kernel_candidates` stay
+#: exported as the pure-Python lookup that pins the port coverage and drives
+#: the reportkb sanity tests.
 DRIVERS = {
     LINUX: (_d_ttp_yaml, _d_sudo_all, _d_suid_gtfo, _d_caps,
-            _d_docker_group, _d_sudo_env, _d_kernel_lpe),
+            _d_docker_group, _d_sudo_env),
     WINDOWS: (_d_ttp_yaml, _d_win_aie, _d_win_unquoted,
               _d_win_weak_service, _d_win_writable_service, _d_win_dll_hijack,
               _d_win_lpe),

@@ -17,7 +17,7 @@ during the port window.
 """
 import re
 
-from ..privesc import Vector
+from ..privesc import Playbook, Vector
 
 
 # -------- version_range predicate helpers ---------------------------------
@@ -35,14 +35,20 @@ _OPS = {
     "!=": lambda a, b: a != b,
 }
 
-_VERSION_RE = re.compile(r"^\s*(\d+(?:\.\d+)*)")
+#: Two capture groups: numeric dotted head, then optional ``p<N>`` sudo-patch
+#: suffix. Matches :func:`fieldkit.privesc._vtuple` so ``sudo 1.9.5p1`` and
+#: ``sudo 1.9.5p2`` compare distinctly (the difference IS the fix for
+#: CVE-2021-3156 baronsamedit — dropping the suffix would collapse them).
+_VERSION_RE = re.compile(r"^\s*(\d+(?:\.\d+)*)(?:p(\d+))?")
 
 
 def _parse_version(s):
     """Turn a version string into a normalized 4-tuple of ints. Ignores
     trailing non-numeric suffixes (`5.15.0-generic` → `(5,15,0,0)`),
     pads short versions with zeros so tuple compare is honest
-    (`5.15` == `5.15.0.0` == `(5,15,0,0)`).
+    (`5.15` == `5.15.0.0` == `(5,15,0,0)`). Preserves a ``p<N>`` sudo-style
+    patch suffix as the 4th tuple element so ``1.9.5p1`` = ``(1,9,5,1)``
+    and ``1.9.5p2`` = ``(1,9,5,2)``.
 
     Returns None for unparseable input — the predicate treats that as
     "cannot decide, don't match".
@@ -52,10 +58,11 @@ def _parse_version(s):
     m = _VERSION_RE.match(str(s))
     if not m:
         return None
-    parts = tuple(int(x) for x in m.group(1).split("."))
-    while len(parts) < 4:
-        parts = parts + (0,)
-    return parts[:4]
+    parts = [int(x) for x in m.group(1).split(".")]
+    while len(parts) < 3:
+        parts.append(0)
+    parts.append(int(m.group(2)) if m.group(2) else 0)
+    return tuple(parts[:4])
 
 
 def _parse_constraint(spec):
@@ -165,11 +172,19 @@ def _p_version_range(facts, value):
     Missing / unparseable host versions are treated as "cannot decide → no
     match" so a partially-enumerated host never spuriously fires a version-
     gated exploit.
+
+    Returns ``(matched, payload)`` where ``payload`` (on match) is
+    ``{"field": <first-declared-field-name>, "version": <host-version-str>}``
+    — used by the evidence-template renderer so a kernel-CVE TTP's
+    ``report.evidence: "{{field}} {{version}} in {{lo}}–{{hi}}"`` renders
+    "kernel 5.15.0 in 5.8–5.16.11" against a matching host.
     """
     if not isinstance(value, dict):
         return False, None
-    for field, spec in value.items():
-        host_v = _parse_version(_resolve_field(facts, field))
+    payload = None
+    for field_name, spec in value.items():
+        raw_host_val = _resolve_field(facts, field_name)
+        host_v = _parse_version(raw_host_val)
         if host_v is None:
             return False, None
         for raw in str(spec).split(","):
@@ -179,7 +194,31 @@ def _p_version_range(facts, value):
             op_fn, target_v = parsed
             if not op_fn(host_v, target_v):
                 return False, None
-    return True, None
+        if payload is None:
+            payload = {"field": field_name, "version": str(raw_host_val)}
+    return True, payload
+
+
+def _derive_lo_hi(spec):
+    """Extract human-readable low/high bounds from a version_range spec
+    ``">=5.8,<=5.16.11"`` → ``("5.8", "5.16.11")``. Used to render the
+    evidence template's ``{{lo}}`` / ``{{hi}}`` slots so a kernel-CVE port
+    reproduces the inlined driver's ``"kernel 5.15.0 in 5.8–5.16.11"``
+    evidence string. Unbounded ends collapse to ``"*"``."""
+    lo, hi = "*", "*"
+    for raw in str(spec).split(","):
+        raw = raw.strip()
+        for op in _OP_ORDER:
+            if raw.startswith(op):
+                ver = raw[len(op):].strip()
+                if op in (">=", ">"):
+                    lo = ver
+                elif op in ("<=", "<"):
+                    hi = ver
+                elif op == "==":
+                    lo = hi = ver
+                break
+    return lo, hi
 
 
 _PREDICATES = {
@@ -217,27 +256,85 @@ def _key_for(ttp, matched_payload):
     return f"ttp:{ttp.technique}"
 
 
-def _substitute(command, payload, ctx):
-    """Fill template variables in the command with the matched payload / ctx.
+def _stage_for(ttp, ctx):
+    """The platform-appropriate stage dir for this TTP. Windows TTPs read
+    ctx.stage_win; Linux/mac read ctx.stage_lin. TTPs that declare multiple
+    platforms fall back to whichever ctx attribute is set."""
+    if "windows" in ttp.platform:
+        return getattr(ctx, "stage_win", None) or getattr(ctx, "stage_lin", None) or ""
+    return getattr(ctx, "stage_lin", None) or getattr(ctx, "stage_win", None) or ""
+
+
+def _substitute(command, payload, stage):
+    """Fill template variables in the command with the matched payload / stage.
 
     Supported:
       * ``{{binary}}`` — the binary basename the predicate matched (a
         sudo-allowed binary, a cap-carrying binary, …).
-      * ``{{stage}}`` — the platform-appropriate staging dir from ctx
-        (Windows: ``ctx.stage_win``; Linux: ``ctx.stage_lin``). Matches the
-        inlined `_win_vector`'s ``{stage}`` substitution convention.
+      * ``{{stage}}`` — the platform-appropriate staging dir (windows:
+        stage_win; linux: stage_lin). Matches the inlined `_win_vector`'s
+        ``{stage}`` substitution convention.
     """
     out = command
     if payload and isinstance(payload, str) and "{{binary}}" in out:
         out = out.replace("{{binary}}", payload)
     if "{{stage}}" in out:
-        stage = getattr(ctx, "stage_win", None) or getattr(ctx, "stage_lin", None) or ""
-        # Pick per-platform when both are set (impersonation TTPs will use win).
-        # For now the ctx passes both; the YAML's platform disambiguates via
-        # which TTP is running — Windows TTPs read stage_win, Linux stage_lin.
-        # The ctx already has the right one loaded for the acting OS.
         out = out.replace("{{stage}}", stage)
     return out
+
+
+def _render_evidence(ttp, payload, facts):
+    """Render ``ttp.report.evidence`` template into the Vector.evidence string.
+
+    Supported template variables:
+      * ``{{field}}`` / ``{{version}}`` — from a version_range payload
+        (e.g. ``kernel`` / ``5.15.0``).
+      * ``{{lo}}`` / ``{{hi}}`` — bounds derived from the version_range spec
+        for the payload's field (``5.8`` / ``5.16.11``).
+      * ``{{binary}}`` — the basename that a suid/capability/sudo_allows
+        predicate matched.
+
+    When no template is declared, falls back to a generic
+    ``"detected via TTP T1068 (version_range)"`` — the shape existing TTPs
+    already emit.
+    """
+    template = ttp.report.evidence
+    if not template:
+        return f"detected via TTP {ttp.technique} ({ttp.detect.kind})"
+    out = template
+    if isinstance(payload, dict):
+        field_name = payload.get("field", "")
+        version = payload.get("version", "")
+        out = out.replace("{{field}}", field_name).replace("{{version}}", version)
+        if ttp.detect.kind == "version_range" and isinstance(ttp.detect.value, dict):
+            spec = ttp.detect.value.get(field_name, "")
+            lo, hi = _derive_lo_hi(spec)
+            out = out.replace("{{lo}}", lo).replace("{{hi}}", hi)
+    elif isinstance(payload, str):
+        out = out.replace("{{binary}}", payload)
+    _ = facts
+    return out
+
+
+def _build_playbook(ttp, payload, stage):
+    """Convert ``ttp.playbook`` (a schema.Playbook) into a runtime
+    :class:`fieldkit.privesc.Playbook`, applying ``{{stage}}`` / ``{{binary}}``
+    substitution to place / steps / restore. Returns None when the TTP has no
+    playbook.
+
+    The runtime Playbook is what fieldkit.privesc.Vector.manual reads to
+    decide "prepare, don't fire" — kernel-CVE routes against client hosts
+    carry one; auto-firing TTPs (sudo, caps) do not.
+    """
+    pb = ttp.playbook
+    if pb is None:
+        return None
+    return Playbook(
+        summary=_substitute(pb.summary, payload, stage),
+        place=_substitute(pb.place, payload, stage),
+        steps=tuple(_substitute(s, payload, stage) for s in pb.steps),
+        restore=_substitute(pb.restore, payload, stage) if pb.restore else None,
+    )
 
 
 def ttp_to_vector(ttp, facts, ctx):
@@ -261,10 +358,15 @@ def ttp_to_vector(ttp, facts, ctx):
     # per platform (`cmd` on windows, `sh` on linux). Windows TTPs that use
     # PowerShell explicitly set `execute.shell: powershell`.
     shell = ttp.execute.shell or ("cmd" if facts.os == "windows" else "sh")
+    stage = _stage_for(ttp, ctx)
+    # For {{binary}} substitution the payload is expected to be a string
+    # (suid/cap/sudo_allows return the matched binary). version_range returns
+    # a dict — pass an empty string so {{binary}} is a no-op there.
+    binary = payload if isinstance(payload, str) else ""
     # stages: substitute {{stage}} in the remote path so a YAML can say
     # `as: "{{stage}}\\GodPotato.exe"` and get "C:\Windows\Temp\GodPotato.exe".
     stages = tuple(
-        (name, _substitute(remote, payload, ctx))
+        (name, _substitute(remote, binary, stage))
         for name, remote in ttp.execute.stages
     )
     return Vector(
@@ -273,16 +375,17 @@ def ttp_to_vector(ttp, facts, ctx):
         exploitability=ttp.ranking.exploitability,
         safety=ttp.ranking.safety,
         detection=ttp.ranking.detection,
-        command=_substitute(ttp.execute.command, payload, ctx),
+        command=_substitute(ttp.execute.command, binary, stage),
         shell=shell,
         host=ctx.host,
         detail=ttp.report.description or f"loaded from TTP {ttp.technique}",
-        evidence=f"detected via TTP {ttp.technique} ({ttp.detect.kind})",
-        safe_proof=_substitute(ttp.verify.proof, payload, ctx) if ttp.verify.proof else None,
-        cleanup=_substitute(ttp.cleanup.command, payload, ctx) if ttp.cleanup.command else None,
+        evidence=_render_evidence(ttp, payload, facts),
+        safe_proof=_substitute(ttp.verify.proof, binary, stage) if ttp.verify.proof else None,
+        cleanup=_substitute(ttp.cleanup.command, binary, stage) if ttp.cleanup.command else None,
         report_type=ttp.report.vector_type,
         family=ttp.family or None,
         delivery=ttp.delivery or None,
         stages=stages,
         serves=ttp.execute.serves,
+        playbook=_build_playbook(ttp, binary, stage),
     )
