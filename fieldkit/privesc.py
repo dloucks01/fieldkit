@@ -896,23 +896,77 @@ def _d_win_dll_hijack(facts, ctx):
                 restore=f"del {dir_}\\X.dll {staged} & sc start {name}"))
 
 
+def _d_ttp_yaml(facts, ctx):
+    """Load and yield vectors from every fieldkit-TTP YAML that applies to
+    these facts. TTPs are loaded once per process and cached; the library is
+    small enough that eager loading is fine, and file-system latency at engine
+    boot beats a cache miss during an escalate loop."""
+    from .ttps.adapter import ttp_to_vector
+    for ttp in _cached_ttps():
+        vector = ttp_to_vector(ttp, facts, ctx)
+        if vector is not None:
+            yield vector
+
+
+_TTP_CACHE = None
+
+
+def _cached_ttps():
+    """Return the loaded TTP library, loading on first call. Any LoaderError
+    surfaces at first-use rather than at import — the engine still boots on
+    a broken TTP file, but analyze reports the file + field via stderr."""
+    global _TTP_CACHE
+    if _TTP_CACHE is None:
+        try:
+            from .ttps import load_all
+            _TTP_CACHE = load_all()
+        except Exception as exc:  # noqa: BLE001 — report and continue with an empty library
+            import sys
+            print(f"fieldkit: warning — could not load TTP library: {exc}",
+                  file=sys.stderr)
+            _TTP_CACHE = ()
+    return _TTP_CACHE
+
+
+def _reset_ttp_cache_for_tests():
+    """Test-only: clear the cache so a test can inject a specific TTP set via
+    a temp directory. Not part of the public API."""
+    global _TTP_CACHE
+    _TTP_CACHE = None
+
+
 #: OS -> the drivers that apply. Append to extend the knowledge base.
+#: `_d_ttp_yaml` runs FIRST so TTP-defined vectors win the dedup contest against
+#: the inlined GTFO/CAPS/PRIVS drivers — as entries port to YAML, the inlined
+#: driver quietly stops firing for those binaries.
 DRIVERS = {
-    LINUX: (_d_sudo_all, _d_sudo_gtfo, _d_suid_gtfo, _d_caps, _d_docker_group, _d_sudo_env,
-            _d_kernel_lpe),
-    WINDOWS: (_d_win_privs, _d_win_aie, _d_win_unquoted, _d_win_weak_service,
-              _d_win_writable_service, _d_win_dll_hijack, _d_win_lpe),
+    LINUX: (_d_ttp_yaml, _d_sudo_all, _d_sudo_gtfo, _d_suid_gtfo, _d_caps,
+            _d_docker_group, _d_sudo_env, _d_kernel_lpe),
+    WINDOWS: (_d_ttp_yaml, _d_win_privs, _d_win_aie, _d_win_unquoted,
+              _d_win_weak_service, _d_win_writable_service, _d_win_dll_hijack,
+              _d_win_lpe),
 }
 
 
 def vectors_for(facts, host_ip, *, stage_win=None, stage_lin=None):
-    """Every escalation vector the facts justify on one host, best-ranked first."""
+    """Every escalation vector the facts justify on one host, best-ranked first.
+
+    Vectors are deduped by ``key`` in driver order — the first driver to yield
+    a given key wins. Because `_d_ttp_yaml` runs first, a TTP-defined vector
+    supersedes the inlined driver for the same binary; the inlined driver still
+    handles binaries not yet ported.
+    """
     ctx = _Ctx(host=host_ip,
                stage_win=stage_win or "C:\\Windows\\Temp",
                stage_lin=stage_lin or "/tmp")
     vectors = []
+    seen_keys = set()
     for driver in DRIVERS.get(facts.os, ()):
-        vectors.extend(driver(facts, ctx))
+        for vector in driver(facts, ctx):
+            if vector.key in seen_keys:
+                continue
+            seen_keys.add(vector.key)
+            vectors.append(vector)
     vectors.sort(key=lambda v: (-v.score, v.key))
     return vectors
 
