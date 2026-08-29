@@ -57,9 +57,17 @@ def _p_facts_match(facts, value):
 
 
 def _p_privilege(facts, value):
-    """Windows: matches when `value` (a privilege token, e.g. `SeBackupPrivilege`)
-    is present in facts.privs. Payload is the priv name so the vector's evidence
-    can name it."""
+    """Windows: matches when `value` is present in facts.privs. `value` may
+    be a string (single priv) or a list (any-of match, for the compound
+    SeImpersonatePrivilege / SeAssignPrimaryTokenPrivilege case).
+
+    Payload is the priv name that matched (for the evidence string).
+    """
+    if isinstance(value, list):
+        for priv in value:
+            if priv in facts.privs:
+                return True, priv
+        return False, None
     if value in facts.privs:
         return True, value
     return False, None
@@ -151,6 +159,12 @@ def ttp_to_vector(ttp, facts, ctx):
     # per platform (`cmd` on windows, `sh` on linux). Windows TTPs that use
     # PowerShell explicitly set `execute.shell: powershell`.
     shell = ttp.execute.shell or ("cmd" if facts.os == "windows" else "sh")
+    # stages: substitute {{stage}} in the remote path so a YAML can say
+    # `as: "{{stage}}\\GodPotato.exe"` and get "C:\Windows\Temp\GodPotato.exe".
+    stages = tuple(
+        (name, _substitute(remote, payload, ctx))
+        for name, remote in ttp.execute.stages
+    )
     return Vector(
         key=_key_for(ttp, payload),
         title=ttp.name,
@@ -165,4 +179,8 @@ def ttp_to_vector(ttp, facts, ctx):
         safe_proof=_substitute(ttp.verify.proof, payload, ctx) if ttp.verify.proof else None,
         cleanup=_substitute(ttp.cleanup.command, payload, ctx) if ttp.cleanup.command else None,
         report_type=ttp.report.vector_type,
+        family=ttp.family or None,
+        delivery=ttp.delivery or None,
+        stages=stages,
+        serves=ttp.execute.serves,
     )

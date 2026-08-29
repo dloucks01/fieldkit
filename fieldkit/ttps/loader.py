@@ -101,7 +101,26 @@ def _parse_execute(doc, source):
     if shell and shell not in ("cmd", "powershell", "sh"):
         raise LoaderError(
             f"{source}: execute.shell must be one of cmd/powershell/sh, got {shell!r}")
-    return Execute(command=command, transport=transport, shell=shell)
+    # stages: list of {name, as} dicts → tuple of (name, remote_path) tuples.
+    # `as` is the yaml-friendly key for the remote path (matches how Ansible
+    # names the same slot).
+    stages_raw = e.get("stages") or []
+    if not isinstance(stages_raw, list):
+        raise LoaderError(f"{source}: execute.stages must be a list, got {stages_raw!r}")
+    stages = []
+    for i, s in enumerate(stages_raw):
+        if not isinstance(s, dict) or "name" not in s or "as" not in s:
+            raise LoaderError(
+                f"{source}: execute.stages[{i}] must be a mapping with 'name' + 'as' keys, "
+                f"got {s!r}")
+        stages.append((str(s["name"]), str(s["as"])))
+    # serves: list of arsenal artifact names
+    serves_raw = e.get("serves") or []
+    if not isinstance(serves_raw, list) or not all(isinstance(x, str) for x in serves_raw):
+        raise LoaderError(
+            f"{source}: execute.serves must be a list of strings, got {serves_raw!r}")
+    return Execute(command=command, transport=transport, shell=shell,
+                    stages=tuple(stages), serves=tuple(serves_raw))
 
 
 def _parse_verify(doc, source):
@@ -172,6 +191,12 @@ def load_file(path):
     key = doc.get("key") or ""
     if key and not isinstance(key, str):
         raise LoaderError(f"{source}: top-level `key` must be a string, got {key!r}")
+    family = doc.get("family") or ""
+    if family and not isinstance(family, str):
+        raise LoaderError(f"{source}: top-level `family` must be a string, got {family!r}")
+    delivery = doc.get("delivery") or ""
+    if delivery and not isinstance(delivery, str):
+        raise LoaderError(f"{source}: top-level `delivery` must be a string, got {delivery!r}")
 
     return TTP(
         technique=technique,
@@ -185,6 +210,8 @@ def load_file(path):
         cleanup=_parse_cleanup(doc, source),
         report=_parse_report(doc, source),
         key=key,
+        family=family,
+        delivery=delivery,
         source_path=path,
     )
 
