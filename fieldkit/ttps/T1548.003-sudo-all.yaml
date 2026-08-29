@@ -1,0 +1,41 @@
+# Sudo grants full root — sudo -l says (ALL : ALL) ALL
+#
+# The most basic sudo escalation: the foothold user has unrestricted
+# sudo. `sudo -i` (or `sudo su -`) drops straight into a root shell.
+# Ported from privesc._d_sudo_all.
+#
+# Note this TTP short-circuits every per-binary `sudo:<X>` TTP via the
+# adapter's `_p_sudo_allows` predicate — when `facts.sudo_all` is True,
+# individual sudo TTPs return False so we don't emit 17 redundant
+# vectors for the same primitive. See the sudo-*.yaml family.
+technique: T1548.003
+name: sudo grants full root (ALL:ALL)
+tactic: [privilege-escalation]
+platform: [linux]
+key: sudo:ALL
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  facts_match:
+    sudo_all: true
+execute:
+  # `-n` (non-interactive) refuses to prompt for a password — if it
+  # succeeds, the operator has passwordless sudo and can `sudo -i` next.
+  command: "sudo -n id"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: sudo_misconfig
+  evidence: "sudo -l: (ALL : ALL) ALL"
+  description: >
+    `sudo -l` reports (ALL : ALL) ALL — the operator has unrestricted
+    sudo. `sudo -i` drops into a root shell; every other elevation
+    primitive is redundant when this holds.
+  remediation: >
+    Restrict sudoers to specific commands the user actually needs.
+    Unrestricted sudo defeats every other access control on the host.
+  refs: [T1548.003, sudo-vulnerabilities]

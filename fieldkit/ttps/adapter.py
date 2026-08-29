@@ -182,6 +182,45 @@ def _p_group_member(facts, value):
     return False, None
 
 
+def _p_linux_group(facts, value):
+    """Linux: matches when `value` (a group name, e.g. `docker`) is in
+    ``facts.groups`` AND the caller is not already root.
+
+    Mirrors the inlined :func:`fieldkit.privesc._d_docker_group`'s
+    "docker group + not root" gate: an escalation vector against uid=0
+    is nonsense, so the vector never fires for a root operator. Payload
+    is the group name (matches the inlined driver's evidence).
+    """
+    if facts.is_root:
+        return False, None
+    if value in getattr(facts, "groups", set()):
+        return True, value
+    return False, None
+
+
+def _p_sudo_env_keep_any(facts, value):
+    """Matches when ANY of the listed env vars is preserved by sudo
+    (``facts.sudo_env_keep``).
+
+    ``value`` is a list of env-var names to watch, e.g.
+    ``[LD_PRELOAD, LD_LIBRARY_PATH]`` for the classic sudo LD_PRELOAD
+    escalation. Mirrors the inlined :func:`fieldkit.privesc._d_sudo_env`'s
+    intersection check.
+
+    Payload is a comma-joined sorted string of the matched vars
+    (``"LD_PRELOAD"`` or ``"LD_LIBRARY_PATH, LD_PRELOAD"``) so the
+    evidence template can render "sudo -l: env_keep+={{binary}}"
+    reusing the {{binary}} slot for the matched-env-var string.
+    """
+    if not isinstance(value, (list, tuple)):
+        return False, None
+    kept = getattr(facts, "sudo_env_keep", set()) or set()
+    matched = sorted(kept & set(value))
+    if not matched:
+        return False, None
+    return True, ", ".join(matched)
+
+
 def _resolve_field(facts, path):
     """Read a HostFacts attribute by dotted path — ``kernel`` returns
     ``facts.kernel``; ``services.apache`` returns ``facts.services["apache"]``.
@@ -324,6 +363,8 @@ _PREDICATES = {
     "facts_match":          _p_facts_match,
     "privilege":            _p_privilege,
     "group_member":         _p_group_member,
+    "linux_group":          _p_linux_group,
+    "sudo_env_keep_any":    _p_sudo_env_keep_any,
     "version_range":        _p_version_range,
     "no_hotfix_from":       _p_no_hotfix_from,
     "all_of":               _p_all_of,

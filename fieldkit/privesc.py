@@ -976,11 +976,18 @@ def _reset_ttp_cache_for_tests():
 #: covered by T1548.001-cap*.yaml TTPs. The interpreter case landed via a
 #: new `capability_on_binary` predicate that combines a cap name with a
 #: canon-aware binary match (so `binary: python` fires on python3.8 but
-#: not on openssl-with-cap_setuid). The GTFO dict + `_gtfo_vector` /
-#: `_cap_vector` helpers stay exported — they're still called by fieldkit
-#: tests + operator-side introspection.
+#: not on openssl-with-cap_setuid).
+#:
+#: `_d_sudo_all` + `_d_docker_group` + `_d_sudo_env` were retired at Phase
+#: B5g completion — the LAST three inlined Linux drivers. sudo_all uses the
+#: existing `facts_match` predicate; docker_group uses a new `linux_group`
+#: predicate that gates on `not facts.is_root`; sudo_env uses a new
+#: `sudo_env_keep_any` predicate whose payload is the matched env-var name
+#: (rendered into the evidence template's `{{binary}}` slot). The Linux
+#: driver list is now ``(_d_ttp_yaml,)`` — every Linux privesc vector
+#: fieldkit emits comes from a YAML TTP.
 DRIVERS = {
-    LINUX: (_d_ttp_yaml, _d_sudo_all, _d_docker_group, _d_sudo_env),
+    LINUX: (_d_ttp_yaml,),
     WINDOWS: (_d_ttp_yaml, _d_win_aie, _d_win_unquoted,
               _d_win_weak_service, _d_win_writable_service, _d_win_dll_hijack),
 }
