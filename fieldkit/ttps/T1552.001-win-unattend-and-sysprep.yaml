@@ -1,0 +1,55 @@
+# Unattended install artifacts (unattend.xml / sysprep.xml)
+#
+# Windows imaging and MDT/SCCM/Intune deployment leaves behind
+# unattend.xml / sysprep.xml / autounattend.xml files under
+# %WINDIR%\Panther, C:\unattend.xml, and (for older installs)
+# C:\sysprep\. These contain the local Administrator password
+# used during imaging — often reused as an operational credential
+# and rarely rotated after imaging.
+#
+# Genuinely new coverage — Windows mirror of the C2
+# webapp-config-secrets hunt.
+technique: T1552.001
+name: unattended install artifacts → local admin credentials
+tactic: [credential-access, privilege-escalation]
+platform: [windows]
+key: loot:win-unattend-sysprep
+ranking:
+  exploitability: medium
+  safety: read-only
+  detection: quiet
+detect:
+  always: true
+execute:
+  # Sweep every known unattended-install artifact location. The
+  # password lives under `<AdministratorPassword><Value>…</Value>`
+  # — Base64-encoded IF `PlainText=false` is set, plaintext
+  # otherwise. Either is a rotation event.
+  command: |-
+    dir /s /b C:\Windows\Panther\Unattend*.xml C:\Windows\Panther\Autounattend*.xml C:\Windows\System32\Sysprep\Unattend.xml C:\Windows\System32\Sysprep\Panther\Unattend*.xml C:\unattend.xml C:\autounattend.xml C:\sysprep.inf C:\sysprep\sysprep.xml C:\sysprep\sysprep.inf 2>nul & findstr /si "AdministratorPassword" C:\Windows\Panther\*.xml C:\Windows\System32\Sysprep\*.xml C:\Windows\System32\Sysprep\Panther\*.xml C:\unattend.xml C:\autounattend.xml 2>nul
+verify:
+  # A hit surfaces the file path (dir) or the matching XML line
+  # (findstr) — both contain a colon.
+  success: ":"
+cleanup:
+  command: ""
+report:
+  vector_type: exposed_secret
+  evidence: "unattended-install artifact(s) present + readable"
+  description: >
+    Windows imaging (MDT / SCCM / Intune bootstrap, manual sysprep)
+    leaves an unattend.xml / sysprep.xml under `%WINDIR%\Panther`,
+    `C:\Windows\System32\Sysprep\`, or the drive root. These files
+    contain the LocalAdmin password used during provisioning —
+    Base64-encoded with `PlainText=false` (trivially reversible),
+    or plaintext otherwise. Operators routinely find the SAME
+    admin password reused across the entire fleet, decades after
+    the image was cut.
+  remediation: >
+    Delete unattend.xml / autounattend.xml / sysprep.xml from the
+    image post-provisioning (MDT's OSDComputerName task can
+    include a cleanup step). Rotate the local Admin password
+    fleet-wide via LAPS (Local Admin Password Solution) — LAPS
+    replaces the imaged password with a per-host managed one
+    and eliminates the reuse.
+  refs: [T1552.001, unattended-install-credentials]

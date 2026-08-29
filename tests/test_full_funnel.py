@@ -406,9 +406,15 @@ class FullFunnelTest(unittest.TestCase):
         self.cli("spray", "smb", "--yes")
         self.cli("enum", "10.0.0.7", "--yes")
 
-        # the config-change vector is gated with no --allow — the loop fires nothing
-        gated = self.cli("escalate", "10.0.0.7", "--yes", expect=2)
-        self.assertIn("above the current --allow", gated)
+        # After C3, exit 1 (ran_no_proof) instead of 2 (all_gated): the
+        # loot:win-* TTPs are read-only so they auto-fire at the default
+        # gate, return ran_no_proof against the mock target, then the
+        # seimpersonate vectors stay gated above --allow. The "above the
+        # current --allow" summary line only prints when EVERY vector is
+        # gated; with loot firing, we get per-vector "exceeds --allow"
+        # lines instead. Both signal the same thing.
+        gated = self.cli("escalate", "10.0.0.7", "--yes", expect=1)
+        self.assertIn("exceeds --allow", gated)
         self.assertEqual(self.store().counts()["proven_findings"], 0)
 
         # --dry-run shows the plan but still fires nothing
