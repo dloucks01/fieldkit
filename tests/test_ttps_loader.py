@@ -66,9 +66,10 @@ class LoadFileTest(unittest.TestCase):
         self.assertEqual(t.detect.kind, "sudo_allows")
         self.assertEqual(t.detect.value, "find")
         self.assertEqual(t.ranking.exploitability, "high")
-        self.assertEqual(t.ranking.safety, "config-change")
+        self.assertEqual(t.ranking.safety, "read-only")
         self.assertIn("uid=0", t.verify.success)
-        self.assertEqual(t.report.vector_type, "sudo_gtfo_find")
+        # Reuses the inlined driver's KB entry so reportkb resolves cleanly.
+        self.assertEqual(t.report.vector_type, "gtfobins_sudo")
 
     def test_valid_minimal_body_loads(self):
         from fieldkit.ttps import load_file

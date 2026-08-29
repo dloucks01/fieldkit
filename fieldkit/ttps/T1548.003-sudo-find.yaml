@@ -15,7 +15,10 @@ platform:
   - linux
 ranking:
   exploitability: high      # sudo NOPASSWD on find is a documented one-shot
-  safety: config-change     # runs a command as root — target state may change
+  # Matches the inlined GTFO driver's convention: the PROOF command runs `id`
+  # (read-only). The operator swapping -exec to something mutating is their
+  # choice + gate; the vector-as-shipped is read-only.
+  safety: read-only
   detection: quiet          # single sudo call; unremarkable in normal use
 detect:
   # Phase B1: the loader only understands `always`, `sudo_allows`, `suid`,
@@ -35,7 +38,12 @@ cleanup:
   # Nothing to reverse — `find -exec id -quit` writes nothing.
   command: ""
 report:
-  vector_type: sudo_gtfo_find
+  # Reuses the KB entry the inlined driver used, so `sudo:find` renders with
+  # a real remediation from reportkb.KB. Phase B enhancement will add per-
+  # binary KB entries + per-YAML remediation text; for now the YAML's
+  # description/remediation fields are extra metadata a future report layer
+  # can surface, but the KB is still the source of truth for the report.
+  vector_type: gtfobins_sudo
   description: >
     An operator with sudo access to `find` (typically via NOPASSWD in
     /etc/sudoers or a group-based rule) can pivot to root by asking find to

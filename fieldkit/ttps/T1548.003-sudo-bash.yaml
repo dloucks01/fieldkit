@@ -1,0 +1,27 @@
+# Sudo → root via bash (GTFOBins)
+# The plainest one — sudo bash IS root shell. Included for completeness so
+# analysis sees it as a ranked opp rather than as a silent lack.
+technique: T1548.003
+name: Sudo → root via bash (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  sudo_allows: bash
+execute:
+  command: 'sudo bash -c ''id'''
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_sudo
+  description: Sudo NOPASSWD on `bash` — trivially a root shell.
+  remediation: >
+    Drop `bash` from sudoers entirely. The only safe use is a specific
+    non-shell wrapper script that cannot be reinvoked as an interactive
+    shell (rare — usually a config bug).
+  refs: [T1548.003, GTFOBins/bash]
