@@ -46,6 +46,18 @@ ENUM_PLAN = {
         EnumCheck("versions", "sudo -V 2>/dev/null | head -1; "
                               "pkexec --version 2>/dev/null | head -1; "
                               "ldd --version 2>/dev/null | head -1"),
+        # Container context: is this foothold inside a container, and if so
+        # what escape-relevant sockets/tokens are reachable? All three probes
+        # are read-only file checks with defensive `2>/dev/null` so a bare-
+        # metal host produces empty output rather than errors.
+        EnumCheck("container",
+                  "test -e /.dockerenv && echo 'FK-DOCKERENV'; "
+                  "test -e /run/.containerenv && echo 'FK-CONTAINERENV'; "
+                  "grep -qE 'docker|containerd|kubepods|/lxc/|/machine.slice/' "
+                  "  /proc/1/cgroup 2>/dev/null && echo 'FK-CGROUP-CONTAINER'; "
+                  "test -w /var/run/docker.sock && echo 'FK-DOCKER-SOCK'; "
+                  "test -r /var/run/secrets/kubernetes.io/serviceaccount/token "
+                  "  && echo 'FK-K8S-TOKEN'"),
     ),
     WINDOWS: (
         EnumCheck("priv", "whoami /priv"),
@@ -93,6 +105,19 @@ class HostFacts:
     sudo_version: str = None                           # e.g. "1.8.31"   (CVE-2021-3156)
     pkexec_version: str = None                         # polkit, e.g. "0.105" (CVE-2021-4034)
     glibc_version: str = None                          # e.g. "2.35"     (CVE-2023-4911)
+    # -- linux · container context --
+    #: `True` when the foothold is inside a container (docker / podman / k8s
+    #: pod). Detected by the presence of /.dockerenv, /run/.containerenv, or
+    #: `container:...` scope in /proc/1/cgroup. Container-escape TTPs gate on
+    #: this so they don't misfire on a host that just happens to have docker
+    #: installed. Ships as of Phase B5b.
+    in_container: bool = False
+    #: `True` when /var/run/docker.sock is readable+writable inside the
+    #: container — one of the standard "escape via docker.sock" primitives.
+    has_docker_sock: bool = False
+    #: `True` when /var/run/secrets/kubernetes.io/serviceaccount/token
+    #: exists — the pod is running with a mounted k8s service account.
+    has_k8s_token: bool = False
     # -- windows --
     privs: set = field(default_factory=set)            # SeImpersonatePrivilege, ...
     win_groups: set = field(default_factory=set)        # Administrators, Backup Operators, ...
@@ -216,6 +241,26 @@ def _p_kernel(facts, text):
     m = re.search(r"\b(\d+\.\d+\.\d+)", text)
     if m:
         facts.kernel = m.group(1)
+
+
+def _p_container(facts, text):
+    """Populate the container-context flags from the sentinel-tagged output
+    of the `container` enum check. Sentinels are unique strings (`FK-...`)
+    so we don't false-positive on a host that happens to have literal words
+    like `docker` in an unrelated command's output."""
+    if "FK-DOCKERENV" in text or "FK-CONTAINERENV" in text \
+            or "FK-CGROUP-CONTAINER" in text:
+        facts.in_container = True
+    if "FK-DOCKER-SOCK" in text:
+        facts.has_docker_sock = True
+        # a writable docker socket ONLY matters inside a container context;
+        # a bare-metal box with docker installed has the socket by design.
+        # But we set the flag regardless — the TTP predicate is
+        # `facts_match: {has_docker_sock: True, in_container: True}` so
+        # the combination is required.
+    if "FK-K8S-TOKEN" in text:
+        facts.has_k8s_token = True
+        facts.in_container = True     # k8s tokens only appear inside pods
 
 
 def _p_versions(facts, text):
@@ -361,7 +406,7 @@ def _p_svcperms(facts, text):
 
 _PARSERS = {
     "id": _p_id, "sudo": _p_sudo, "suid": _p_suid, "caps": _p_caps, "kernel": _p_kernel,
-    "versions": _p_versions,
+    "versions": _p_versions, "container": _p_container,
     "priv": _p_priv, "groups": _p_groups, "aie": _p_aie, "services": _p_services,
     "sysinfo": _p_sysinfo, "hotfixes": _p_hotfixes,
     "svcperms": _p_svcperms,

@@ -123,7 +123,8 @@ class LinuxFactsTest(EnumTestCase):
         report = run_enum(self.store, host, cred, run=make_runner(LINUX_OUT))
         self.assertIsNone(report.blocked)
         self.assertEqual(set(report.ran),
-                         {"id", "sudo", "suid", "caps", "kernel", "versions"})
+                         {"id", "sudo", "suid", "caps", "kernel", "versions",
+                          "container"})
         f = facts_for(self.store, hid)
         self.assertEqual((f.user, f.uid), ("svc", 1000))
         self.assertFalse(f.is_root)

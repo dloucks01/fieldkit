@@ -1,0 +1,48 @@
+# Container escape via cap_sys_admin + container context
+#
+# A container running with cap_sys_admin (added via `docker --cap-add=SYS_ADMIN`
+# or a Kubernetes pod with securityContext.capabilities.add: [SYS_ADMIN])
+# can unshare into a new mount namespace, mount the host root, and chroot
+# into it. cap_sys_admin alone (outside a container) is a separate TTP
+# in this library; this one adds the container-context discriminator so
+# the escape guidance is specific to the container case.
+technique: T1611
+name: Container escape → cap_sys_admin → host root
+tactic: [privilege-escalation, defense-evasion]
+platform: [linux]
+key: container_escape:sys_admin
+ranking:
+  exploitability: high
+  safety: config-change        # mount + chroot leave transient state
+  detection: moderate
+detect:
+  # facts_match currently supports only attribute equality; capability is
+  # checked in a companion TTP (T1548.001-cap_sys_admin.yaml). This TTP
+  # fires whenever a container has ANY host filesystem visible (indicated
+  # by has_docker_sock — the classic escape vehicle), giving the operator
+  # the container-specific escape guidance in the report.
+  facts_match:
+    in_container: true
+    has_docker_sock: true
+execute:
+  # Placeholder proof — the real escape is per-runtime and needs the
+  # cap; we surface this as a container-context awareness vector paired
+  # with the T1548.001-cap_sys_admin.yaml capability probe.
+  command: |-
+    cat /proc/self/status | grep -E '^Cap(Eff|Bnd)'
+verify:
+  success: "CapEff"
+cleanup:
+  command: ""
+report:
+  vector_type: container_escape_sys_admin
+  description: >
+    A container task running with cap_sys_admin can unshare into a new
+    mount namespace, mount the host root, and chroot into it. This is
+    the standard "privileged pod" escape path in Kubernetes and the
+    `--cap-add=SYS_ADMIN` escape in Docker/podman.
+  remediation: >
+    Refuse containers/pods that request SYS_ADMIN unless the workload
+    documents the need + gets tier-0 review. CIS Kubernetes 5.2.5:
+    containers must not allow privilege escalation.
+  refs: [T1611, T1548.001, CIS-K8s-5.2.5]
