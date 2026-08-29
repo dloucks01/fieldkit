@@ -21,6 +21,7 @@ from textual.widgets import Footer, Static
 
 from ..state import Store, default_db_path
 from . import theme
+from .dashboard import DashboardScreen, DASHBOARD_TCSS
 
 
 # ---------------------------------------------------------------------------
@@ -68,27 +69,6 @@ def _stub_body(name, ships_in):
         f"    to one screen at a time.[/]\n"
     )
     return Static(body, classes="stub")
-
-
-class DashboardScreen(Screen):
-    """The returning-operator view. Ship 2."""
-
-    BINDINGS = [
-        Binding("a", "app.switch_screen('analyze')", "analyze"),
-        Binding("e", "app.switch_screen('escalate')", "escalate"),
-        Binding("w", "app.switch_screen('watch')", "watch"),
-        Binding("?", "app.push_screen('help')", "help"),
-        Binding("q", "app.quit", "quit"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="frame"):
-            yield TitleBar(id="title-bar")
-            yield _stub_body("Dashboard", "Ship 2")
-        yield Footer()
-
-    def on_mount(self):
-        self.query_one(TitleBar).engagement = self.app.engagement_name
 
 
 class AnalyzeScreen(Screen):
@@ -202,7 +182,7 @@ class FieldkitTUI(App):
     display and dispatch subprocess `fieldkit` commands for actions.
     """
 
-    CSS = theme.APP_TCSS
+    CSS = theme.APP_TCSS + DASHBOARD_TCSS
     TITLE = "fieldkit"
 
     SCREENS = {
