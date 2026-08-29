@@ -1,0 +1,55 @@
+# Container escape → cgroup v1 release_agent → host root
+#
+# cgroup v1's release_agent lets a process register a helper program the
+# kernel invokes (as root, on the host) when the last task in a cgroup
+# exits. A privileged container that can create+enter a new cgroup can
+# set release_agent to a host script, then trigger the notify by having
+# the cgroup empty. Kernel runs the script as root.
+#
+# cgroup v2 removed the release_agent mechanism — this only works on
+# hosts still using v1 (older kernels, RHEL 7-era). Detected via the
+# presence of /sys/fs/cgroup/memory (a v1-only controller subdir).
+#
+# The proof command tests IF /sys/fs/cgroup is writable — the actual
+# exploit needs a payload written to release_agent and a triggered
+# empty cgroup; those are per-target and land via `fieldkit prep`.
+technique: T1611
+name: Container escape → cgroup v1 release_agent → host root
+tactic: [privilege-escalation, defense-evasion]
+platform: [linux]
+key: container_escape:cgroup_v1_release_agent
+ranking:
+  exploitability: high        # when the preconditions hold, deterministic host root
+  safety: config-change        # writes a release_agent path to the cgroup fs
+  detection: moderate
+detect:
+  facts_match:
+    in_container: true
+    cgroup_v1: true
+    uid: 0
+execute:
+  # Non-destructive probe — does the container have write access to a v1
+  # cgroup controller? A `test -w` is the honest primitive test; the
+  # actual payload writes a script path to release_agent and triggers.
+  command: |-
+    test -w /sys/fs/cgroup/memory && ls -la /sys/fs/cgroup/memory/release_agent 2>&1
+verify:
+  success: "release_agent"
+cleanup:
+  command: ""
+report:
+  vector_type: container_escape_cgroup_v1_release_agent
+  description: >
+    On cgroup v1, the release_agent file lets a process register a
+    helper program the kernel runs (as root, in the host's namespaces)
+    when the last task in a cgroup exits. A container with write access
+    to the cgroup filesystem can set release_agent to a host-visible
+    script path, spawn a task into a new cgroup, let it die, and the
+    kernel invokes the operator's payload on the host as root. cgroup
+    v2 removed the mechanism.
+  remediation: >
+    Migrate the host to cgroup v2 (default on most modern distros).
+    On hosts stuck on v1, refuse containers that mount the cgroup fs
+    writable — cgroup namespace + read-only mount is the standard
+    hardening.
+  refs: [T1611, CVE-2022-0492, release_agent-escape]

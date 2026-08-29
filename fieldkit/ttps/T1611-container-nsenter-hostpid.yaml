@@ -1,0 +1,45 @@
+# Container escape → nsenter host PID 1 → host root
+#
+# When a container shares the host PID namespace (docker run --pid=host,
+# k8s pod with hostPID: true) AND runs as root, `nsenter --target 1` steps
+# into PID 1's mount/net/uts/ipc/pid namespaces — which are the host's.
+# The operator is now running commands in the host's context.
+#
+# Requires all three: in_container=True, hostpid_visible=True, uid=0.
+technique: T1611
+name: Container escape → nsenter host PID 1 → host root
+tactic: [privilege-escalation, defense-evasion]
+platform: [linux]
+key: container_escape:nsenter_hostpid
+ranking:
+  exploitability: high        # one-shot host root when the preconditions hold
+  safety: config-change        # nsenter is an audited syscall path
+  detection: moderate
+detect:
+  facts_match:
+    in_container: true
+    hostpid_visible: true
+    uid: 0
+execute:
+  # Cross into every namespace PID 1 owns, then `id` — the uid we see is
+  # host root, and the /proc that resolves is the host's.
+  command: |-
+    nsenter --target 1 --mount --uts --ipc --net --pid id
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: container_escape_nsenter_hostpid
+  description: >
+    A container running as root with the host PID namespace shared
+    (hostPID: true / --pid=host) can nsenter into PID 1 — the host's
+    init — and inherit its mount, network, and IPC namespaces. From
+    there, the operator IS on the host, at host root. This is a
+    trivial one-shot escape when the misconfiguration exists.
+  remediation: >
+    Refuse pods/containers that request hostPID unless there's a
+    documented reason. If the workload truly needs host process
+    visibility (a monitoring agent), run it as non-root with dropped
+    capabilities so nsenter isn't a straight path back to uid 0.
+  refs: [T1611, CIS-K8s-5.2.2, docker-security]
