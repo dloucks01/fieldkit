@@ -214,9 +214,14 @@ class CapabilityPortTest(unittest.TestCase):
         self.assertEqual(len(cap_vecs), 1)
         self.assertTrue(cap_vecs[0].evidence.startswith("detected via TTP"))
 
-    def test_cap_setuid_on_interpreter_still_inlined(self):
-        # Not ported to YAML yet (needs per-interpreter templating); the
-        # inlined _cap_vector still handles it.
+    def test_cap_setuid_on_interpreter_now_served_by_ttp(self):
+        # Ported at Phase B5f via the new capability_on_binary predicate.
+        # T1548.001-cap_setuid-python.yaml (and perl/ruby/php) declare a
+        # canon-aware compound predicate; _d_caps retires from
+        # DRIVERS[LINUX] once every case _cap_vector handled has a YAML
+        # counterpart. Evidence carries the `getcap:` template (not the
+        # generic "via TTP" fallback) so operator-facing text stays
+        # legible.
         from fieldkit.hostenum import HostFacts, LINUX
         from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
         _reset_ttp_cache_for_tests()
@@ -226,7 +231,7 @@ class CapabilityPortTest(unittest.TestCase):
             "10.0.0.7")
         cap_vecs = [v for v in vs if v.key == "cap:python"]
         self.assertEqual(len(cap_vecs), 1)
-        self.assertNotIn("via TTP", cap_vecs[0].evidence)
+        self.assertEqual(cap_vecs[0].evidence, "getcap: python cap_setuid")
 
 
 class WindowsPredicateTest(unittest.TestCase):

@@ -968,13 +968,19 @@ def _reset_ttp_cache_for_tests():
 #: with a `suid` variant (bash, sh, dash, find, python, perl, ruby, php,
 #: awk, gawk, env, tar, gdb, make, docker) are now covered by
 #: T1548.001-suid-*.yaml TTPs. The `suid:` predicate in the adapter is now
-#: _canon-aware, so `suid: python` still fires on `python3.8` (the actual
-#: basename lands in `{{binary}}` and the vector key ends `suid:python3.8`).
-#: The GTFO dict + `_gtfo_vector` helper stay exported — they're still used
-#: by `_d_caps` for the interpreter+cap_setuid case.
+#: _canon-aware, so `suid: python` still fires on `python3.8`.
+#:
+#: `_d_caps` was retired at Phase B5f completion — every case the inlined
+#: `_cap_vector` handled (cap_setuid/cap_setgid on the 4 GTFO interpreters
+#: python/perl/ruby/php, cap_dac_read_search, cap_dac_override) is now
+#: covered by T1548.001-cap*.yaml TTPs. The interpreter case landed via a
+#: new `capability_on_binary` predicate that combines a cap name with a
+#: canon-aware binary match (so `binary: python` fires on python3.8 but
+#: not on openssl-with-cap_setuid). The GTFO dict + `_gtfo_vector` /
+#: `_cap_vector` helpers stay exported — they're still called by fieldkit
+#: tests + operator-side introspection.
 DRIVERS = {
-    LINUX: (_d_ttp_yaml, _d_sudo_all, _d_caps,
-            _d_docker_group, _d_sudo_env),
+    LINUX: (_d_ttp_yaml, _d_sudo_all, _d_docker_group, _d_sudo_env),
     WINDOWS: (_d_ttp_yaml, _d_win_aie, _d_win_unquoted,
               _d_win_weak_service, _d_win_writable_service, _d_win_dll_hijack),
 }

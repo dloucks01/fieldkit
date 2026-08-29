@@ -75,7 +75,8 @@ def _parse_detect(doc, source):
     d = _require(doc, "detect", "<root>", source)
     if not isinstance(d, dict) or not d:
         raise LoaderError(f"{source}: detect must be a non-empty mapping, got {d!r}")
-    supported = {"always", "sudo_allows", "suid", "capability", "facts_match",
+    supported = {"always", "sudo_allows", "suid", "capability",
+                 "capability_on_binary", "facts_match",
                  "privilege", "group_member", "version_range",
                  "no_hotfix_from", "all_of"}
     keys = [k for k in d if k in supported]

