@@ -956,12 +956,18 @@ def _reset_ttp_cache_for_tests():
 #: pwnkit). The :data:`KERNEL_LPE` tuple and :func:`kernel_candidates` stay
 #: exported as the pure-Python lookup that pins the port coverage and drives
 #: the reportkb sanity tests.
+#:
+#: `_d_win_lpe` was retired at Phase B5d completion — every entry in the
+#: :data:`WIN_LPE` table (printnightmare, spoolfool, smbghost-2020-0796,
+#: afd-2023-21768, win32k-2021-1732) is now covered by T1068-CVE-*.yaml TTPs
+#: using the compound `all_of[version_range, no_hotfix_from]` predicate. The
+#: :data:`WIN_LPE` tuple and :func:`win_lpe_candidates` stay exported for the
+#: same reason — pure-Python coverage lookup + reportkb pin.
 DRIVERS = {
     LINUX: (_d_ttp_yaml, _d_sudo_all, _d_suid_gtfo, _d_caps,
             _d_docker_group, _d_sudo_env),
     WINDOWS: (_d_ttp_yaml, _d_win_aie, _d_win_unquoted,
-              _d_win_weak_service, _d_win_writable_service, _d_win_dll_hijack,
-              _d_win_lpe),
+              _d_win_weak_service, _d_win_writable_service, _d_win_dll_hijack),
 }
 
 
