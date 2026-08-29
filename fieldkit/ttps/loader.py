@@ -77,8 +77,9 @@ def _parse_detect(doc, source):
         raise LoaderError(f"{source}: detect must be a non-empty mapping, got {d!r}")
     supported = {"always", "sudo_allows", "suid", "capability",
                  "capability_on_binary", "facts_match",
-                 "privilege", "group_member", "version_range",
-                 "no_hotfix_from", "all_of"}
+                 "privilege", "group_member", "linux_group",
+                 "sudo_env_keep_any",
+                 "version_range", "no_hotfix_from", "all_of"}
     keys = [k for k in d if k in supported]
     if not keys:
         raise LoaderError(

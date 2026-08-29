@@ -78,19 +78,28 @@ class LinuxDriverTest(unittest.TestCase):
         self.assertIn("sudo:env-preload",
                       self.keys(self.facts(sudo_env_keep={"LD_PRELOAD"})))
 
-    def test_ld_preload_builds_so_and_fires_concrete_command(self):
-        # with an allowed sudo binary, the vector builds a root .so and preloads it.
+    def test_ld_preload_ttp_is_a_prepared_route(self):
+        # After the B5g port, sudo:env-preload is a prepare-only route
+        # (playbook-driven). The .so build + choice of vehicle sudo
+        # command are the operator's step, not auto-fired at a client
+        # host. The previous "with sudo_binaries → auto-fire concrete
+        # command" branch was collapsed into the playbook — operator
+        # names the allowed command from `sudo -l` and drops the .so.
         f = self.facts(sudo_env_keep={"LD_PRELOAD"}, sudo_binaries={"apache2ctl"})
         v = [x for x in vectors_for(f, "10.0.0.8", stage_lin="/dev/shm")
              if x.key == "sudo:env-preload"][0]
-        self.assertEqual(v.builds, (("so", "/dev/shm/p.so", "id"),))
-        self.assertIn("sudo LD_PRELOAD=/dev/shm/p.so apache2ctl", v.command)
         self.assertEqual(v.report_type, "ld_preload")
+        self.assertTrue(v.manual)                # playbook, not auto-fire
+        self.assertIsNotNone(v.playbook)
+        self.assertIn("/dev/shm/p.so", v.playbook.place)
 
-    def test_ld_preload_without_allowed_binary_stays_guidance(self):
+    def test_ld_preload_without_allowed_binary_still_fires(self):
+        # sudo_env fact alone is enough to raise the finding — the
+        # operator's next step (name a vehicle command, build the .so)
+        # is captured in the playbook, not gated on sudo_binaries.
         f = self.facts(sudo_env_keep={"LD_PRELOAD"})   # no sudo_binaries
         v = [x for x in vectors_for(f, "10.0.0.8") if x.key == "sudo:env-preload"][0]
-        self.assertEqual(v.builds, ())                 # nothing to trigger -> no auto-build
+        self.assertIsNotNone(v.playbook)
 
     def test_sudo_all_suppresses_individual_sudo_gtfo(self):
         keys = self.keys(self.facts(sudo_all=True, sudo_binaries={"find"}))

