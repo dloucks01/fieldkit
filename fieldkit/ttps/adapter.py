@@ -17,7 +17,7 @@ during the port window.
 """
 import re
 
-from ..privesc import Playbook, Vector
+from ..privesc import Playbook, Vector, _canon
 
 
 # -------- version_range predicate helpers ---------------------------------
@@ -96,8 +96,20 @@ def _p_sudo_allows(facts, value):
 
 
 def _p_suid(facts, value):
+    """Matches when ``value`` (a GTFO-canonical binary name) is present in
+    ``facts.suid``. Direct match first; then _canon-stripped match so a TTP
+    that says ``suid: python`` also fires on ``python3.8`` (the inlined
+    :func:`fieldkit.privesc._d_suid_gtfo` did the same via ``_canon``).
+
+    Payload is the ACTUAL basename on the host, so ``{{binary}}`` in the
+    command renders as the file the user can actually invoke (``python3.8``,
+    not the abstract ``python``) and the vector key ends up ``suid:python3.8``.
+    """
     if value in facts.suid:
         return True, value
+    for present in facts.suid:
+        if _canon(present) == value:
+            return True, present
     return False, None
 
 

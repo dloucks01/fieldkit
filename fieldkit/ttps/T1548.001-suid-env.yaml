@@ -1,0 +1,26 @@
+# SUID env → root (GTFOBins)
+technique: T1548.001
+name: SUID env → root (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  suid: env
+execute:
+  # `env <cmd>` invokes <cmd> preserving the SUID EUID. `id` proves root.
+  command: "{{binary}} id"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_suid
+  description: >
+    SUID env passes its argument to execvp() which inherits the SUID
+    EUID (root). Any command runs as root.
+  remediation: >
+    Remove the SUID bit from env.
+  refs: [T1548.001, GTFOBins/env]

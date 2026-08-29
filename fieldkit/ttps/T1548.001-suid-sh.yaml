@@ -1,0 +1,26 @@
+# SUID sh → root (GTFOBins)
+technique: T1548.001
+name: SUID sh → root (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  suid: sh
+execute:
+  command: "{{binary}} -p -c 'id'"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_suid
+  description: >
+    An SUID-root /bin/sh gives an operator a root shell in one call. `-p`
+    keeps the effective UID from the SUID bit.
+  remediation: >
+    Remove the SUID bit (`chmod u-s /bin/sh`). SUID on a shell is never
+    a legitimate default — investigate what set it.
+  refs: [T1548.001, GTFOBins/sh]

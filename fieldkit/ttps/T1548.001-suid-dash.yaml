@@ -1,0 +1,27 @@
+# SUID dash → root (GTFOBins)
+technique: T1548.001
+name: SUID dash → root (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  suid: dash
+execute:
+  command: "{{binary}} -p -c 'id'"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_suid
+  description: >
+    SUID-root dash gives a root shell in one call — same primitive as
+    SUID bash. Debian-family default /bin/sh points at dash, so this
+    lands more often than SUID bash in practice.
+  remediation: >
+    Remove the SUID bit (`chmod u-s /bin/dash`). SUID on a shell is
+    never a legitimate default.
+  refs: [T1548.001, GTFOBins/dash]
