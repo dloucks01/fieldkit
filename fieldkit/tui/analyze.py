@@ -10,7 +10,7 @@ Data flows through :func:`fieldkit.tui.data.opportunities` — the screen
 holds no engine logic, just rendering + selection state. Refreshes every
 few seconds so a new spray/loot round shows up without a manual reload.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -88,7 +88,7 @@ class AnalyzeTitleBar(Static):
     def watch_count(self, _o, _n): self._tick()
 
     def _tick(self):
-        now = datetime.utcnow().strftime("%Y-%m-%d · %H:%M UTC")
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d · %H:%M UTC")
         eng = self.engagement or "(no engagement)"
         count = f"{self.count} move(s) ranked"
         self.update(
@@ -241,6 +241,12 @@ class AnalyzeScreen(Screen):
         # Fires as the cursor moves — detail pane tracks live.
         self._refresh_detail()
 
+    def on_option_list_option_selected(self, _msg):
+        # OptionList captures ⏎ for its own select action (posts this message),
+        # so the screen's `enter` binding never fires when OptionList has focus.
+        # Route the message to the same launcher.
+        self.action_launch_selected()
+
     def action_cursor_down(self):
         # Move highlighted directly — OptionList's own action_cursor_down
         # requires focus and resets highlighted to None when called without it.
@@ -291,17 +297,14 @@ class AnalyzeScreen(Screen):
         self.refresh_data()
 
     def action_launch_selected(self):
-        """⏎ on a move — Ship 5 will push the Escalate confirm screen; for
-        now, drop a notification with the exact command so the operator can
-        copy/paste while we build the launcher."""
+        """⏎ on a move — push the Escalate confirm screen (Ship 5)."""
         opt_list = self.query_one(OptionList)
         visible = self._visible_moves()
         if opt_list.highlighted is None or not visible:
             return
         move = visible[opt_list.highlighted]
-        cmd = move.get("next_step") or "(no runnable next step recorded)"
-        self.app.notify(cmd, title="escalate — copy/paste for now (Ship 5 = full launcher)",
-                        severity="information", timeout=8)
+        from .escalate import EscalateScreen
+        self.app.push_screen(EscalateScreen(move))
 
 
 #: CSS additions for the Analyze screen — merged into APP_TCSS by app.py.

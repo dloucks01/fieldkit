@@ -17,7 +17,7 @@ Reads state directly from the shared SQLite DB — a `fieldkit escalate` or
 `fieldkit spray` running in another terminal writes rows the watcher sees on
 its next poll (interval :data:`POLL_SECS`).
 """
-from datetime import datetime
+from datetime import datetime, timezone
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -288,7 +288,7 @@ class WatchTitleBar(Static):
         self._tick()
 
     def _tick(self):
-        now = datetime.utcnow().strftime("%Y-%m-%d · %H:%M UTC")
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d · %H:%M UTC")
         eng = self.engagement or "(no engagement)"
         self.update(
             f"[bold]FIELDKIT[/bold] · [bold]{eng}[/bold] "
