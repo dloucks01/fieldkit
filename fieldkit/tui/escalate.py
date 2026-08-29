@@ -173,6 +173,13 @@ class EscalateScreen(Screen):
             lines.append(f"\n  {_accent(theme.G.ACTION + ' DETAIL')}")
             lines.append(f"    {_dim(m['detail'])}")
 
+        # SAFE PROOF — the honest read-only demonstration of the primitive.
+        # Shown here (not just on Analyze) because this is the moment the
+        # operator decides whether to escalate or run the proof and stop.
+        if m.get("safe_proof"):
+            lines.append(f"\n  {_accent(theme.G.ACTION + ' SAFE PROOF')}")
+            lines.append(f"    {_dim(m['safe_proof'])}")
+
         self.query_one("#escalate-body", Static).update("\n".join(lines))
 
         # COMMAND (or the reason firing is blocked)
