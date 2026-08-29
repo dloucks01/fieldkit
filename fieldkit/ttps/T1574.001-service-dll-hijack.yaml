@@ -1,0 +1,65 @@
+# Service DLL hijack (writable directory on load path) → SYSTEM
+#
+# A directory the service loads DLLs from is writable by a broad
+# principal. The operator plants a DLL the service search-order-loads
+# but currently doesn't find, restarts the service, and SCM loads
+# the attacker DLL as SYSTEM. Identifying which specific DLL name to
+# use requires Procmon (filter Result=NAME NOT FOUND, Path ends
+# '.dll'), so this is operator-driven. Ported from
+# privesc._d_win_dll_hijack.
+#
+# The predicate DEDUPS against writable service bins — when a service
+# also has a writable binary, the binary overwrite is a simpler and
+# more reliable route, so the DLL hijack vector is suppressed for
+# that service. Mirrors the inlined driver's `if name in
+# facts.writable_service_bins: continue` gate.
+#
+# Emits ONE vector PER (deduped) service in facts.writable_service_dirs.
+technique: T1574.001
+name: service DLL hijack ({{name}}) → SYSTEM
+tactic: [privilege-escalation, defense-evasion]
+platform: [windows]
+key: 'dllhijack:{{name}}'
+ranking:
+  exploitability: medium           # needs Procmon to find the missing DLL name
+  safety: config-change             # plants a DLL in the load path
+  detection: moderate
+detect:
+  writable_service_dirs: true       # value ignored — predicate iterates + dedups
+execute:
+  # Placeholder — the actual plant + restart is operator-driven (see
+  # playbook). Mirrors the inlined driver's `(manual) plant a hijack
+  # DLL in {dir_}, restart {name}`.
+  command: '(manual) plant a hijack DLL in {{dir}}, restart {{name}}'
+  builds:
+    - format: dll
+      as: '{{stage}}\hj_{{slug}}.dll'
+verify:
+  success: "NT AUTHORITY"
+cleanup:
+  command: ''
+report:
+  vector_type: service_dll_hijack
+  evidence: "icacls {{dir}}: writable by a broad group"
+  description: >
+    A directory on the service's DLL search path is writable by a
+    broad principal. Planting a DLL the service search-order-loads
+    but doesn't find (Procmon: NAME NOT FOUND with a .dll path) lets
+    the operator run code inside the service process (SYSTEM).
+  remediation: >
+    Restrict write on every directory the service loads DLLs from —
+    SYSTEM + Administrators only. Also prefer fully-qualified DLL
+    loads (LoadLibraryEx with LOAD_LIBRARY_SEARCH_SYSTEM32) to close
+    search-order hijacks structurally.
+  refs: [T1574.001, service-dll-hijack]
+playbook:
+  summary: >
+    Plant a hijack DLL in {{name}}'s writable directory ({{dir}}).
+    Prepare-only route — identify the target DLL name via Procmon,
+    then plant + restart.
+  place: '{{dir}}'
+  steps:
+    - "find a DLL {{name}} loads but can't find (Procmon: filter Result='NAME NOT FOUND', Path ends '.dll') — call it X.dll"
+    - 'copy /Y {{stage}}\hj_{{slug}}.dll {{dir}}\X.dll   (rename to the missing DLL)'
+    - 'sc stop {{name}} & sc start {{name}}   (or reboot for a boot-start service)'
+  restore: 'del {{dir}}\X.dll {{stage}}\hj_{{slug}}.dll & sc start {{name}}'

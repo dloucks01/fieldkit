@@ -17,7 +17,7 @@ during the port window.
 """
 import re
 
-from ..privesc import Playbook, Vector, _canon
+from ..privesc import Playbook, Vector, _canon, _slug
 
 
 # -------- version_range predicate helpers ---------------------------------
@@ -354,29 +354,142 @@ def _derive_lo_hi(spec):
     return lo, hi
 
 
+# -------- per-item iterable predicates (Windows service abuse) -----------
+#
+# These predicates return a LIST of payload dicts — one per matching service
+# — instead of the single (bool, payload) tuple the classic predicates use.
+# `ttp_to_vectors` detects the list return and emits ONE Vector per payload,
+# so a single TTP YAML can cover N services in facts.<attr>. Mirrors the
+# inlined _d_win_unquoted / _d_win_weak_service / _d_win_writable_service /
+# _d_win_dll_hijack drivers' per-service iteration.
+#
+# The convention: a list return with 0 items = no match (the caller emits
+# nothing); a list with N items = N matches. Non-list returns keep the
+# classic single-fire semantics.
+
+
+def _p_unquoted_services(facts, value):
+    """One payload per entry in ``facts.unquoted_services``, optionally
+    filtered by whether the enumerator recovered a service name.
+
+    HostFacts stores unquoted services as a list of ``(service_name_or_None,
+    path)`` tuples. This yields per-service payloads with:
+      * ``name`` — the service name (or ``"?"`` when unnamed);
+      * ``path`` — the raw unquoted service binPath;
+      * ``candidate`` — the first space-truncated candidate Windows would
+        try to run (``path.split(" ", 1)[0] + ".exe"``) — the file the
+        operator plants;
+      * ``proof`` — where the built payload writes its whoami output.
+
+    ``value`` — optional dict with ``has_name: <bool>`` to filter to the
+    named / unnamed subset. Two TTPs share this predicate: the
+    ``has_name: true`` variant auto-fires (it can `sc stop <name> &
+    sc start <name>`), the ``has_name: false`` variant is
+    guidance-only (mirrors the inlined driver's `if name: … else: …`
+    branch). Omitting the filter returns every unquoted service.
+    """
+    want_named = value.get("has_name") if isinstance(value, dict) else None
+    out = []
+    for entry in getattr(facts, "unquoted_services", None) or ():
+        name, path = entry
+        if want_named is True and not name:
+            continue
+        if want_named is False and name:
+            continue
+        candidate = path.split(" ", 1)[0] + ".exe"
+        out.append({
+            "name": name or "?",
+            "path": path,
+            "candidate": candidate,
+            "proof": "{{stage}}\\up.txt",
+        })
+    return (True, out) if out else (False, None)
+
+
+def _p_reconfigurable_services(facts, value):
+    """One payload per entry in ``facts.reconfigurable_services`` (dict
+    ``name → current_binPath``). Each payload carries:
+      * ``name`` — the service name;
+      * ``binpath`` — the current binPath (needed to restore after the
+        exploit re-configures it);
+      * ``slug`` — sanitized name (``_slug(name)``) for filename-safe use
+        in the proof file path.
+    Sorted by name for deterministic output (matches the inlined driver).
+    """
+    _ = value
+    out = []
+    for name, binpath in sorted((getattr(facts, "reconfigurable_services", None) or {}).items()):
+        out.append({"name": name, "binpath": binpath, "slug": _slug(name)})
+    return (True, out) if out else (False, None)
+
+
+def _p_writable_service_bins(facts, value):
+    """One payload per entry in ``facts.writable_service_bins`` (dict
+    ``name → writable exe path``). Each payload carries:
+      * ``name`` — the service name;
+      * ``exe`` — the writable service binary the operator overwrites;
+      * ``slug`` — sanitized name for a per-service staged filename.
+    """
+    _ = value
+    out = []
+    for name, exe in sorted((getattr(facts, "writable_service_bins", None) or {}).items()):
+        out.append({"name": name, "exe": exe, "slug": _slug(name)})
+    return (True, out) if out else (False, None)
+
+
+def _p_writable_service_dirs(facts, value):
+    """One payload per entry in ``facts.writable_service_dirs`` (dict
+    ``name → writable dir path``), SKIPPING services that also appear in
+    ``facts.writable_service_bins`` — mirrors the inlined
+    ``_d_win_dll_hijack``'s dedup ("a writable binary is the simpler route
+    — don't offer both"). Each surviving payload carries:
+      * ``name`` — the service name;
+      * ``dir`` — the writable directory the operator plants a DLL into;
+      * ``slug`` — sanitized name.
+    """
+    _ = value
+    also_writable_bin = set((getattr(facts, "writable_service_bins", None) or {}).keys())
+    out = []
+    for name, dir_ in sorted((getattr(facts, "writable_service_dirs", None) or {}).items()):
+        if name in also_writable_bin:
+            continue
+        out.append({"name": name, "dir": dir_, "slug": _slug(name)})
+    return (True, out) if out else (False, None)
+
+
 _PREDICATES = {
-    "always":               _p_always,
-    "sudo_allows":          _p_sudo_allows,
-    "suid":                 _p_suid,
-    "capability":           _p_capability,
-    "capability_on_binary": _p_capability_on_binary,
-    "facts_match":          _p_facts_match,
-    "privilege":            _p_privilege,
-    "group_member":         _p_group_member,
-    "linux_group":          _p_linux_group,
-    "sudo_env_keep_any":    _p_sudo_env_keep_any,
-    "version_range":        _p_version_range,
-    "no_hotfix_from":       _p_no_hotfix_from,
-    "all_of":               _p_all_of,
+    "always":                     _p_always,
+    "sudo_allows":                _p_sudo_allows,
+    "suid":                       _p_suid,
+    "capability":                 _p_capability,
+    "capability_on_binary":       _p_capability_on_binary,
+    "facts_match":                _p_facts_match,
+    "privilege":                  _p_privilege,
+    "group_member":               _p_group_member,
+    "linux_group":                _p_linux_group,
+    "sudo_env_keep_any":          _p_sudo_env_keep_any,
+    "version_range":              _p_version_range,
+    "no_hotfix_from":             _p_no_hotfix_from,
+    "all_of":                     _p_all_of,
+    "unquoted_services":          _p_unquoted_services,
+    "reconfigurable_services":    _p_reconfigurable_services,
+    "writable_service_bins":      _p_writable_service_bins,
+    "writable_service_dirs":      _p_writable_service_dirs,
 }
 
 
-def _key_for(ttp, matched_payload):
+def _key_for(ttp, matched_payload, stage=""):
     """Vector key that matches the inlined-driver naming so `vectors_for`'s
-    dedup collapses same-target vectors regardless of source."""
-    # Explicit override wins — used when the TTP's dedup key differs from
-    # the naming default (e.g. SeDebug's key `sedebug` vs vector_type `lsass`).
+    dedup collapses same-target vectors regardless of source.
+
+    When ``ttp.key`` contains ``{{…}}`` template variables and the payload
+    is a dict, the key is rendered per-payload — used by the per-item
+    Windows service TTPs so each service gets a distinct key
+    (``unquoted:C:\\Program Files\\svc.exe`` / ``weakservice:AppMgmt``).
+    """
     if ttp.key:
+        if "{{" in ttp.key and isinstance(matched_payload, dict):
+            return _substitute(ttp.key, matched_payload, stage)
         return ttp.key
     kind = ttp.detect.kind
     if kind == "sudo_allows" and matched_payload:
@@ -413,14 +526,25 @@ def _substitute(command, payload, stage):
 
     Supported:
       * ``{{binary}}`` — the binary basename the predicate matched (a
-        sudo-allowed binary, a cap-carrying binary, …).
+        sudo-allowed binary, a cap-carrying binary, …). When ``payload`` is
+        a string it fills this slot directly.
+      * Any ``{{<key>}}`` where ``<key>`` is a key in ``payload`` (dict) —
+        used by the per-item Windows service predicates whose payloads
+        carry rich context (``{{name}}`` / ``{{path}}`` / ``{{proof}}``…).
       * ``{{stage}}`` — the platform-appropriate staging dir (windows:
         stage_win; linux: stage_lin). Matches the inlined `_win_vector`'s
         ``{stage}`` substitution convention.
     """
+    if command is None:
+        return None
     out = command
-    if payload and isinstance(payload, str) and "{{binary}}" in out:
+    if isinstance(payload, str) and payload and "{{binary}}" in out:
         out = out.replace("{{binary}}", payload)
+    elif isinstance(payload, dict):
+        for key, value in payload.items():
+            token = "{{" + key + "}}"
+            if token in out:
+                out = out.replace(token, str(value))
     if "{{stage}}" in out:
         out = out.replace("{{stage}}", stage)
     return out
@@ -430,33 +554,30 @@ def _render_evidence(ttp, payload, facts):
     """Render ``ttp.report.evidence`` template into the Vector.evidence string.
 
     Supported template variables:
-      * ``{{field}}`` / ``{{version}}`` — from a version_range payload
-        (e.g. ``kernel`` / ``5.15.0``).
-      * ``{{lo}}`` / ``{{hi}}`` — bounds derived from the version_range spec
-        for the payload's field (``5.8`` / ``5.16.11``).
       * ``{{binary}}`` — the basename that a suid/capability/sudo_allows
-        predicate matched.
+        predicate matched (payload is a string);
+      * Any ``{{<key>}}`` where ``<key>`` is a key in ``payload`` (dict)
+        — covers version_range's ``{{field}}``/``{{version}}``/``{{lo}}``/
+        ``{{hi}}`` as well as the per-item service predicates' rich keys
+        (``{{name}}`` / ``{{path}}`` / ``{{binpath}}`` / …).
 
     When no template is declared, falls back to a generic
     ``"detected via TTP T1068 (version_range)"`` — the shape existing TTPs
     already emit.
     """
+    _ = facts
     template = ttp.report.evidence
     if not template:
         return f"detected via TTP {ttp.technique} ({ttp.detect.kind})"
     out = template
     if isinstance(payload, dict):
-        # version_range (or a compound predicate that wraps it) hands back
-        # field/version/lo/hi already extracted, so rendering the template
-        # doesn't need to walk ttp.detect.value — that walk gets fragile
-        # under `all_of` where the version_range spec lives one level down.
-        out = out.replace("{{field}}",   payload.get("field", ""))
-        out = out.replace("{{version}}", payload.get("version", ""))
-        out = out.replace("{{lo}}",      payload.get("lo", "*"))
-        out = out.replace("{{hi}}",      payload.get("hi", "*"))
+        for key, value in payload.items():
+            out = out.replace("{{" + key + "}}", str(value))
+        # Unbound {{lo}}/{{hi}} for a payload that didn't carry them
+        # collapse to '*' — same convention _derive_lo_hi uses.
+        out = out.replace("{{lo}}", "*").replace("{{hi}}", "*")
     elif isinstance(payload, str):
         out = out.replace("{{binary}}", payload)
-    _ = facts
     return out
 
 
@@ -481,66 +602,83 @@ def _build_playbook(ttp, payload, stage):
     )
 
 
-def ttp_to_vector(ttp, facts, ctx):
-    """Return a :class:`Vector` if the TTP applies to these facts, else None.
-
-    Platform filter runs first (a Linux TTP never fires against a Windows host,
-    even if the predicate happens to be satisfiable). Then the predicate.
-    ``{{binary}}`` in the command is substituted with the matched payload so a
-    single TTP can generate host-specific commands (e.g. `{{binary}} /etc/shadow`
-    where `{{binary}}` is whichever binary carries `cap_dac_read_search`).
-    """
-    if facts.os not in ttp.platform:
-        return None
-    predicate = _PREDICATES.get(ttp.detect.kind)
-    if predicate is None:
-        return None
-    matched, payload = predicate(facts, ttp.detect.value)
-    if not matched:
-        return None
+def _build_vector(ttp, payload, facts, ctx, stage):
+    """Assemble one :class:`Vector` from a TTP + matched payload. Split out
+    of :func:`ttp_to_vector` so :func:`ttp_to_vectors` can call it per-item
+    when a predicate hands back a list of payloads (Windows service abuse)."""
     # Shell selection: honor YAML's `execute.shell` if declared, else default
     # per platform (`cmd` on windows, `sh` on linux). Windows TTPs that use
     # PowerShell explicitly set `execute.shell: powershell`.
     shell = ttp.execute.shell or ("cmd" if facts.os == "windows" else "sh")
-    stage = _stage_for(ttp, ctx)
     # For {{binary}} substitution the payload is expected to be a string
-    # (suid/cap/sudo_allows return the matched binary). version_range returns
-    # a dict — pass an empty string so {{binary}} is a no-op there.
-    binary = payload if isinstance(payload, str) else ""
-    # stages: substitute {{stage}} in the remote path so a YAML can say
-    # `as: "{{stage}}\\GodPotato.exe"` and get "C:\Windows\Temp\GodPotato.exe".
+    # (suid/cap/sudo_allows return the matched binary). version_range and
+    # the iterable service predicates return a dict — pass it through so
+    # _substitute renders arbitrary {{key}} tokens.
+    subst = payload if isinstance(payload, (str, dict)) else ""
     stages = tuple(
-        (name, _substitute(remote, binary, stage))
+        (name, _substitute(remote, subst, stage))
         for name, remote in ttp.execute.stages
     )
-    # builds: same {{stage}} / {{binary}} substitution applies to remote_path
-    # and to the build_command (when present). None build_commands pass
-    # through unchanged — matches the inlined driver's "None = poc's default
-    # proof" convention.
     builds = tuple(
         (fmt,
-         _substitute(remote, binary, stage),
-         _substitute(run, binary, stage) if run else None)
+         _substitute(remote, subst, stage),
+         _substitute(run, subst, stage) if run else None)
         for fmt, remote, run in ttp.execute.builds
     )
     return Vector(
-        key=_key_for(ttp, payload),
+        key=_key_for(ttp, payload, stage),
         title=ttp.name,
         exploitability=ttp.ranking.exploitability,
         safety=ttp.ranking.safety,
         detection=ttp.ranking.detection,
-        command=_substitute(ttp.execute.command, binary, stage),
+        command=_substitute(ttp.execute.command, subst, stage),
         shell=shell,
         host=ctx.host,
         detail=ttp.report.description or f"loaded from TTP {ttp.technique}",
         evidence=_render_evidence(ttp, payload, facts),
-        safe_proof=_substitute(ttp.verify.proof, binary, stage) if ttp.verify.proof else None,
-        cleanup=_substitute(ttp.cleanup.command, binary, stage) if ttp.cleanup.command else None,
+        safe_proof=_substitute(ttp.verify.proof, subst, stage) if ttp.verify.proof else None,
+        cleanup=_substitute(ttp.cleanup.command, subst, stage) if ttp.cleanup.command else None,
         report_type=ttp.report.vector_type,
         family=ttp.family or None,
         delivery=ttp.delivery or None,
         stages=stages,
         serves=ttp.execute.serves,
         builds=builds,
-        playbook=_build_playbook(ttp, binary, stage),
+        playbook=_build_playbook(ttp, subst, stage),
     )
+
+
+def ttp_to_vectors(ttp, facts, ctx):
+    """Return every :class:`Vector` this TTP produces against the given facts.
+
+    Most TTPs fire at most once per host and return either ``[]`` or a
+    one-element list. Per-item iterable predicates (the Windows service-abuse
+    quartet: unquoted / weak / writable / dllhijack) return one Vector PER
+    matching service — a single YAML covers N services in ``facts.<attr>``.
+
+    The dispatch is uniform: a predicate that returns ``(True, <list>)``
+    with a list payload triggers per-item emission; anything else
+    (single-payload string / dict / None) emits one Vector.
+    """
+    if facts.os not in ttp.platform:
+        return []
+    predicate = _PREDICATES.get(ttp.detect.kind)
+    if predicate is None:
+        return []
+    matched, payload = predicate(facts, ttp.detect.value)
+    if not matched:
+        return []
+    stage = _stage_for(ttp, ctx)
+    if isinstance(payload, list):
+        return [_build_vector(ttp, item, facts, ctx, stage) for item in payload]
+    return [_build_vector(ttp, payload, facts, ctx, stage)]
+
+
+def ttp_to_vector(ttp, facts, ctx):
+    """Legacy single-vector convenience wrapper. Returns the first Vector
+    :func:`ttp_to_vectors` produces or ``None``. Preserved for existing
+    callers (test suites, single-vector integration checks); the vector
+    emission path uses :func:`ttp_to_vectors` so per-item iteration works.
+    """
+    vs = ttp_to_vectors(ttp, facts, ctx)
+    return vs[0] if vs else None

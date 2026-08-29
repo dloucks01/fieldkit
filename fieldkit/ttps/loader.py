@@ -79,7 +79,9 @@ def _parse_detect(doc, source):
                  "capability_on_binary", "facts_match",
                  "privilege", "group_member", "linux_group",
                  "sudo_env_keep_any",
-                 "version_range", "no_hotfix_from", "all_of"}
+                 "version_range", "no_hotfix_from", "all_of",
+                 "unquoted_services", "reconfigurable_services",
+                 "writable_service_bins", "writable_service_dirs"}
     keys = [k for k in d if k in supported]
     if not keys:
         raise LoaderError(
