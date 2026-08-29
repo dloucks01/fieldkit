@@ -1,0 +1,59 @@
+# Group Policy Object cache discovery → policy-driven attack surface
+#
+# `gpresult /r /scope:computer` (and the /user variant) shows every
+# GPO applied to the host + the OU tree that scoped them. This is
+# often the fastest way to identify:
+#   - LAPS deployment (or absence)
+#   - AppLocker / WDAC rules to bypass
+#   - PowerShell logging + AMSI posture
+#   - LSA protection status
+#   - Scheduled tasks pushed via GPO (potentially misconfigured →
+#     lateral)
+#   - AutoLogon / DefaultDomainName / DefaultUserName leaks
+#
+# On many domains, the GPO cache under
+# %WINDIR%\SYSVOL\sysvol\<domain>\Policies also contains
+# preferences XML worth reading (see T1552.006-gpp-cpassword).
+#
+# Recon-only, ranked low.
+technique: T1615
+name: GPO cache discovery → policy-driven attack surface
+tactic: [discovery]
+platform: [windows]
+key: adroute:gpo-cache-discovery
+ranking:
+  exploitability: low            # recon; produces a map, not a shell
+  safety: read-only
+  detection: quiet                # gpresult is a standard admin tool
+detect:
+  group_member: Domain Users
+execute:
+  # /r summary output, /scope:computer for machine-applied GPOs,
+  # then /scope:user for the current user's GPOs. Both together
+  # give the whole policy picture the foothold is under.
+  command: |-
+    gpresult /r /scope:computer 2>nul & gpresult /r /scope:user 2>nul
+verify:
+  # gpresult prints "Applied Group Policy Objects" whenever it
+  # ran successfully (even with zero applied GPOs).
+  success: "Group Policy"
+cleanup:
+  command: ""
+report:
+  vector_type: kerberoast          # reuse the AD-recon bucket for now
+  evidence: "on a domain (Domain Users); gpresult output available"
+  description: >
+    gpresult reveals every GPO applied to the host, including LAPS
+    status, AppLocker/WDAC rules, PowerShell logging + AMSI
+    posture, LSA protection, and any GPP-deployed scheduled tasks.
+    The output is the operator's fastest read on what's in the
+    way of the next attack (bypass targets) and what's already
+    misconfigured (lateral opportunities).
+  remediation: >
+    gpresult is a legitimate admin tool — no realistic block. The
+    detection signal is context: a workstation account running
+    gpresult /scope:computer + /scope:user in the same shell,
+    close together, is an operator recon signal. Aggregate the
+    signal per-user across time in the SIEM rather than
+    per-invocation.
+  refs: [T1615, group-policy-discovery]

