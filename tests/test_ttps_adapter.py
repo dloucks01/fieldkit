@@ -156,6 +156,75 @@ class DedupTest(unittest.TestCase):
         self.assertNotIn("via TTP", matching[0].evidence)
 
 
+class TemplateSubstitutionTest(unittest.TestCase):
+    """`{{binary}}` in the command is filled from the predicate's matched
+    payload — so one YAML covers N binaries carrying the same capability."""
+
+    def test_binary_template_substituted_from_capability_match(self):
+        from fieldkit.ttps.adapter import ttp_to_vector
+        ttp = _mk_ttp("capability", "cap_dac_read_search",
+                       cmd="{{binary}} /etc/shadow 2>/dev/null | head")
+        v = ttp_to_vector(ttp,
+                           _facts(caps={"openssl": "cap_dac_read_search"}),
+                           _ctx())
+        self.assertIsNotNone(v)
+        self.assertIn("openssl /etc/shadow", v.command)
+        self.assertNotIn("{{binary}}", v.command)
+
+    def test_binary_template_untouched_when_no_placeholder(self):
+        # A YAML without {{binary}} passes through verbatim regardless of
+        # what payload the predicate matched.
+        from fieldkit.ttps.adapter import ttp_to_vector
+        ttp = _mk_ttp("capability", "cap_dac_override",
+                       cmd="echo 'fk::0:0:fk:/root:/bin/bash' >> /etc/passwd")
+        v = ttp_to_vector(ttp, _facts(caps={"cp": "cap_dac_override"}), _ctx())
+        self.assertEqual(v.command, "echo 'fk::0:0:fk:/root:/bin/bash' >> /etc/passwd")
+
+
+class CapabilityPortTest(unittest.TestCase):
+    """The two shipped cap TTPs (B3) supersede the inlined _cap_vector via
+    dedup for the caps they cover; the interpreter+cap_setuid case (not
+    ported) still falls through to the inlined driver."""
+
+    def test_dac_read_search_wins_dedup_over_inlined_cap_vector(self):
+        from fieldkit.hostenum import HostFacts, LINUX
+        from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
+        _reset_ttp_cache_for_tests()
+        vs = vectors_for(
+            HostFacts(os=LINUX, user="alice", uid=1000,
+                      caps={"openssl": "cap_dac_read_search"}),
+            "10.0.0.7")
+        cap_vecs = [v for v in vs if v.key == "cap:openssl"]
+        self.assertEqual(len(cap_vecs), 1)
+        self.assertTrue(cap_vecs[0].evidence.startswith("detected via TTP"))
+
+    def test_dac_override_wins_dedup_over_inlined_cap_vector(self):
+        from fieldkit.hostenum import HostFacts, LINUX
+        from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
+        _reset_ttp_cache_for_tests()
+        vs = vectors_for(
+            HostFacts(os=LINUX, user="alice", uid=1000,
+                      caps={"cp": "cap_dac_override"}),
+            "10.0.0.7")
+        cap_vecs = [v for v in vs if v.key == "cap:cp"]
+        self.assertEqual(len(cap_vecs), 1)
+        self.assertTrue(cap_vecs[0].evidence.startswith("detected via TTP"))
+
+    def test_cap_setuid_on_interpreter_still_inlined(self):
+        # Not ported to YAML yet (needs per-interpreter templating); the
+        # inlined _cap_vector still handles it.
+        from fieldkit.hostenum import HostFacts, LINUX
+        from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
+        _reset_ttp_cache_for_tests()
+        vs = vectors_for(
+            HostFacts(os=LINUX, user="alice", uid=1000,
+                      caps={"python": "cap_setuid"}),
+            "10.0.0.7")
+        cap_vecs = [v for v in vs if v.key == "cap:python"]
+        self.assertEqual(len(cap_vecs), 1)
+        self.assertNotIn("via TTP", cap_vecs[0].evidence)
+
+
 class ShippedTTPsTest(unittest.TestCase):
     """The shipped ~7 sudo TTPs each match their intended binary."""
 

@@ -78,12 +78,26 @@ def _key_for(ttp, matched_payload):
     return f"ttp:{ttp.technique}"
 
 
+def _substitute(command, payload):
+    """Fill template variables in the command with the matched payload.
+
+    Currently supports ``{{binary}}`` — the binary basename the predicate
+    matched (e.g. the binary that carries a capability, or the sudo-allowed
+    binary). Kept intentionally small; extend when a real use case appears.
+    """
+    if payload and isinstance(payload, str) and "{{binary}}" in command:
+        return command.replace("{{binary}}", payload)
+    return command
+
+
 def ttp_to_vector(ttp, facts, ctx):
     """Return a :class:`Vector` if the TTP applies to these facts, else None.
 
     Platform filter runs first (a Linux TTP never fires against a Windows host,
-    even if the predicate happens to be satisfiable). Then the predicate. Command
-    and metadata flow through unchanged from the YAML file.
+    even if the predicate happens to be satisfiable). Then the predicate.
+    ``{{binary}}`` in the command is substituted with the matched payload so a
+    single TTP can generate host-specific commands (e.g. `{{binary}} /etc/shadow`
+    where `{{binary}}` is whichever binary carries `cap_dac_read_search`).
     """
     if facts.os not in ttp.platform:
         return None
@@ -100,12 +114,12 @@ def ttp_to_vector(ttp, facts, ctx):
         exploitability=ttp.ranking.exploitability,
         safety=ttp.ranking.safety,
         detection=ttp.ranking.detection,
-        command=ttp.execute.command,
+        command=_substitute(ttp.execute.command, payload),
         shell=shell,
         host=ctx.host,
         detail=ttp.report.description or f"loaded from TTP {ttp.technique}",
         evidence=f"detected via TTP {ttp.technique} ({ttp.detect.kind})",
-        safe_proof=ttp.verify.proof or None,
-        cleanup=ttp.cleanup.command or None,
+        safe_proof=_substitute(ttp.verify.proof, payload) if ttp.verify.proof else None,
+        cleanup=_substitute(ttp.cleanup.command, payload) if ttp.cleanup.command else None,
         report_type=ttp.report.vector_type,
     )
