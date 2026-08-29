@@ -14,7 +14,9 @@ Phase 0 surface:
 """
 import argparse
 import functools
+import json
 import os
+import signal
 import sqlite3
 import sys
 
@@ -33,6 +35,8 @@ from . import (__version__, adcs as adcs_mod, archive as archive_mod,
                poc as poc_mod,
                postgres as postgres_mod, preflight as preflight_mod, recce as recce_mod,
                recce_transport as recce_transport_mod,
+               status_json as status_json_mod,
+               watch as watch_mod,
                privesc as privesc_mod, provision as provision_mod,
                report as report_mod, scope as scope_mod,
                sharespider as sharespider_mod, spray as spray_mod,
@@ -2010,10 +2014,83 @@ def _next_moves(store, cfg, limit=3):
 
 
 @needs_engagement
+def cmd_watch(args, store):
+    """Stream engagement events as JSONL — one line per new row, forever.
+
+    Consumers (the TUI, or an operator's `jq` pipeline) pass ``--json`` today;
+    the flag is reserved for later non-JSON formats. ``--kinds`` narrows the
+    stream; ``--from-now`` skips existing rows so a fresh watch doesn't dump the
+    full engagement history.
+
+    Ctrl-C exits cleanly with the standard 130. A broken pipe (e.g. `| head`)
+    exits 0 — the caller stopped consuming, not fieldkit's problem.
+    """
+    if not getattr(args, "json", False):
+        _err("`watch` requires --json (reserved for future formats)")
+        return 2
+    kinds = tuple(k.strip() for k in (args.kinds or "").split(",") if k.strip())
+    for k in kinds:
+        if k not in watch_mod.EVENT_KINDS:
+            _err(f"unknown event kind: {k!r} — pick from "
+                 f"{','.join(watch_mod.EVENT_KINDS)}")
+            return 2
+
+    # honor --from-now: prime cursors to current max ids so we only emit rows
+    # that appear after this watch started.
+    if args.from_now:
+        cursors = {}
+        for k in kinds:
+            rows = watch_mod._query_after(store, k, 0)
+            cursors[k] = rows[-1]["id"] if rows else 0
+    else:
+        cursors = None
+
+    # emit a header line first so consumers know the wire version + timestamp
+    header = {
+        "event": "watch_started",
+        "watch_version": watch_mod.WATCH_VERSION,
+        "kinds": list(kinds),
+        "interval": args.interval,
+    }
+    print(watch_mod.dumps(header), flush=True)
+
+    # a mutable flag we can flip from the signal handler
+    running = {"go": True}
+    def _stop(*_): running["go"] = False
+    try:
+        signal.signal(signal.SIGINT, _stop)
+        signal.signal(signal.SIGTERM, _stop)
+    except (ValueError, AttributeError):  # not on main thread / windows quirks
+        pass
+
+    import time as _time
+    for event in watch_mod.watch(
+            store, cursors=cursors, kinds=kinds,
+            sleep=lambda: _time.sleep(args.interval),
+            run=lambda: running["go"]):
+        try:
+            print(watch_mod.dumps(event), flush=True)
+        except BrokenPipeError:  # pragma: no cover — `| head` etc.
+            return 0
+    return 0
+
+
+@needs_engagement
 def cmd_status(args, store):
     row = store.require_engagement()
     cfg = config_mod.load(store)
     counts = store.counts()
+
+    if getattr(args, "json", False):
+        # Machine-readable projection. Includes top-3 moves + current phase so
+        # a consumer (TUI, external script) has the same information the human
+        # status prints, without scraping.
+        phase = _current_phase(counts)
+        moves = _next_moves(store, cfg) if counts.get("access") else []
+        payload = status_json_mod.status_dict(
+            store, cfg=cfg, top_moves=moves, phase=phase)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
 
     print(f"engagement:  {row['name']}   created {row['created']}")
     print(f"database:    {store.path}")
@@ -2757,7 +2834,27 @@ convention.""",
     p_status = sub.add_parser("status", help="the engagement board")
     p_status.add_argument("--hosts", action="store_true", help="list every host")
     p_status.add_argument("--creds", action="store_true", help="list every credential")
+    p_status.add_argument("--json", action="store_true",
+                          help="emit the status as JSON (machine-readable projection); "
+                               "the shape is versioned via `_projection`")
     p_status.set_defaults(func=cmd_status)
+
+    p_watch = sub.add_parser(
+        "watch", help="stream engagement events (JSONL) as they land",
+        description="Polls the engagement DB and emits one JSON line per new "
+                    "step / finding / credential / access / loot row — the seam "
+                    "the TUI (and any external monitor) consumes. Runs until Ctrl-C.")
+    p_watch.add_argument("--json", action="store_true",
+                         help="required — reserved for future non-JSON formats")
+    p_watch.add_argument("--kinds", default=",".join(watch_mod.EVENT_KINDS),
+                         help="comma-separated event kinds to include "
+                              f"(default: {','.join(watch_mod.EVENT_KINDS)})")
+    p_watch.add_argument("--interval", type=float, default=watch_mod.INTERVAL,
+                         help=f"seconds between polls (default: {watch_mod.INTERVAL})")
+    p_watch.add_argument("--from-now", action="store_true",
+                         help="skip existing rows; only emit events that land after "
+                              "this watch started")
+    p_watch.set_defaults(func=cmd_watch)
 
     return parser
 
