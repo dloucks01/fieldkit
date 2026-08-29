@@ -7,7 +7,8 @@ testing. From a credential or a foothold it ingests what you know (creds, hosts,
 output), drives your proven tools (netexec, impacket, evil-winrm, certipy) against the
 scope, runs the credential loop, escalates to SYSTEM/root, and reports only what it
 actually proved. **Standalone — clones to a base Kali box and runs with no install**
-(Python 3 stdlib only; the tools it drives are your existing kit).
+(Python 3 stdlib only for the engine; the tools it drives are your existing kit.
+Optional `bin/fieldkit tui` uses vendored Textual — no `pip install` needed.)
 
 **New here?** → the one-page runbook is **[`QUICKSTART.md`](QUICKSTART.md)**, the visual
 map is **[`WORKFLOW.md`](WORKFLOW.md)**, the deep reference is
@@ -52,9 +53,11 @@ pipx install git+https://github.com/dloucks01/fieldkit.git
 fieldkit preflight
 ```
 
-fieldkit is Python-3-stdlib-only — nothing to resolve, nothing to `pip install`.
-The tools it *drives* (netexec, impacket, msfvenom, evil-winrm, ...) are your
-own kit; `fieldkit preflight` checks which are on `$PATH`.
+fieldkit's engine is Python-3-stdlib-only — nothing to resolve, nothing to `pip
+install`. The tools it *drives* (netexec, impacket, msfvenom, evil-winrm, ...)
+are your own kit; `fieldkit preflight` checks which are on `$PATH`. The
+optional TUI (`bin/fieldkit tui`) ships with vendored Textual so it also
+runs on a fresh clone without `pip install` — see [The TUI](#the-tui) below.
 
 ## Quick start
 
@@ -99,6 +102,30 @@ Riskier vectors need `--allow config-change` (or `crash-risk`); read-only runs f
 (`--db` / `$FIELDKIT_DB`). Every `add cred` echoes its interpretation before storing —
 a wrong-format credential is caught at input, not forty hosts into a spray (`--yes` to skip).
 
+## The TUI
+
+Optional terminal workbench for the ops-time flow — Dashboard / Analyze / Escalate / Watch,
+keyboard-driven, brand-styled with a burnt-orange accent on warm charcoal. Reads the same
+engagement DB; drives the same CLI commands. Textual is vendored (no `pip install`), so it
+runs on a fresh clone.
+
+```bash
+bin/fieldkit tui                                   # opens on the Dashboard
+
+  g   dashboard      counts, phase, top-3 moves, pwned hosts
+  a   analyze        every ranked opportunity + detail pane · ⏎ → escalate confirm
+  e   → analyze      (Escalate is push-only with a highlighted move)
+  w   watch          live event tail — sees steps from another terminal in ~250ms
+  ?   help           keymap overlay
+  q   quit           (Ctrl-C also)
+```
+
+The TUI is a thin client — every action dispatches an existing CLI command; screen state
+reads through `fieldkit status --json` (projection) or the direct SQLite store. Same seam is
+usable for scripting: `fieldkit status --json | jq`, `fieldkit watch --json` for a JSONL
+event stream. Change theme with **Ctrl-P → Change theme** (fieldkit-dark is the default;
+gruvbox / dracula / nord / etc. all recolor live).
+
 ## Design
 
 - **Orchestrate, don't reimplement.** fieldkit is the brain — state, the loop, credential
@@ -117,9 +144,11 @@ a wrong-format credential is caught at input, not forty hosts into a spray (`--y
 
 | Path | What |
 |---|---|
-| `fieldkit/` | the engine — state/config/creds/scope, the loop (`netexec`, `ingest`, `spray`, `dump`, `sharespider`, `fs_scrub`, `wordlist`, `kb`), execution (`transport`, `executor`, `runner`, `hostenum`, `privesc`, `poc`, `classify`, `escalate`, `staging`, `mssql`, `postgres`, `mongodb`), AD depth (`kerberos`, `delegation`, `adcs`, `bloodhound`), evasion (`evasion`, `lab`), reporting (`report`, `reportkb`, `bridge`, `archive`), and the thin `cli` |
+| `fieldkit/` | the engine — state/config/creds/scope, the loop (`netexec`, `ingest`, `recce`, `spray`, `dump`, `sharespider`, `fs_scrub`, `wordlist`, `kb`), execution (`transport`, `recce_transport`, `executor`, `runner`, `hostenum`, `privesc`, `poc`, `classify`, `escalate`, `staging`, `mssql`, `postgres`, `mongodb`), AD depth (`kerberos`, `delegation`, `adcs`, `bloodhound`), evasion (`evasion`, `lab`), reporting (`report`, `reportkb`, `bridge`, `archive`, `status_json`, `watch`), and the thin `cli` |
+| `fieldkit/tui/` | the optional Textual TUI — Dashboard / Analyze / Escalate / Watch |
+| `fieldkit/vendor/` | vendored Textual + Rich + deps (~12 MB); enables `bin/fieldkit tui` without `pip install` |
 | `bin/fieldkit` | run it from a clone without installing |
-| `tests/` | the test suite (~720, ~8s, no network/tools needed) |
+| `tests/` | the test suite (~810, ~20s, no network/tools needed) |
 | `exploits/` | operator-staged binaries/PoCs (air-gap); see `SUPPLIED-BINARIES.md` |
 | `QUICKSTART.md` · `WORKFLOW.md` · `TECHNICAL-GUIDE.md` | operator docs; `ARCHITECTURE.md` = architecture notes |
 | `package.sh` | bundle source + staged exploits into one archive for an air-gapped box |

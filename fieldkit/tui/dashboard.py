@@ -90,18 +90,30 @@ class DashboardTitleBar(Static):
 # --- content blocks --------------------------------------------------------
 
 class MetaBlock(Static):
-    """engagement / database / config summary lines."""
+    """engagement / database / config summary lines. Empty-state gets an
+    honest "run `fieldkit init`" prompt so a fresh clone with no DB doesn't
+    look broken."""
 
     def render_from(self, d):
         engagement = d.engagement_name or "(no engagement)"
         db = d.db_path or "(no db)"
         phase = d.phase_name or "setup"
+        no_engagement = (engagement == "(no engagement)")
         lines = [
             f"  [{theme.C.INK_DIM}]engagement[/]    [bold]{engagement}[/]"
             f"          [{theme.C.INK_DIM}]phase[/]   {_accent(phase)}",
-            f"  [{theme.C.INK_DIM}]database[/]      [bold]{db}[/]",
-            f"  [{theme.C.INK_DIM}]hint[/]          [{theme.C.INK_DIM2}]{d.phase_hint}[/]",
+            f"  [{theme.C.INK_DIM}]database[/]      [bold]{db or '(none — pick with --db)'}[/]",
         ]
+        if no_engagement:
+            lines.append(
+                f"  [{theme.C.INK_DIM}]hint[/]          "
+                f"[{theme.C.ACCENT}]run `fieldkit init '<engagement name>'` to start[/]"
+            )
+        else:
+            lines.append(
+                f"  [{theme.C.INK_DIM}]hint[/]          "
+                f"[{theme.C.INK_DIM2}]{d.phase_hint}[/]"
+            )
         self.update("\n".join(lines))
 
 
