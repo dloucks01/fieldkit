@@ -72,6 +72,18 @@ class ContainerParserTest(unittest.TestCase):
         _p_container(facts, "the docker daemon is installed\ncontainer image list:\n")
         self.assertFalse(facts.in_container)
 
+    def test_cgroup_v1_sentinel_sets_flag(self):
+        from fieldkit.hostenum import HostFacts, LINUX, _p_container
+        facts = HostFacts(os=LINUX)
+        _p_container(facts, "FK-DOCKERENV\nFK-CGROUP-V1\n")
+        self.assertTrue(facts.cgroup_v1)
+
+    def test_hostpid_sentinel_sets_flag(self):
+        from fieldkit.hostenum import HostFacts, LINUX, _p_container
+        facts = HostFacts(os=LINUX)
+        _p_container(facts, "FK-DOCKERENV\nFK-HOSTPID\n")
+        self.assertTrue(facts.hostpid_visible)
+
 
 class ContainerEscapeVectorTest(unittest.TestCase):
     """End-to-end: `vectors_for` on a container-context HostFacts emits the
@@ -121,6 +133,77 @@ class ContainerEscapeVectorTest(unittest.TestCase):
         escapes = {v.key for v in vs
                    if v.report_type.startswith("container_escape")}
         self.assertEqual(escapes, {"container_escape:k8s_sa"})
+
+
+class NsenterHostpidTest(unittest.TestCase):
+    """T1611 nsenter escape gates on root + in_container + hostpid_visible."""
+
+    def _facts(self, **overrides):
+        from fieldkit.hostenum import HostFacts, LINUX
+        base = dict(os=LINUX, user="root", uid=0,
+                     in_container=True, hostpid_visible=True)
+        base.update(overrides)
+        return HostFacts(**base)
+
+    def _has_nsenter(self, facts):
+        from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
+        _reset_ttp_cache_for_tests()
+        vs = vectors_for(facts, "10.0.0.7")
+        return any(v.key == "container_escape:nsenter_hostpid" for v in vs)
+
+    def test_fires_when_root_in_container_with_hostpid(self):
+        self.assertTrue(self._has_nsenter(self._facts()))
+
+    def test_does_not_fire_for_non_root(self):
+        self.assertFalse(self._has_nsenter(self._facts(user="www-data", uid=33)))
+
+    def test_does_not_fire_without_hostpid_visible(self):
+        self.assertFalse(self._has_nsenter(self._facts(hostpid_visible=False)))
+
+    def test_does_not_fire_outside_container(self):
+        self.assertFalse(self._has_nsenter(self._facts(in_container=False)))
+
+
+class CgroupV1ReleaseAgentTest(unittest.TestCase):
+    """T1611 release_agent escape gates on root + in_container + cgroup_v1."""
+
+    def _has_v1(self, **overrides):
+        from fieldkit.hostenum import HostFacts, LINUX
+        from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
+        base = dict(os=LINUX, user="root", uid=0,
+                     in_container=True, cgroup_v1=True)
+        base.update(overrides)
+        _reset_ttp_cache_for_tests()
+        vs = vectors_for(HostFacts(**base), "10.0.0.7")
+        return any(v.key == "container_escape:cgroup_v1_release_agent" for v in vs)
+
+    def test_fires_when_root_v1_container(self):
+        self.assertTrue(self._has_v1())
+
+    def test_does_not_fire_on_cgroup_v2(self):
+        self.assertFalse(self._has_v1(cgroup_v1=False))
+
+
+class HostpathShadowTest(unittest.TestCase):
+    def test_fires_when_root_in_container(self):
+        from fieldkit.hostenum import HostFacts, LINUX
+        from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
+        _reset_ttp_cache_for_tests()
+        vs = vectors_for(HostFacts(os=LINUX, user="root", uid=0, in_container=True),
+                          "10.0.0.7")
+        keys = {v.key for v in vs}
+        self.assertIn("container_escape:hostpath_shadow", keys)
+
+    def test_does_not_fire_on_bare_metal_root(self):
+        # Bare-metal root has legitimate /etc/shadow access; that's the
+        # host's normal state, not an escape.
+        from fieldkit.hostenum import HostFacts, LINUX
+        from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
+        _reset_ttp_cache_for_tests()
+        vs = vectors_for(HostFacts(os=LINUX, user="root", uid=0, in_container=False),
+                          "10.0.0.7")
+        keys = {v.key for v in vs}
+        self.assertNotIn("container_escape:hostpath_shadow", keys)
 
 
 if __name__ == "__main__":

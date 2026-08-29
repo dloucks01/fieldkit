@@ -1,0 +1,54 @@
+# Container escape → hostPath /etc/shadow leaked → offline crack
+#
+# When a Kubernetes hostPath volume mounts a host filesystem into a pod
+# (accidentally or deliberately), files that shouldn't be inside the
+# container become readable. /etc/shadow is the classic tell: if it's
+# readable inside a container, either (a) the container is running as
+# root and shadow got mounted, or (b) a hostPath mount exposes it.
+# Either way, dump + crack offline.
+#
+# This TTP fires whenever /etc/shadow is readable inside a container —
+# the shadow read itself IS the primitive. Uses in_container + uid check
+# to avoid firing on bare-metal (where root reading shadow is normal).
+technique: T1611
+name: Container escape → /etc/shadow leaked via hostPath → offline crack
+tactic: [credential-access, privilege-escalation]
+platform: [linux]
+key: container_escape:hostpath_shadow
+ranking:
+  exploitability: medium       # depends on cracking hashes; still a real path
+  safety: read-only            # just reads /etc/shadow
+  detection: quiet
+detect:
+  facts_match:
+    in_container: true
+    uid: 0              # only meaningful when the container process could open shadow
+execute:
+  # Head /etc/shadow — if the read succeeds, we have hashes; pull them
+  # back for offline hashcat. On a properly-configured container this
+  # returns permission-denied or reads only the container's own passwd.
+  command: |-
+    head /etc/shadow 2>&1 | head -c 300
+verify:
+  # "root:" is present in a shadow line only when we can actually read
+  # a real root-line entry; a permission-denied error wouldn't contain it.
+  success: "root:"
+cleanup:
+  command: ""
+report:
+  vector_type: container_escape_hostpath_shadow
+  description: >
+    A Kubernetes hostPath volume can mount any host directory into a
+    pod. When /etc or /root is mounted, files inside the pod become
+    reads against the host's real filesystem. /etc/shadow readable
+    inside a container almost always means a hostPath misconfiguration
+    (the container image's own /etc/shadow rarely has real user hashes).
+    Pull them back and crack offline; the resulting host-account
+    passwords are the escape.
+  remediation: >
+    In Kubernetes, restrict hostPath via Pod Security Standards
+    (baseline profile disallows most hostPath). If hostPath is truly
+    needed, mount only the specific file/directory the workload
+    requires, `readOnly: true`, and never /etc, /root, /var/lib, or
+    /proc.
+  refs: [T1611, T1552.001, T1003.008, CIS-K8s-5.1.2]

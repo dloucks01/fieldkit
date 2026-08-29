@@ -57,7 +57,14 @@ ENUM_PLAN = {
                   "  /proc/1/cgroup 2>/dev/null && echo 'FK-CGROUP-CONTAINER'; "
                   "test -w /var/run/docker.sock && echo 'FK-DOCKER-SOCK'; "
                   "test -r /var/run/secrets/kubernetes.io/serviceaccount/token "
-                  "  && echo 'FK-K8S-TOKEN'"),
+                  "  && echo 'FK-K8S-TOKEN'; "
+                  # cgroup v1: memory/pids/cpu controllers appear as subdirs.
+                  # cgroup v2 has a single unified hierarchy with cgroup.controllers.
+                  "test -d /sys/fs/cgroup/memory && echo 'FK-CGROUP-V1'; "
+                  # hostPID: /proc/1 is a well-known host init, not a container init.
+                  "read comm < /proc/1/comm 2>/dev/null && "
+                  "  case \"$comm\" in systemd|init|systemd-init) "
+                  "    echo 'FK-HOSTPID' ;; esac"),
     ),
     WINDOWS: (
         EnumCheck("priv", "whoami /priv"),
@@ -118,6 +125,15 @@ class HostFacts:
     #: `True` when /var/run/secrets/kubernetes.io/serviceaccount/token
     #: exists — the pod is running with a mounted k8s service account.
     has_k8s_token: bool = False
+    #: `True` when this host uses cgroup v1 (has /sys/fs/cgroup/memory or
+    #: similar controller subdirs). Relevant to the release_agent escape
+    #: which cgroup v2 patched out — v1 hosts remain exploitable.
+    cgroup_v1: bool = False
+    #: `True` when the container shares its PID namespace with the host,
+    #: detected by /proc/1/comm being a well-known host init (systemd,
+    #: init) rather than a container init (sh, pause, tini). Combined
+    #: with root inside the container this enables nsenter-into-host.
+    hostpid_visible: bool = False
     # -- windows --
     privs: set = field(default_factory=set)            # SeImpersonatePrivilege, ...
     win_groups: set = field(default_factory=set)        # Administrators, Backup Operators, ...
@@ -261,6 +277,10 @@ def _p_container(facts, text):
     if "FK-K8S-TOKEN" in text:
         facts.has_k8s_token = True
         facts.in_container = True     # k8s tokens only appear inside pods
+    if "FK-CGROUP-V1" in text:
+        facts.cgroup_v1 = True
+    if "FK-HOSTPID" in text:
+        facts.hostpid_visible = True
 
 
 def _p_versions(facts, text):
