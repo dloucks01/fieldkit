@@ -157,8 +157,10 @@ class TUIImportTest(unittest.TestCase):
         # Not launching Textual's mainloop; just building the App class.
         from fieldkit.tui.app import FieldkitTUI
         app = FieldkitTUI(db_path=None)
+        # Escalate is push-only (needs a highlighted move from Analyze),
+        # not a named SCREENS entry — so the registered set is 4, not 5.
         self.assertEqual(sorted(app.SCREENS.keys()),
-                         ["analyze", "dashboard", "escalate", "help", "watch"])
+                         ["analyze", "dashboard", "help", "watch"])
 
 
 if __name__ == "__main__":

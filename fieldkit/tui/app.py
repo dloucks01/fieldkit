@@ -23,6 +23,7 @@ from ..state import Store, default_db_path
 from . import theme
 from .analyze import AnalyzeScreen, ANALYZE_TCSS
 from .dashboard import DashboardScreen, DASHBOARD_TCSS
+from .escalate import ESCALATE_TCSS
 from .watch_screen import WatchScreen, WATCH_TCSS
 
 
@@ -73,27 +74,6 @@ def _stub_body(name, ships_in):
     return Static(body, classes="stub")
 
 
-class EscalateScreen(Screen):
-    """Confirm-before-fire launcher. Ship 5."""
-
-    BINDINGS = [
-        Binding("g", "app.switch_screen('dashboard')", "dashboard"),
-        Binding("a", "app.switch_screen('analyze')", "analyze"),
-        Binding("w", "app.switch_screen('watch')", "watch"),
-        Binding("?", "app.push_screen('help')", "help"),
-        Binding("q", "app.quit", "quit"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="frame"):
-            yield TitleBar(id="title-bar")
-            yield _stub_body("Escalate", "Ship 5")
-        yield Footer()
-
-    def on_mount(self):
-        self.query_one(TitleBar).engagement = self.app.engagement_name
-
-
 class HelpScreen(Screen):
     """Translucent-feeling keymap overlay (pushed with ?, closed with esc)."""
 
@@ -142,13 +122,12 @@ class FieldkitTUI(App):
     display and dispatch subprocess `fieldkit` commands for actions.
     """
 
-    CSS = theme.APP_TCSS + DASHBOARD_TCSS + WATCH_TCSS + ANALYZE_TCSS
+    CSS = theme.APP_TCSS + DASHBOARD_TCSS + WATCH_TCSS + ANALYZE_TCSS + ESCALATE_TCSS
     TITLE = "fieldkit"
 
     SCREENS = {
         "dashboard": DashboardScreen,
         "analyze":   AnalyzeScreen,
-        "escalate":  EscalateScreen,
         "watch":     WatchScreen,
         "help":      HelpScreen,
     }
@@ -156,7 +135,9 @@ class FieldkitTUI(App):
     BINDINGS = [
         Binding("g", "switch_screen('dashboard')", "dashboard", show=False),
         Binding("a", "switch_screen('analyze')",   "analyze",   show=False),
-        Binding("e", "switch_screen('escalate')",  "escalate",  show=False),
+        # 'e' routes to Analyze because Escalate is push-only with a selected
+        # move (⏎ from Analyze). No context-less Escalate screen.
+        Binding("e", "switch_screen('analyze')",   "escalate",  show=False),
         Binding("w", "switch_screen('watch')",     "watch",     show=False),
         Binding("?", "push_screen('help')",        "help",      show=False),
         Binding("q", "quit",                       "quit",      show=False),
