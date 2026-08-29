@@ -74,6 +74,11 @@ class DashboardTitleBar(Static):
         self.set_interval(1.0, self._tick)
         self._tick()
 
+    def watch_engagement(self, _old, _new):
+        # Reactive-updated the moment refresh_data assigns the engagement name,
+        # so the first paint doesn't briefly show "(no engagement)".
+        self._tick()
+
     def _tick(self):
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d · %H:%M UTC")
         eng = self.engagement or "(no engagement)"
@@ -101,39 +106,57 @@ class MetaBlock(Static):
 
 
 class CountsBlock(Static):
-    """The one-line count row — HOSTS SERVICES CREDS ADMIN PWND."""
+    """The one-line count row — HOSTS SERVICES CREDS ADMIN PWND.
+
+    Each column is a fixed :data:`_COL_W` characters wide with label + value
+    centered inside. Manual space-padding (the previous approach) broke as
+    soon as a count went above single digits — 103 hosts and 0/0 admin were
+    both off-center. Centering in a known width is guaranteed correct.
+    """
+
+    _COL_W = 12    # cells per column; five columns → 60 char inner width
 
     def render_from(self, d):
         c = d.counts
-        # Two lines: labels on top (dim, uppercase), numbers below (bold, big).
         pwnd = len(d.pwned_hosts)
-        admin = f"[bold]{c.get('admin_access', 0)}[/][{theme.C.INK_DIM}]/{c.get('access', 0)}[/]"
-        pwnd_style = _accent(_fmt_int(pwnd)) if pwnd else _dim(_fmt_int(pwnd))
-        top = (
-            f"     [{theme.C.INK_DIM}]HOSTS[/]"
-            f"       [{theme.C.INK_DIM}]SERVICES[/]"
-            f"     [{theme.C.INK_DIM}]CREDS[/]"
-            f"       [{theme.C.INK_DIM}]ADMIN[/]"
-            f"        [{theme.C.INK_DIM}]PWND[/]")
-        bot = (
-            f"      [bold]{_fmt_int(c['hosts'])}[/]"
-            f"        [bold]{_fmt_int(c['services'])}[/]"
-            f"        [bold]{_fmt_int(c['credentials'])}[/]"
-            f"      {admin}"
-            f"        {pwnd_style}")
+        labels = ["HOSTS", "SERVICES", "CREDS", "ADMIN", "PWND"]
+        values = [
+            str(c["hosts"]),
+            str(c["services"]),
+            str(c["credentials"]),
+            f"{c.get('admin_access', 0)}/{c.get('access', 0)}",
+            str(pwnd),
+        ]
+        # centered-in-column, then wrap the individual cells in style spans
+        top = "  " + "".join(
+            f"[{theme.C.INK_DIM}]{lbl.center(self._COL_W)}[/]"
+            for lbl in labels)
+        # PWND value takes the accent when non-zero — the eye tracks proven wins
+        def _style(i, v):
+            if i == len(values) - 1 and pwnd:
+                return f"[bold {theme.C.ACCENT}]{v.center(self._COL_W)}[/]"
+            return f"[bold]{v.center(self._COL_W)}[/]"
+        bot = "  " + "".join(_style(i, v) for i, v in enumerate(values))
         self.update(f"\n{top}\n{bot}\n")
 
 
 class TopMovesBlock(Static):
-    """Section header + up to three ranked moves, each rendered as 3 lines."""
+    """Section header + up to three ranked moves. Each move renders as four
+    lines at a uniform indent (6 chars) so a vertical scan reads the same
+    left-edge across every move — the header is unindented within its section
+    padding, everything below aligns to its indent."""
+
+    _INDENT = "      "     # 6 chars: matches the visual bay under "▸ TOP MOVES"
 
     def render_from(self, d):
-        out = [f"\n  {_accent(theme.G.ACTION + ' TOP MOVES')}\n"]
+        header = f"  {_accent(theme.G.ACTION + ' TOP MOVES')}"
         if not d.top_moves:
-            out.append(f"    [{theme.C.INK_DIM2}]no opportunities yet — "
-                       f"spray or ingest a recce bridge to populate.[/]")
-            self.update("\n".join(out))
+            self.update(
+                f"\n{header}\n\n{self._INDENT}"
+                f"[{theme.C.INK_DIM2}]no opportunities yet — spray or ingest a "
+                f"recce bridge to populate.[/]\n")
             return
+        parts = [f"\n{header}\n"]
         for m in d.top_moves:
             title = m["title"]
             host = m.get("host") or "—"
@@ -143,32 +166,38 @@ class TopMovesBlock(Static):
                 m.get("detection", "quiet"))
             score = m.get("score", 0)
             next_step = m.get("next_step", "")
-            out.append(f"    {axes_line}")
-            out.append(f"        [bold]{title}[/]")
-            out.append(f"        [{theme.C.INK_DIM}]{host}"
-                       f"[/] [{theme.C.INK_DIM2}]· score {score}[/]")
+            parts.append(f"{self._INDENT}{axes_line}")
+            parts.append(f"{self._INDENT}[bold]{title}[/]")
+            parts.append(f"{self._INDENT}[{theme.C.INK_DIM}]{host}[/]  "
+                         f"[{theme.C.INK_DIM2}]· score {score}[/]")
             if next_step:
-                out.append(f"        {_accent(theme.G.ROUTE + ' ' + next_step)}")
-            out.append("")
-        self.update("\n".join(out))
+                parts.append(f"{self._INDENT}"
+                             f"{_accent(theme.G.ROUTE + '  ' + next_step)}")
+            parts.append("")
+        self.update("\n".join(parts))
 
 
 class PwnedBlock(Static):
-    """List of admin hosts, one per line, DC-marked."""
+    """List of admin hosts, one per line, DC-marked. Consistent 6-char indent
+    matches every other section's content bay."""
+
+    _INDENT = "      "
 
     def render_from(self, d):
-        out = [f"\n  {_accent(theme.G.ACTION + ' PWNED')}"]
+        header = f"  {_accent(theme.G.ACTION + ' PWNED')}"
         if not d.pwned_hosts:
-            out.append(f"    [{theme.C.INK_DIM2}]no hosts pwned yet.[/]")
-            self.update("\n".join(out))
+            self.update(f"\n{header}\n{self._INDENT}"
+                        f"[{theme.C.INK_DIM2}]no hosts pwned yet.[/]")
             return
+        lines = [f"\n{header}"]
         for h in d.pwned_hosts:
             label = h["hostname"] or ""
             ip = h["ip"]
             dc_tag = f"  [{theme.C.GOOD}]{theme.G.PROVEN} DC[/]" if h["is_dc"] else ""
-            row = f"    [bold]{label:<10}[/][{theme.C.INK_DIM}]{ip}[/]{dc_tag}"
-            out.append(row)
-        self.update("\n".join(out))
+            lines.append(
+                f"{self._INDENT}[bold]{label:<10}[/]"
+                f"[{theme.C.INK_DIM}]{ip}[/]{dc_tag}")
+        self.update("\n".join(lines))
 
 
 class DetectionBlock(Static):
@@ -176,10 +205,11 @@ class DetectionBlock(Static):
 
     def render_from(self, d):
         # Detection ledger lands in Phase D; render honest placeholder until then.
+        # Header on its own line, content indented — matches every other section.
         self.update(
-            f"\n  {_accent(theme.G.ACTION + ' DETECTION')}    "
-            f"[{theme.C.INK_DIM2}]ledger — Phase D. "
-            f"For now every action is captured to the step table.[/]")
+            f"\n  {_accent(theme.G.ACTION + ' DETECTION')}\n"
+            f"      [{theme.C.INK_DIM2}]ledger — Phase D. "
+            f"Every action captured to the step table.[/]")
 
 
 class PreflightBlock(Static):
