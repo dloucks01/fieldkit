@@ -135,13 +135,28 @@ def _p_group_member(facts, value):
     return False, None
 
 
+def _resolve_field(facts, path):
+    """Read a HostFacts attribute by dotted path — ``kernel`` returns
+    ``facts.kernel``; ``services.apache`` returns ``facts.services["apache"]``.
+    Returns None for any missing hop. One-level dict indexing is enough for
+    the shipped fact model; deeper paths land when they're needed."""
+    parts = path.split(".", 1)
+    root = getattr(facts, parts[0], None)
+    if len(parts) == 1:
+        return root
+    if isinstance(root, dict):
+        return root.get(parts[1])
+    return None
+
+
 def _p_version_range(facts, value):
     """Matches when every declared field's version satisfies the given
     constraint spec.
 
     ``value`` is a dict ``{field: spec}`` where:
       * ``field`` names a HostFacts version attribute (kernel, sudo_version,
-        pkexec_version, glibc_version, or similar);
+        pkexec_version, glibc_version) OR a dotted path into a dict-valued
+        attribute (``services.apache``, ``services.openssh``);
       * ``spec`` is a comma-separated list of constraints, each of the form
         ``<op><version>`` where op is one of ``<``, ``<=``, ``>``, ``>=``,
         ``==``, ``!=``. All constraints on a field are AND-ed; all fields
@@ -154,7 +169,7 @@ def _p_version_range(facts, value):
     if not isinstance(value, dict):
         return False, None
     for field, spec in value.items():
-        host_v = _parse_version(getattr(facts, field, None))
+        host_v = _parse_version(_resolve_field(facts, field))
         if host_v is None:
             return False, None
         for raw in str(spec).split(","):
