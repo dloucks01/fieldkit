@@ -15,7 +15,61 @@ GTFO/CAPS/PRIVS drivers (``sudo:find``, ``cap:python3``, ``priv:seimpersonate``)
 so :func:`fieldkit.privesc.vectors_for`'s dedup collapses duplicates cleanly
 during the port window.
 """
+import re
+
 from ..privesc import Vector
+
+
+# -------- version_range predicate helpers ---------------------------------
+
+#: The comparison operators the `version_range` predicate supports. Order
+#: matters — the two-char operators must be tried before the single-char
+#: prefixes so ">=" isn't shortened to ">".
+_OP_ORDER = ("<=", ">=", "==", "!=", "<", ">")
+_OPS = {
+    "<":  lambda a, b: a < b,
+    "<=": lambda a, b: a <= b,
+    ">":  lambda a, b: a > b,
+    ">=": lambda a, b: a >= b,
+    "==": lambda a, b: a == b,
+    "!=": lambda a, b: a != b,
+}
+
+_VERSION_RE = re.compile(r"^\s*(\d+(?:\.\d+)*)")
+
+
+def _parse_version(s):
+    """Turn a version string into a normalized 4-tuple of ints. Ignores
+    trailing non-numeric suffixes (`5.15.0-generic` → `(5,15,0,0)`),
+    pads short versions with zeros so tuple compare is honest
+    (`5.15` == `5.15.0.0` == `(5,15,0,0)`).
+
+    Returns None for unparseable input — the predicate treats that as
+    "cannot decide, don't match".
+    """
+    if not s:
+        return None
+    m = _VERSION_RE.match(str(s))
+    if not m:
+        return None
+    parts = tuple(int(x) for x in m.group(1).split("."))
+    while len(parts) < 4:
+        parts = parts + (0,)
+    return parts[:4]
+
+
+def _parse_constraint(spec):
+    """Parse one constraint like ``'>=5.4'`` → ``(op_fn, target_tuple)``.
+    Returns None if the constraint doesn't match the shape."""
+    spec = spec.strip()
+    for op in _OP_ORDER:
+        if spec.startswith(op):
+            v = _parse_version(spec[len(op):])
+            if v is None:
+                return None
+            return _OPS[op], v
+    return None
+
 
 
 def _p_always(facts, value):
@@ -81,6 +135,38 @@ def _p_group_member(facts, value):
     return False, None
 
 
+def _p_version_range(facts, value):
+    """Matches when every declared field's version satisfies the given
+    constraint spec.
+
+    ``value`` is a dict ``{field: spec}`` where:
+      * ``field`` names a HostFacts version attribute (kernel, sudo_version,
+        pkexec_version, glibc_version, or similar);
+      * ``spec`` is a comma-separated list of constraints, each of the form
+        ``<op><version>`` where op is one of ``<``, ``<=``, ``>``, ``>=``,
+        ``==``, ``!=``. All constraints on a field are AND-ed; all fields
+        in the dict are AND-ed. E.g. ``kernel: ">=2.6.22,<=4.8.3"``.
+
+    Missing / unparseable host versions are treated as "cannot decide → no
+    match" so a partially-enumerated host never spuriously fires a version-
+    gated exploit.
+    """
+    if not isinstance(value, dict):
+        return False, None
+    for field, spec in value.items():
+        host_v = _parse_version(getattr(facts, field, None))
+        if host_v is None:
+            return False, None
+        for raw in str(spec).split(","):
+            parsed = _parse_constraint(raw)
+            if parsed is None:
+                return False, None
+            op_fn, target_v = parsed
+            if not op_fn(host_v, target_v):
+                return False, None
+    return True, None
+
+
 _PREDICATES = {
     "always":        _p_always,
     "sudo_allows":   _p_sudo_allows,
@@ -89,6 +175,7 @@ _PREDICATES = {
     "facts_match":   _p_facts_match,
     "privilege":     _p_privilege,
     "group_member":  _p_group_member,
+    "version_range": _p_version_range,
 }
 
 
