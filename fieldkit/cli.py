@@ -2013,6 +2013,16 @@ def _next_moves(store, cfg, limit=3):
     return items[:limit]
 
 
+def cmd_tui(args):
+    """Launch the Textual TUI. The app opens the engagement DB itself so it
+    can render "(no engagement)" instead of crashing on a fresh clone.
+    """
+    from .tui.app import run           # lazy — vendor shim + textual are heavy
+    db = args.db if getattr(args, "db", None) else None
+    run(db_path=db)
+    return 0
+
+
 @needs_engagement
 def cmd_watch(args, store):
     """Stream engagement events as JSONL — one line per new row, forever.
@@ -2838,6 +2848,14 @@ convention.""",
                           help="emit the status as JSON (machine-readable projection); "
                                "the shape is versioned via `_projection`")
     p_status.set_defaults(func=cmd_status)
+
+    p_tui = sub.add_parser(
+        "tui", help="open the terminal workbench (Textual TUI)",
+        description="Launches the interactive TUI — dashboard, analyze, "
+                    "escalate launcher, live event tail — driven from your "
+                    "existing engagement DB. Uses vendored Textual (see "
+                    "fieldkit/vendor/), so no pip install is required.")
+    p_tui.set_defaults(func=cmd_tui)
 
     p_watch = sub.add_parser(
         "watch", help="stream engagement events (JSONL) as they land",

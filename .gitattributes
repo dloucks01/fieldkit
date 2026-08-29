@@ -1,0 +1,3 @@
+# Vendored dependencies — not our code, not counted in language stats, not diffed.
+fieldkit/vendor/** linguist-vendored=true
+fieldkit/vendor/** -diff
