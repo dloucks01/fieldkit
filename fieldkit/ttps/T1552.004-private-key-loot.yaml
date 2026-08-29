@@ -1,0 +1,53 @@
+# Private key loot — SSH / TLS / signing keys readable outside their scope
+#
+# `~/.ssh/id_rsa` mode 0400 owned by the user is the intended
+# resting shape. But sysadmins routinely leave key copies in
+# unusual places: /var/backups, /tmp, /etc/ansible, /opt/deploy,
+# under a service account's home the operator has read on. Each
+# key is a lateral-movement primitive to wherever it was
+# authorized.
+#
+# Genuinely new coverage.
+technique: T1552.004
+name: private key loot → lateral movement
+tactic: [credential-access, lateral-movement]
+platform: [linux]
+key: loot:private-key-loot
+ranking:
+  exploitability: medium
+  safety: read-only
+  detection: quiet
+detect:
+  always: true
+execute:
+  # find surfaces every readable-to-caller PEM/OpenSSH key under
+  # common leak locations. Excluding /proc/sys (kernel keys) and
+  # /snap (immutable read-only snap mounts) keeps output relevant.
+  # The output IS the loot — operator picks which key to
+  # `ssh -i` with next.
+  command: |-
+    find / -type f \( -name 'id_rsa' -o -name 'id_ecdsa' -o -name 'id_ed25519' -o -name 'id_dsa' -o -name '*.pem' -o -name '*.key' \) -readable -not -path '/proc/*' -not -path '/sys/*' -not -path '/snap/*' 2>/dev/null | while read f; do [ -s "$f" ] && head -1 "$f" 2>/dev/null | grep -qE 'BEGIN.*PRIVATE KEY|-----BEGIN OPENSSH PRIVATE KEY-----' && echo "$f"; done | head -30
+verify:
+  # find output contains a file path — any line is a hit.
+  success: "/"
+cleanup:
+  command: ""
+report:
+  vector_type: exposed_secret
+  evidence: "one or more private key files present + readable to the foothold"
+  description: >
+    Private keys — SSH, TLS, signing — end up outside their intended
+    location routinely: backup dirs (/var/backups), ops config
+    trees (/etc/ansible), deploy staging (/opt/deploy), a shared
+    account's home. Each key is a lateral-movement primitive to
+    wherever it was authorized: SSH into other hosts, sign a
+    release with a compromised code-signing key, terminate TLS
+    for a MITM.
+  remediation: >
+    Keep private keys ONLY in `~/.ssh/` mode 0400 owned by the
+    intended user. Sweep known leak locations
+    (/var/backups, /etc, /opt, /tmp) for `id_*` and `*.pem`
+    files as a scheduled audit; any hit is a rotation event.
+    Prefer hardware-backed keys (YubiKey, TPM, KMS) so a file
+    copy has no value.
+  refs: [T1552.004, unsecured-credentials]

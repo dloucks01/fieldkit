@@ -1,0 +1,55 @@
+# Shell history mining → credentials
+#
+# Operators paste creds into shell one-liners all the time — sudo -S
+# password prompts, curl -u user:pass, database CLI passwords, aws
+# access keys typed once for a quick test. Shell history preserves
+# them. Grep across bash / zsh / fish histories for the usual
+# credential patterns.
+#
+# Genuinely new coverage — no inlined predecessor. Ranked medium
+# so it sorts below deterministic privesc vectors but above
+# nothing-found candidates.
+technique: T1552.001
+name: shell history mining → credentials
+tactic: [credential-access]
+platform: [linux]
+key: loot:shell-history-creds
+ranking:
+  exploitability: medium         # depends on what's actually in history
+  safety: read-only              # grep only, no writes
+  detection: quiet
+detect:
+  always: true
+execute:
+  # Grep every user's shell history for the classic credential
+  # patterns. `-h` suppresses filename headers (would leak paths
+  # even on no-match); `2>/dev/null` swallows missing-file noise
+  # from users without one particular shell. Output lines are the
+  # actual credential contexts — the operator reads them and
+  # extracts values.
+  command: |-
+    for h in /root/.bash_history /root/.zsh_history /root/.local/share/fish/fish_history /home/*/.bash_history /home/*/.zsh_history /home/*/.local/share/fish/fish_history; do [ -r "$h" ] && grep -iE 'password|passwd|pass=|secret|token|api[_-]?key|aws_access|aws_secret|-u [^ ]+:|--user [^ ]+ --password' "$h" 2>/dev/null; done | head -50
+verify:
+  # `:` catches `user:pass` in curl -u forms; `=` catches
+  # KEY=value assignments. When either shows up in output, the
+  # grep found something worth reading.
+  success: "="
+cleanup:
+  command: ""
+report:
+  vector_type: exposed_secret
+  evidence: "shell history contained one or more credential-shaped lines"
+  description: >
+    Users pasted credentials into their shell — sudo password prompts
+    caught by history, curl -u, database CLI passwords, cloud SDK
+    tokens typed for one-off tests. Shell history preserves them
+    verbatim. Reading history is the single most productive
+    credential-access primitive on a fresh foothold.
+  remediation: >
+    Configure HISTIGNORE / HISTCONTROL to drop credential-shaped
+    commands (`HISTIGNORE='*password*:*token*:*curl -u *'`). Better
+    yet: use env vars from a password manager or a per-shell
+    `unset HISTFILE` before running credential commands. Rotate
+    any credential found in a history file — it should be treated
+    as compromised.
+  refs: [T1552.001, unsecured-credentials]
