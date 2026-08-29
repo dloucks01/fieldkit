@@ -141,10 +141,12 @@ class DedupTest(unittest.TestCase):
         self.assertIn("via TTP T1548.003", matching[0].evidence,
                        "TTP should win dedup, not inlined driver")
 
-    def test_suid_still_served_by_inlined_driver(self):
-        # SUID mode is not yet ported to YAML — the inlined `_d_suid_gtfo`
-        # still handles it. This asserts the transition: sudo is TTP-served,
-        # SUID stays inlined until Phase B3.
+    def test_suid_now_served_by_ttp_after_b5e(self):
+        # SUID mode was ported to YAML in Phase B5e — every GTFO entry with
+        # a `suid` variant now has a T1548.001-suid-*.yaml, and
+        # `_d_suid_gtfo` was removed from DRIVERS[LINUX]. This asserts the
+        # transition: sudo AND SUID are both TTP-served now; the inlined
+        # driver no longer emits SUID vectors.
         from fieldkit.hostenum import HostFacts, LINUX
         from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
         _reset_ttp_cache_for_tests()
@@ -153,7 +155,9 @@ class DedupTest(unittest.TestCase):
             "10.0.0.7")
         matching = [v for v in vs if v.key == "suid:find"]
         self.assertEqual(len(matching), 1)
-        self.assertNotIn("via TTP", matching[0].evidence)
+        # `evidence` comes from the adapter's default renderer for a TTP
+        # without a `report.evidence` template — same shape sudo TTPs use.
+        self.assertIn("via TTP", matching[0].evidence)
 
 
 class TemplateSubstitutionTest(unittest.TestCase):

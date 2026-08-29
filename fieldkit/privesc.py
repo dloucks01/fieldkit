@@ -963,8 +963,17 @@ def _reset_ttp_cache_for_tests():
 #: using the compound `all_of[version_range, no_hotfix_from]` predicate. The
 #: :data:`WIN_LPE` tuple and :func:`win_lpe_candidates` stay exported for the
 #: same reason — pure-Python coverage lookup + reportkb pin.
+#:
+#: `_d_suid_gtfo` was retired at Phase B5e completion — the 15 GTFO entries
+#: with a `suid` variant (bash, sh, dash, find, python, perl, ruby, php,
+#: awk, gawk, env, tar, gdb, make, docker) are now covered by
+#: T1548.001-suid-*.yaml TTPs. The `suid:` predicate in the adapter is now
+#: _canon-aware, so `suid: python` still fires on `python3.8` (the actual
+#: basename lands in `{{binary}}` and the vector key ends `suid:python3.8`).
+#: The GTFO dict + `_gtfo_vector` helper stay exported — they're still used
+#: by `_d_caps` for the interpreter+cap_setuid case.
 DRIVERS = {
-    LINUX: (_d_ttp_yaml, _d_sudo_all, _d_suid_gtfo, _d_caps,
+    LINUX: (_d_ttp_yaml, _d_sudo_all, _d_caps,
             _d_docker_group, _d_sudo_env),
     WINDOWS: (_d_ttp_yaml, _d_win_aie, _d_win_unquoted,
               _d_win_weak_service, _d_win_writable_service, _d_win_dll_hijack),

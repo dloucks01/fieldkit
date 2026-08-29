@@ -1,0 +1,31 @@
+# SUID bash → root (GTFOBins)
+#
+# `bash -p` preserves the effective UID gained from the SUID bit, giving
+# a root shell in one call. Ported from privesc.GTFO["bash"]["suid"].
+technique: T1548.001
+name: SUID bash → root (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  suid: bash
+execute:
+  command: "{{binary}} -p -c 'id'"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_suid
+  description: >
+    An SUID-root bash gives an operator a root shell in one call — the
+    `-p` flag preserves the effective UID from the SUID bit rather than
+    dropping it as bash normally would.
+  remediation: >
+    Remove the SUID bit from /bin/bash (`chmod u-s /bin/bash`). An SUID
+    shell is never intended in a sane image — hunt for whatever
+    provisioning step set it.
+  refs: [T1548.001, GTFOBins/bash]

