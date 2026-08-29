@@ -1,0 +1,42 @@
+# cap_sys_ptrace → attach to any process → dump creds from memory
+#
+# cap_sys_ptrace lifts the yama/kernel ptrace_scope restriction, letting a
+# binary attach to any process regardless of the target's uid. The classic
+# use: attach to a process that holds credentials in memory (sshd,
+# a browser, a screen with a decrypted keychain) and dump its address
+# space via gcore. Offline the operator greps for strings.
+#
+# The proof command attaches to PID 1 (init/systemd, always present) and
+# reads its status — that alone confirms the primitive without dumping.
+technique: T1548.001
+name: cap_sys_ptrace → attach to any process → credential extraction
+tactic: [privilege-escalation, credential-access]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only          # attach + read; no target-state mutation
+  detection: moderate         # ptrace attaches to non-owned processes show in audit
+detect:
+  capability: cap_sys_ptrace
+execute:
+  command: |-
+    {{binary}} -c 'import ctypes; ctypes.CDLL("libc.so.6").ptrace(16, 1, 0, 0)' 2>&1 || \
+      strace -p 1 -e trace=none 2>&1 | head -1
+verify:
+  # ptrace(PTRACE_ATTACH=16, pid=1) — success = no permission error.
+  # "Operation not permitted" would mean the cap isn't effective.
+  success: "attach"
+cleanup:
+  command: ""
+report:
+  vector_type: capability
+  description: >
+    A binary with cap_sys_ptrace can attach to any process regardless of
+    uid, bypassing yama/kernel ptrace_scope. The operator dumps a
+    credential-holding process (sshd, gpg-agent, ssh-agent, browser) with
+    gcore, then greps the dump offline for keys and passwords.
+  remediation: >
+    Remove the capability: `setcap -r {binary}`. If ptrace is truly needed
+    (a debugger container), scope it via a purpose-built ns/cgroup rather
+    than a filesystem cap on a persistent binary.
+  refs: [T1548.001, T1055.008, T1003.007, capabilities(7)]

@@ -322,6 +322,50 @@ class WindowsPredicateTest(unittest.TestCase):
                          f"sebackup priv + group should dedup to one, got {len(sebackup)}")
 
 
+class NewCapabilityCoverageTest(unittest.TestCase):
+    """B5 shipped 4 new-coverage capability TTPs beyond the ported cap_dac_*
+    pair — cap_sys_ptrace, cap_sys_module, cap_sys_admin, cap_chown. These
+    aren't in the inlined `_cap_vector`, so they represent net-new coverage.
+    Pin they load, match, and produce Vectors with the right key shape."""
+
+    def test_all_four_new_caps_yield_vectors_for_carrying_binary(self):
+        from fieldkit.hostenum import HostFacts, LINUX
+        from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
+        _reset_ttp_cache_for_tests()
+        # Each cap on a different binary; each should produce cap:<binary>.
+        facts = HostFacts(os=LINUX, user="alice", uid=1000, caps={
+            "strace":  "cap_sys_ptrace",
+            "insmod":  "cap_sys_module",
+            "busybox": "cap_sys_admin",
+            "chown":   "cap_chown",
+        })
+        vs = vectors_for(facts, "10.0.0.7")
+        keys = {v.key for v in vs}
+        self.assertIn("cap:strace",  keys)
+        self.assertIn("cap:insmod",  keys)
+        self.assertIn("cap:busybox", keys)
+        self.assertIn("cap:chown",   keys)
+        # All four are TTP-served (not from _cap_vector which never handled them)
+        for v in vs:
+            if v.key.startswith("cap:"):
+                self.assertTrue(v.evidence.startswith("detected via TTP"),
+                                 f"{v.key} unexpectedly from inlined driver")
+
+    def test_new_cap_ttps_substitute_binary_in_command(self):
+        # {{binary}} substitution — pinned again for the new-coverage set
+        # since each command uses it (e.g. `{{binary}} -c '...'`).
+        from fieldkit.hostenum import HostFacts, LINUX
+        from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
+        _reset_ttp_cache_for_tests()
+        vs = vectors_for(
+            HostFacts(os=LINUX, user="alice", uid=1000,
+                      caps={"strace": "cap_sys_ptrace"}),
+            "10.0.0.7")
+        v = next(x for x in vs if x.key == "cap:strace")
+        self.assertIn("strace", v.command)
+        self.assertNotIn("{{binary}}", v.command)
+
+
 class ImpersonationLadderTest(unittest.TestCase):
     """The Potato ladder: privilege list, family/delivery, stages/serves."""
 
