@@ -263,6 +263,64 @@ def _bloodhound_paths(store):
                        "before you act on it.")
 
 
+_RECCE_CRIT_SEV = {"critical", "high"}
+
+
+def _recce_confirmed_finding(store):
+    """Recce-confirmed vulns rank high — they are proven inputs from the survey layer,
+    not guesses to re-prove. Fieldkit's job is to *exploit* them; recce already
+    established they exist. Severity drives the exploitability axis so a critical vuln
+    on a reachable host outranks a medium foothold-privesc lead."""
+    from . import recce as recce_mod
+    for f in store.findings():
+        if f["vector_type"] != recce_mod.VECTOR_CONFIRMED or f["proven"]:
+            continue
+        sev = (f["severity"] or "medium").lower()
+        host = store.host_by_id(f["host_id"]) if f["host_id"] else None
+        where = (host["hostname"] or host["ip"]) if host else "unknown"
+        yield Opportunity(
+            key=f"recce-conf:{f['id']}",
+            title=f["title"] + f" — on {where}",
+            exploitability="high" if sev in _RECCE_CRIT_SEV else "medium",
+            safety="config-change",     # exploitation typically mutates target state
+            detection="moderate",
+            host=host["ip"] if host else None,
+            detail=(f["evidence"] or "") + " — recce already confirmed this "
+                   "weakness; escalate is the next step (or drive the CVE PoC).",
+            evidence=f["evidence"] or "recce confirmed",
+            next_step=(f"fieldkit escalate {host['ip']} --allow config-change   "
+                       "(or drive the CVE-specific PoC from the recce report's refs)")
+                      if host else "escalate against the affected host",
+            safe_proof="recce proved the weakness read-only; running a targeted PoC is "
+                       "the next step — capture the proof step with the safety gate.")
+
+
+def _recce_version_route(store):
+    """Version→CVE lookup routes recce identified but did not prove — worth verifying
+    before escalating. Ranked below confirmed findings but above generic foothold-enum."""
+    from . import recce as recce_mod
+    for f in store.findings():
+        if f["vector_type"] != recce_mod.VECTOR_VERSION_ROUTE or f["proven"]:
+            continue
+        host = store.host_by_id(f["host_id"]) if f["host_id"] else None
+        where = (host["hostname"] or host["ip"]) if host else "unknown"
+        has_cve = "cves:" in (f["evidence"] or "")
+        yield Opportunity(
+            key=f"recce-ver:{f['id']}",
+            title=f["title"] + f" — on {where}",
+            exploitability="medium" if has_cve else "low",
+            safety="read-only",         # a CVE lookup itself is read-only
+            detection="quiet",
+            host=host["ip"] if host else None,
+            detail=(f["evidence"] or "") + " — recce fingerprinted a version with "
+                   "public exploits; verify the CVE applies before escalation.",
+            evidence=f["evidence"] or "",
+            next_step="searchsploit / trickest lookup for the fingerprinted CVE(s); "
+                      "confirm applicability against target state, then escalate.",
+            safe_proof="the lookup itself is offline and touches nothing on the target; "
+                       "verification runs read-only against the service banner.")
+
+
 #: The registry. Append a predicate to extend the KB; order here does not matter —
 #: output is sorted by score.
 PREDICATES = (
@@ -277,6 +335,8 @@ PREDICATES = (
     _adcs_templates,
     _delegation,
     _bloodhound_paths,
+    _recce_confirmed_finding,
+    _recce_version_route,
 )
 
 
