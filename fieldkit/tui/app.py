@@ -227,6 +227,14 @@ class FieldkitTUI(App):
         super().__init__()
         self._db_path = db_path
         self.engagement_name = "(no engagement)"
+        # Register the fieldkit brand theme + set as default HERE (in __init__,
+        # after super's built-in-theme registration) rather than in on_mount —
+        # Textual parses App.CSS during app startup BEFORE on_mount runs, so a
+        # theme registered later would leave `$fk-*` variables unresolved at
+        # parse time. Textual's built-in themes remain registered, so Ctrl-P →
+        # "Change theme" still works: brand is the default, not the only.
+        self.register_theme(theme.FIELDKIT_DARK)
+        self.theme = "fieldkit-dark"
 
     def on_mount(self):
         # Read the engagement name once at startup so the title bar has real

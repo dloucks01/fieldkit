@@ -59,14 +59,61 @@ class ThemeTest(unittest.TestCase):
             self.assertIn(theme.severity_color(sev), palette,
                           f"severity_color({sev!r}) returned an off-palette color")
 
-    def test_app_tcss_uses_only_palette_constants_for_colors(self):
-        # Every hex color in the master CSS must be a value from `C`. No stray
-        # literals — that's the "single source of truth" guarantee.
+    def test_app_tcss_uses_theme_variables_not_hex(self):
+        # Every color in APP_TCSS must reference a Textual theme variable
+        # ($foreground, $accent, $fk-ink-dim, ...) — never a hex literal.
+        # Reason: Textual's theme switcher rebinds the variables, and hex
+        # literals would make the switcher a no-op for those rules.
         from fieldkit.tui import theme
-        palette = {v for k, v in vars(theme.C).items() if not k.startswith("_")}
         hexes = re.findall(r"#[0-9A-Fa-f]{6}", theme.APP_TCSS)
-        for h in hexes:
-            self.assertIn(h, palette, f"APP_TCSS uses off-palette color {h}")
+        self.assertEqual(hexes, [],
+                         f"APP_TCSS should use $variables, not hex: {hexes}")
+        # And there IS at least one variable reference, so we're not just
+        # trivially color-free.
+        self.assertRegex(theme.APP_TCSS, r"\$(foreground|accent|background)")
+
+    def test_fieldkit_dark_theme_maps_palette_to_textual_slots(self):
+        # The Theme object is the second channel the palette flows through
+        # (CSS variables); it must agree with `C` — one place changes color,
+        # both channels update.
+        from fieldkit.tui import theme
+        t = theme.FIELDKIT_DARK
+        self.assertEqual(t.name, "fieldkit-dark")
+        self.assertTrue(t.dark)
+        self.assertEqual(t.primary,    theme.C.ACCENT)
+        self.assertEqual(t.accent,     theme.C.ACCENT)
+        self.assertEqual(t.warning,    theme.C.WARN)
+        self.assertEqual(t.error,      theme.C.CRIT)
+        self.assertEqual(t.success,    theme.C.GOOD)
+        self.assertEqual(t.foreground, theme.C.INK)
+        self.assertEqual(t.background, theme.C.BG)
+        self.assertEqual(t.surface,    theme.C.SURFACE)
+        # We override the built-in Textual variables that matter to the brand.
+        # No custom `$fk-*` vars — those would break the theme switcher.
+        self.assertEqual(t.variables["border"],                 theme.C.RULE)
+        self.assertEqual(t.variables["border-blurred"],         theme.C.RULE)
+        self.assertEqual(t.variables["footer-key-foreground"],  theme.C.ACCENT)
+        self.assertEqual(t.variables["footer-key-background"],  theme.C.BG)
+        self.assertEqual(t.variables["block-cursor-background"], theme.C.ACCENT)
+
+    def test_app_tcss_uses_only_canonical_textual_variables(self):
+        # Every $variable in APP_TCSS must be a canonical Textual variable
+        # (foreground, accent, error, border, etc.) — NOT a custom fk-* var.
+        # Custom vars break the theme switcher: gruvbox/dracula/etc. don't
+        # define them and CSS re-parse fails with UnresolvedVariableError.
+        from fieldkit.tui import theme
+        vars_used = set(re.findall(r"\$([a-z][a-z0-9-]+)", theme.APP_TCSS))
+        self.assertNotIn("fk-ink-dim",  vars_used)
+        self.assertNotIn("fk-ink-dim2", vars_used)
+        self.assertNotIn("fk-rule",     vars_used)
+        # The vars we DO use are all canonical Textual variables
+        canonical = {
+            "background", "foreground", "foreground-muted", "foreground-disabled",
+            "accent", "error", "success", "secondary", "warning", "border",
+            "surface", "panel", "primary", "boost",
+        }
+        for v in vars_used:
+            self.assertIn(v, canonical, f"APP_TCSS uses non-canonical var $${v}")
 
 
 class TUIImportTest(unittest.TestCase):
