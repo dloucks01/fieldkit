@@ -86,6 +86,42 @@ def _top_moves(store, cfg, limit=3):
     return items[:limit]
 
 
+def opportunities(db_path=None, limit=50):
+    """Return every ranked opportunity for the engagement, best-first.
+
+    Same predicates as :func:`_top_moves` but with a larger cap and each move
+    projected into a display-ready dict (so the screen never touches an
+    Opportunity object). A missing DB returns ``[]``.
+    """
+    db = db_path or default_db_path()
+    try:
+        store = Store.open(db)
+    except Exception:  # noqa: BLE001
+        return []
+    try:
+        if store.engagement() is None:
+            return []
+        cfg = config_mod.load(store)
+        moves = _top_moves(store, cfg, limit=limit)
+        return [{
+            "key": getattr(m, "key", ""),
+            "title": getattr(m, "title", ""),
+            "host": getattr(m, "host", None),
+            "axes": getattr(m, "axes", ""),
+            "score": getattr(m, "score", 0),
+            "exploitability": getattr(m, "exploitability", "medium"),
+            "safety": getattr(m, "safety", "read-only"),
+            "detection": getattr(m, "detection", "quiet"),
+            "next_step": getattr(m, "next_step", ""),
+            "detail": getattr(m, "detail", ""),
+            "evidence": getattr(m, "evidence", ""),
+            "safe_proof": getattr(m, "safe_proof", ""),
+            "manual": bool(getattr(m, "manual", False)),
+        } for m in moves]
+    finally:
+        store.close()
+
+
 def dashboard(db_path=None):
     """Read the store and return a fully-populated :class:`DashboardData`.
 
