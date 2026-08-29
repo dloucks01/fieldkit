@@ -118,6 +118,12 @@ class HostFacts:
     sudo_version: str = None                           # e.g. "1.8.31"   (CVE-2021-3156)
     pkexec_version: str = None                         # polkit, e.g. "0.105" (CVE-2021-4034)
     glibc_version: str = None                          # e.g. "2.35"     (CVE-2023-4911)
+    #: Product name (canonicalized, lowercase, single-word) → version string
+    #: for services running on / discovered on this host. Populated by
+    #: :func:`facts_for` from the ``service`` table — recce's bridge ingest
+    #: is the main source. Enables version-gated TTPs via the version_range
+    #: predicate's dotted-path form (``services.apache``, ``services.openssh``).
+    services: dict = field(default_factory=dict)
     # -- linux · container context --
     #: `True` when the foothold is inside a container (docker / podman / k8s
     #: pod). Detected by the presence of /.dockerenv, /run/.containerenv, or
@@ -212,6 +218,36 @@ def run_enum(store, host, cred, *, run=None, on_event=None, allow="read-only"):
 
 # ------------------------------------------------------------------------- parse
 
+#: Pure vendor tokens — skipped when canonicalizing a service product name.
+#: Apache is NOT here — "Apache" IS the product name for httpd, so
+#: `_canon_product("Apache httpd")` should return `"apache"`, not `"httpd"`.
+_PRODUCT_VENDORS = frozenset({"microsoft", "openbsd", "gnu", "the"})
+#: Words that don't identify a product (they describe the shape of one).
+_PRODUCT_GENERIC = frozenset({"httpd", "server", "service", "daemon"})
+
+
+def _canon_product(name):
+    """Turn a service product string into a lowercase single-word key for
+    facts.services. Examples:
+
+      "Apache httpd"        → "apache"
+      "OpenSSH"             → "openssh"
+      "Microsoft IIS httpd" → "iis"      (skip "microsoft" vendor)
+      "nginx"               → "nginx"
+      "Microsoft SQL Server"→ "sql"      (best-effort; TTP can match "sql")
+
+    Returns "" for anything unrecognizable so callers can skip.
+    """
+    if not name:
+        return ""
+    for token in name.lower().split():
+        token = token.strip("()[]{}")
+        if token and token not in _PRODUCT_VENDORS \
+                and token not in _PRODUCT_GENERIC:
+            return token
+    return ""
+
+
 def facts_for(store, host_id):
     """Reparse a host's captured enum steps into :class:`HostFacts`."""
     host = store.conn.execute("SELECT * FROM host WHERE id = ?", (host_id,)).fetchone()
@@ -224,6 +260,19 @@ def facts_for(store, host_id):
         parser = _PARSERS.get(category)
         if parser:
             parser(facts, text)
+    # Fold in service-version data from the store — recce-bridge ingest
+    # populates these; other paths (nmap ingest) also add rows. The
+    # canonicalized product name becomes a facts.services key.
+    if host is not None:
+        for svc in store.services(host_id=host_id):
+            product = _canon_product(svc["product"] or svc["banner"] or "")
+            version = (svc["version"] or "").strip()
+            if product and version:
+                # Preserve the first version encountered per product — a host
+                # running the same service on multiple ports usually reports
+                # the same version; a discrepancy would be an operator-facing
+                # oddity to surface elsewhere, not a TTP-predicate concern.
+                facts.services.setdefault(product, version)
     return facts
 
 
