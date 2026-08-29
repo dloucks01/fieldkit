@@ -1644,9 +1644,20 @@ def cmd_chain_run(args, store):
         print("aborted — nothing ran")
         return 1
 
+    cred_dict = None
+    if args.cred_id:
+        row = store.credential_by_id(args.cred_id)
+        if not row:
+            _err(f"no credential #{args.cred_id} in this engagement")
+            return 2
+        cred_dict = {"domain": row["domain"], "username": row["username"],
+                     "password": row["password"]}
+
     class _Ctx:
         probe_port = args.probe_port
         probe_timeout = args.probe_timeout
+        listener_uri = args.listener
+        cred = cred_dict
 
     def _render(chain, step, outcome):
         marker = {"ok": "  ok ", "manual": " man ", "skip": "skip ",
@@ -2717,6 +2728,15 @@ the spec is missing that field. `--from-file` reads one credential per line.
                        help="reachability probe TCP port (default: 445 for SMB)")
     c_run.add_argument("--probe-timeout", type=float, default=3.0,
                        help="reachability probe timeout in seconds (default: 3.0)")
+    c_run.add_argument("--listener", metavar="SMB_URI",
+                       help="SMB URI the coerce points at (e.g. "
+                            r"\\10.0.0.5\share). D3's listener will set this "
+                            "automatically; for now, either point at your "
+                            "own smbserver or omit to hand off manually.")
+    c_run.add_argument("--cred-id", type=int, metavar="ID",
+                       help="credential id to use for auth to the target's "
+                            "MS-EFSR endpoint (see `fieldkit list creds`); "
+                            "modern DCs require it.")
     c_run.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
     c_run.set_defaults(func=cmd_chain_run)
 
