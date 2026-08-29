@@ -32,19 +32,22 @@ class DriverRetirementTest(unittest.TestCase):
         from fieldkit.privesc import DRIVERS, WINDOWS, _d_win_aie
         self.assertNotIn(_d_win_aie, DRIVERS[WINDOWS])
 
-    def test_iterable_service_drivers_stay_inlined_for_now(self):
-        # These four still need per-item iteration in the adapter — they
-        # emit ONE Vector per service in facts.<attr>, and the current
-        # predicate model fires ONCE per host. Next slice lands the
-        # iteration surface and closes DRIVERS[WINDOWS] to (_d_ttp_yaml,).
+    def test_iterable_service_drivers_retired_at_b5i(self):
+        # B5h left these four inlined pending per-item iteration; B5i
+        # landed `ttp_to_vectors` + iterable predicates
+        # (unquoted_services / reconfigurable_services /
+        # writable_service_bins / writable_service_dirs) and retired
+        # them. DRIVERS[WINDOWS] is now (_d_ttp_yaml,) — the whole
+        # B-phase port arc closes here.
         from fieldkit.privesc import (
-            DRIVERS, WINDOWS,
+            DRIVERS, WINDOWS, _d_ttp_yaml,
             _d_win_unquoted, _d_win_weak_service,
             _d_win_writable_service, _d_win_dll_hijack,
         )
+        self.assertEqual(DRIVERS[WINDOWS], (_d_ttp_yaml,))
         for d in (_d_win_unquoted, _d_win_weak_service,
                    _d_win_writable_service, _d_win_dll_hijack):
-            self.assertIn(d, DRIVERS[WINDOWS])
+            self.assertNotIn(d, DRIVERS[WINDOWS])
 
 
 class AIETTPTest(unittest.TestCase):

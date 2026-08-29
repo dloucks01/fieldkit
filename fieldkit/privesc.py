@@ -900,11 +900,15 @@ def _d_ttp_yaml(facts, ctx):
     """Load and yield vectors from every fieldkit-TTP YAML that applies to
     these facts. TTPs are loaded once per process and cached; the library is
     small enough that eager loading is fine, and file-system latency at engine
-    boot beats a cache miss during an escalate loop."""
-    from .ttps.adapter import ttp_to_vector
+    boot beats a cache miss during an escalate loop.
+
+    Uses :func:`ttp_to_vectors` (plural) so per-item iterable predicates —
+    the Windows service-abuse quartet — can emit one Vector per matching
+    service from a single YAML.
+    """
+    from .ttps.adapter import ttp_to_vectors
     for ttp in _cached_ttps():
-        vector = ttp_to_vector(ttp, facts, ctx)
-        if vector is not None:
+        for vector in ttp_to_vectors(ttp, facts, ctx):
             yield vector
 
 
@@ -990,15 +994,26 @@ def _reset_ttp_cache_for_tests():
 #: `_d_win_aie` was retired at Phase B5h completion — AlwaysInstallElevated
 #: now flows through T1548.002-alwaysinstallelevated.yaml using
 #: `facts_match: {always_install_elevated: true}` and the newly-shipped
-#: `execute.builds` schema field (which every remaining Windows service TTP
-#: also needs — the schema extension is the load-bearing piece of this
-#: slice). The 4 iterable Windows service drivers (unquoted / weak /
-#: writable / dllhijack) stay inlined until the per-item iteration adapter
-#: extension lands.
+#: `execute.builds` schema field.
+#:
+#: `_d_win_unquoted` + `_d_win_weak_service` + `_d_win_writable_service` +
+#: `_d_win_dll_hijack` were retired at Phase B5i completion — the four
+#: iterable Windows service drivers. Landed via per-item iteration in the
+#: adapter (`ttp_to_vectors` returns a list; predicates that hand back a
+#: list of payloads get one Vector emitted per item) plus four dedicated
+#: predicates that iterate `facts.unquoted_services` / `.reconfigurable_services`
+#: / `.writable_service_bins` / `.writable_service_dirs`. The dllhijack
+#: predicate DEDUPS against writable-bin services so a service with both a
+#: writable binary AND a writable load dir gets one Vector (the simpler
+#: binary-overwrite route), matching the inlined driver's `if name in
+#: facts.writable_service_bins: continue` gate.
+#:
+#: With this slice the WHOLE B-phase port arc closes: both DRIVERS[LINUX]
+#: and DRIVERS[WINDOWS] reduce to ``(_d_ttp_yaml,)``. Every privesc vector
+#: fieldkit emits now flows through the YAML+adapter path.
 DRIVERS = {
     LINUX: (_d_ttp_yaml,),
-    WINDOWS: (_d_ttp_yaml, _d_win_unquoted, _d_win_weak_service,
-              _d_win_writable_service, _d_win_dll_hijack),
+    WINDOWS: (_d_ttp_yaml,),
 }
 
 

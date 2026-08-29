@@ -1,0 +1,44 @@
+# Unquoted service path (unnamed) → SYSTEM — guidance only
+#
+# Sibling to T1574.010-unquoted-service-path.yaml. Fires when the
+# enumerator captured an unquoted binPath but couldn't recover the
+# service name (registry hierarchy walk didn't join back to a
+# service key). Without a name the operator can't `sc stop / sc start`,
+# so this variant is guidance-only — no builds, no auto-fire.
+# Mirrors the inlined _d_win_unquoted's `if name: … else: …` else
+# branch.
+technique: T1574.010
+name: unquoted service path (?) → SYSTEM
+tactic: [privilege-escalation]
+platform: [windows]
+key: 'unquoted:{{path}}'
+ranking:
+  exploitability: medium
+  safety: config-change
+  detection: moderate
+detect:
+  unquoted_services: {has_name: false}
+execute:
+  # Guidance line — the operator identifies the service by grepping
+  # the registry for the binPath, then plants + restarts manually.
+  command: 'REM plant a payload at {{candidate}}, then: sc stop <svc> & sc start <svc>'
+  # No builds — without a service name the escalate loop can't fire
+  # the vector on its own, so nothing to auto-build.
+verify:
+  success: "NT AUTHORITY"
+cleanup:
+  command: 'del {{candidate}}'
+report:
+  vector_type: unquoted_service
+  evidence: "unquoted service path: {{path}}"
+  description: >
+    Same primitive as the named variant, but the enumerator only
+    captured the binPath value, not the service name that carries
+    it. Operator names the service (grep the registry for the
+    binPath), plants the payload, then restarts.
+  remediation: >
+    Quote the service's ImagePath value:
+    `sc config <svc> binPath= "\"C:\\Program Files\\...\""`.
+    Or ensure no intermediate directory on the path is writable by
+    non-admins.
+  refs: [T1574.010, unquoted-service-path]

