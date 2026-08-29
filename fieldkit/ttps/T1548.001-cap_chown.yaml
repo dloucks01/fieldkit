@@ -1,0 +1,47 @@
+# cap_chown → arbitrary chown → own /etc/passwd → root
+#
+# cap_chown lets a binary change the owner+group of any file. Combined
+# with the ability to WRITE (which cap_chown itself doesn't grant, but
+# ownership + a mode allowing owner-write typically does), an operator
+# takes ownership of /etc/passwd, then appends a UID-0 line. Even without
+# owner-write, taking ownership of a service binary can lead to
+# subsequent execution.
+#
+# The proof chowns /etc/passwd back to itself (a no-op that requires the
+# cap) — nothing changes, but the operation succeeding confirms the
+# primitive.
+technique: T1548.001
+name: cap_chown → arbitrary chown → own /etc/passwd → root
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change      # ownership changes matter even at the same-owner level (mtime)
+  detection: moderate
+detect:
+  capability: cap_chown
+execute:
+  # A no-op ownership set — the operation requires cap_chown to succeed
+  # against a file the operator doesn't own. `stat -c %U` reads the
+  # current owner; chowning back to the same owner is safe and proves
+  # the cap is effective.
+  command: |-
+    {{binary}} -c 'import os,pwd; s=os.stat("/etc/passwd"); os.chown("/etc/passwd", s.st_uid, s.st_gid)' 2>&1 && \
+      echo "chown-proof: OK (cap_chown effective)"
+verify:
+  success: "OK"
+cleanup:
+  command: ""                # the chown was a no-op set-to-current
+report:
+  vector_type: capability
+  description: >
+    A binary with cap_chown can change the owner+group of any file. The
+    standard exploit takes ownership of /etc/passwd (or /etc/shadow) and
+    appends a UID-0 line via subsequent writes. Even without follow-on
+    write access, taking ownership of a SUID root binary or a service
+    executable often enables subsequent lateral or persistence steps.
+  remediation: >
+    Remove the capability: `setcap -r {binary}`. cap_chown grants
+    ownership changes across the whole filesystem — very few
+    legitimate binaries need it.
+  refs: [T1548.001, capabilities(7)]

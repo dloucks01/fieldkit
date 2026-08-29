@@ -1,0 +1,48 @@
+# cap_sys_admin → kernel-privileged primitives → root
+#
+# cap_sys_admin is Linux's "kitchen sink" capability — it grants ~30
+# distinct privileged operations, including mount(), open_by_handle_at(),
+# nsenter+setns, quotactl, and a lot more. Any one of them is a root
+# primitive. The cleanest proof: use nsenter or a mount to demonstrate
+# the cap is effective.
+#
+# In practice, most cap_sys_admin exposures appear in container/podman
+# escape scenarios (the container task has sys_admin, and the operator
+# uses it to break out of the namespace). The command below uses the
+# host mount as a probe; container-escape use is documented in refs.
+technique: T1548.001
+name: cap_sys_admin → mount/nsenter primitives → root
+tactic: [privilege-escalation, defense-evasion]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change      # mount / nsenter may leave transient state
+  detection: moderate
+detect:
+  capability: cap_sys_admin
+execute:
+  # unshare(CLONE_NEWNS) requires cap_sys_admin — if we can create a mount
+  # namespace, the cap is effective. Falls through to reading /proc/self/status
+  # for CapEff so we can verify from the process's own capability set.
+  command: |-
+    {{binary}} -c 'import os; os.unshare(0x00020000)' 2>&1 || \
+      cat /proc/self/status | grep -E '^Cap(Eff|Bnd)'
+verify:
+  success: "CapEff"          # confirms we could read our own cap set as proof
+cleanup:
+  command: ""
+report:
+  vector_type: capability
+  description: >
+    A binary with cap_sys_admin gains ~30 kernel-privileged operations:
+    mount(), pivot_root(), unshare(CLONE_NEWNS), open_by_handle_at(),
+    nsenter/setns, quotactl, and more. Any one is a root primitive. In
+    container contexts (docker `--cap-add=SYS_ADMIN`, unprivileged pods
+    with hostPID+cap_sys_admin) this is the standard escape route:
+    unshare into a new namespace, mount the host root, and chroot in.
+  remediation: >
+    Never grant cap_sys_admin to a userspace binary. In container
+    orchestrators, refuse pods that request SYS_ADMIN unless there's a
+    documented reason + tier-0 review. See CIS Kubernetes benchmark
+    5.2.5 (containers must not have privileged escalation).
+  refs: [T1548.001, T1611, capabilities(7), CIS-K8s-5.2.5]

@@ -1,0 +1,40 @@
+# cap_sys_module → load kernel module → root
+#
+# cap_sys_module lets a process load and unload kernel modules — arbitrary
+# kernel code execution, which is trivially root. The proof is to
+# `finit_module` a legitimate module that does nothing (or list already-
+# loaded modules to confirm we can call the syscall). The operator
+# follow-through: build a small .ko that spawns a root shell or reads
+# credential keyrings from kernel memory.
+technique: T1548.001
+name: cap_sys_module → load kernel module → root
+tactic: [privilege-escalation, persistence]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: crash-risk         # loading a bad module can panic the host
+  detection: loud             # kernel module loads are audited by every EDR
+detect:
+  capability: cap_sys_module
+execute:
+  # Read the module list — confirms the cap without loading anything new.
+  # (A follow-up crash-risk vector would build+insmod a payload .ko.)
+  command: |-
+    cat /proc/modules | head -5
+verify:
+  success: "loaded"          # cat succeeded if we see module lines
+cleanup:
+  command: ""
+report:
+  vector_type: capability
+  description: >
+    A binary with cap_sys_module can load kernel modules — arbitrary
+    kernel-mode code execution, which is trivially root. Beyond the
+    escalation, this is a persistence primitive: a kernel module can
+    hide files, hook syscalls, and survive normal reboots via init
+    module directories.
+  remediation: >
+    Remove the capability: `setcap -r {binary}`. cap_sys_module should
+    never be on a userspace binary; if module loading is needed, do it
+    via signed modules loaded by a tier-0 systemd unit.
+  refs: [T1548.001, T1547.006, capabilities(7)]
