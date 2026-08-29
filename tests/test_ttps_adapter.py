@@ -225,6 +225,103 @@ class CapabilityPortTest(unittest.TestCase):
         self.assertNotIn("via TTP", cap_vecs[0].evidence)
 
 
+class WindowsPredicateTest(unittest.TestCase):
+    """Windows-specific predicates + templating for the Phase B4 port."""
+
+    def test_privilege_predicate_matches_priv_in_set(self):
+        from fieldkit.ttps.adapter import ttp_to_vector
+        ttp = _mk_ttp("privilege", "SeBackupPrivilege", platform=("windows",))
+        v = ttp_to_vector(ttp,
+                           _facts(os="windows", privs={"SeBackupPrivilege"}),
+                           _ctx())
+        self.assertIsNotNone(v)
+
+    def test_privilege_predicate_no_match_when_priv_absent(self):
+        from fieldkit.ttps.adapter import ttp_to_vector
+        ttp = _mk_ttp("privilege", "SeBackupPrivilege", platform=("windows",))
+        self.assertIsNone(
+            ttp_to_vector(ttp, _facts(os="windows", privs=set()), _ctx()))
+
+    def test_group_member_predicate_matches_group(self):
+        from fieldkit.ttps.adapter import ttp_to_vector
+        ttp = _mk_ttp("group_member", "Backup Operators", platform=("windows",))
+        v = ttp_to_vector(ttp,
+                           _facts(os="windows", win_groups={"Backup Operators"}),
+                           _ctx())
+        self.assertIsNotNone(v)
+
+    def test_stage_template_substituted_from_ctx(self):
+        # {{stage}} is filled from ctx.stage_win on windows.
+        from fieldkit.ttps.adapter import ttp_to_vector
+        ttp = _mk_ttp("privilege", "SeBackupPrivilege", platform=("windows",),
+                       cmd="reg save HKLM\\SAM {{stage}}\\sam")
+        v = ttp_to_vector(ttp,
+                           _facts(os="windows", privs={"SeBackupPrivilege"}),
+                           _ctx())
+        self.assertIn("C:\\Windows\\Temp\\sam", v.command)
+        self.assertNotIn("{{stage}}", v.command)
+
+    def test_shell_field_from_yaml_overrides_platform_default(self):
+        # A Windows TTP with `execute.shell: powershell` sets Vector.shell.
+        from fieldkit.ttps.adapter import ttp_to_vector
+        from fieldkit.ttps.schema import (
+            Cleanup, Detect, Execute, Ranking, Report, TTP, Verify,
+        )
+        ttp = TTP(
+            technique="T1003.001", name="test",
+            tactic=("credential-access",), platform=("windows",),
+            ranking=Ranking(exploitability="high", safety="config-change",
+                             detection="loud"),
+            detect=Detect(kind="privilege", value="SeDebugPrivilege"),
+            execute=Execute(command="dump lsass", shell="powershell"),
+            verify=Verify(success="ok"),
+            cleanup=Cleanup(),
+            report=Report(vector_type="lsass"),
+        )
+        v = ttp_to_vector(ttp,
+                           _facts(os="windows", privs={"SeDebugPrivilege"}),
+                           _ctx())
+        self.assertEqual(v.shell, "powershell")
+
+    def test_explicit_key_field_overrides_default_naming(self):
+        # SeDebug pattern: dedup key differs from report vector_type.
+        from fieldkit.ttps.adapter import ttp_to_vector
+        from fieldkit.ttps.schema import (
+            Cleanup, Detect, Execute, Ranking, Report, TTP, Verify,
+        )
+        ttp = TTP(
+            technique="T1003.001", name="test",
+            tactic=("credential-access",), platform=("windows",),
+            ranking=Ranking(exploitability="high", safety="config-change",
+                             detection="loud"),
+            detect=Detect(kind="privilege", value="SeDebugPrivilege"),
+            execute=Execute(command="dump"),
+            verify=Verify(success="ok"),
+            cleanup=Cleanup(),
+            report=Report(vector_type="lsass"),
+            key="sedebug",
+        )
+        v = ttp_to_vector(ttp,
+                           _facts(os="windows", privs={"SeDebugPrivilege"}),
+                           _ctx())
+        self.assertEqual(v.key, "sedebug")
+        self.assertEqual(v.report_type, "lsass")
+
+    def test_sebackup_and_backup_operators_dedup_to_one_vector(self):
+        # Different fact source (priv vs group) but same vector_type → same key
+        # → dedup collapses them to one entry in Analyze.
+        from fieldkit.hostenum import HostFacts, WINDOWS
+        from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
+        _reset_ttp_cache_for_tests()
+        vs = vectors_for(
+            HostFacts(os=WINDOWS, privs={"SeBackupPrivilege"},
+                      win_groups={"Backup Operators"}),
+            "10.0.0.7", stage_win="C:\\Windows\\Temp")
+        sebackup = [v for v in vs if v.key == "sebackup"]
+        self.assertEqual(len(sebackup), 1,
+                         f"sebackup priv + group should dedup to one, got {len(sebackup)}")
+
+
 class ShippedTTPsTest(unittest.TestCase):
     """The shipped ~7 sudo TTPs each match their intended binary."""
 

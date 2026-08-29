@@ -75,7 +75,8 @@ def _parse_detect(doc, source):
     d = _require(doc, "detect", "<root>", source)
     if not isinstance(d, dict) or not d:
         raise LoaderError(f"{source}: detect must be a non-empty mapping, got {d!r}")
-    supported = {"always", "sudo_allows", "suid", "capability", "facts_match"}
+    supported = {"always", "sudo_allows", "suid", "capability", "facts_match",
+                 "privilege", "group_member"}
     keys = [k for k in d if k in supported]
     if not keys:
         raise LoaderError(
@@ -96,7 +97,11 @@ def _parse_execute(doc, source):
     if transport and not all(isinstance(t, str) for t in transport):
         raise LoaderError(
             f"{source}: execute.transport must be a list of strings, got {transport!r}")
-    return Execute(command=command, transport=transport)
+    shell = e.get("shell") or ""
+    if shell and shell not in ("cmd", "powershell", "sh"):
+        raise LoaderError(
+            f"{source}: execute.shell must be one of cmd/powershell/sh, got {shell!r}")
+    return Execute(command=command, transport=transport, shell=shell)
 
 
 def _parse_verify(doc, source):
@@ -164,6 +169,10 @@ def load_file(path):
     for p in platform_list:
         _require_in(p, VALID_PLATFORMS, f"platform[{platform_list.index(p)}]", source)
 
+    key = doc.get("key") or ""
+    if key and not isinstance(key, str):
+        raise LoaderError(f"{source}: top-level `key` must be a string, got {key!r}")
+
     return TTP(
         technique=technique,
         name=name,
@@ -175,6 +184,7 @@ def load_file(path):
         verify=_parse_verify(doc, source),
         cleanup=_parse_cleanup(doc, source),
         report=_parse_report(doc, source),
+        key=key,
         source_path=path,
     )
 

