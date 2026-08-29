@@ -986,10 +986,19 @@ def _reset_ttp_cache_for_tests():
 #: (rendered into the evidence template's `{{binary}}` slot). The Linux
 #: driver list is now ``(_d_ttp_yaml,)`` — every Linux privesc vector
 #: fieldkit emits comes from a YAML TTP.
+#:
+#: `_d_win_aie` was retired at Phase B5h completion — AlwaysInstallElevated
+#: now flows through T1548.002-alwaysinstallelevated.yaml using
+#: `facts_match: {always_install_elevated: true}` and the newly-shipped
+#: `execute.builds` schema field (which every remaining Windows service TTP
+#: also needs — the schema extension is the load-bearing piece of this
+#: slice). The 4 iterable Windows service drivers (unquoted / weak /
+#: writable / dllhijack) stay inlined until the per-item iteration adapter
+#: extension lands.
 DRIVERS = {
     LINUX: (_d_ttp_yaml,),
-    WINDOWS: (_d_ttp_yaml, _d_win_aie, _d_win_unquoted,
-              _d_win_weak_service, _d_win_writable_service, _d_win_dll_hijack),
+    WINDOWS: (_d_ttp_yaml, _d_win_unquoted, _d_win_weak_service,
+              _d_win_writable_service, _d_win_dll_hijack),
 }
 
 

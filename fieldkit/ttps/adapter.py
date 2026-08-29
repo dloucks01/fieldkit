@@ -513,6 +513,16 @@ def ttp_to_vector(ttp, facts, ctx):
         (name, _substitute(remote, binary, stage))
         for name, remote in ttp.execute.stages
     )
+    # builds: same {{stage}} / {{binary}} substitution applies to remote_path
+    # and to the build_command (when present). None build_commands pass
+    # through unchanged — matches the inlined driver's "None = poc's default
+    # proof" convention.
+    builds = tuple(
+        (fmt,
+         _substitute(remote, binary, stage),
+         _substitute(run, binary, stage) if run else None)
+        for fmt, remote, run in ttp.execute.builds
+    )
     return Vector(
         key=_key_for(ttp, payload),
         title=ttp.name,
@@ -531,5 +541,6 @@ def ttp_to_vector(ttp, facts, ctx):
         delivery=ttp.delivery or None,
         stages=stages,
         serves=ttp.execute.serves,
+        builds=builds,
         playbook=_build_playbook(ttp, binary, stage),
     )
