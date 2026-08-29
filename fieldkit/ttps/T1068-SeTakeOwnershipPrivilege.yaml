@@ -1,0 +1,36 @@
+# SeTakeOwnershipPrivilege → own a SYSTEM file → SYSTEM
+#
+# SeTakeOwnership lets a token take ownership of any securable object;
+# from ownership the operator rewrites the ACL to grant themselves Full
+# Control, then replaces a service EXE or DLL that SYSTEM will load. The
+# command shipped here is the takeown+icacls part; the follow-through
+# (replace + restart service) is per-target and handled via `fieldkit prep`.
+technique: T1068
+name: SeTakeOwnership → own a SYSTEM file → SYSTEM
+tactic: [privilege-escalation]
+platform: [windows]
+ranking:
+  exploitability: medium
+  safety: config-change     # rewrites ACL on a SYSTEM file
+  detection: moderate
+detect:
+  privilege: SeTakeOwnershipPrivilege
+execute:
+  command: |-
+    takeown /f C:\Windows\System32\<target> && icacls C:\Windows\System32\<target> /grant %USERNAME%:F
+verify:
+  success: "SUCCESS"
+cleanup:
+  command: ""               # ACL restoration is per-target; operator handles
+report:
+  vector_type: setakeownership
+  description: >
+    SeTakeOwnership grants the token the ability to take ownership of any
+    securable object regardless of DACL. Combined with takeown+icacls, the
+    operator can own and rewrite the ACL of any SYSTEM-owned file — the
+    typical exploit path replaces a service EXE or DLL that SYSTEM will
+    load on start.
+  remediation: >
+    Restrict SeTakeOwnership to tier-0. Alert on `takeown` invocations
+    against %SystemRoot%\System32 by non-tier-0 principals.
+  refs: [T1068, T1543.003]

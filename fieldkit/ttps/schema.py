@@ -66,9 +66,12 @@ class Detect:
 class Execute:
     """The target-side proof command. ``transport`` (optional) constrains which
     transports the executor may pick — otherwise the auto-selection rules from
-    :mod:`fieldkit.transport` apply."""
+    :mod:`fieldkit.transport` apply. ``shell`` overrides the platform default
+    (cmd on windows, sh on linux) — Windows TTPs that need PowerShell set
+    ``shell: powershell``."""
     command: str
     transport: tuple = ()
+    shell: str = ""
 
 
 @dataclass(frozen=True)
@@ -112,6 +115,12 @@ class TTP:
     verify: Verify
     cleanup: Cleanup
     report: Report
+    #: Optional dedup key override. When set, this is the Vector.key value
+    #: (used by `vectors_for`'s seen-set dedup). Only set when the natural
+    #: key from `_key_for` doesn't match the inlined driver's key — e.g.
+    #: SeDebug uses key `sedebug` but reports as vector_type `lsass`. Most
+    #: TTPs omit this; the adapter's default naming rules match cleanly.
+    key: str = field(default="")
     #: Source path of the YAML file — populated by the loader, used in error
     #: messages when a TTP misbehaves at runtime.
     source_path: str = field(default="")

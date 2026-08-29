@@ -56,18 +56,41 @@ def _p_facts_match(facts, value):
     return True, None
 
 
+def _p_privilege(facts, value):
+    """Windows: matches when `value` (a privilege token, e.g. `SeBackupPrivilege`)
+    is present in facts.privs. Payload is the priv name so the vector's evidence
+    can name it."""
+    if value in facts.privs:
+        return True, value
+    return False, None
+
+
+def _p_group_member(facts, value):
+    """Windows: matches when `value` (a group name, e.g. `Backup Operators`)
+    is present in facts.win_groups."""
+    if value in facts.win_groups:
+        return True, value
+    return False, None
+
+
 _PREDICATES = {
-    "always":       _p_always,
-    "sudo_allows":  _p_sudo_allows,
-    "suid":         _p_suid,
-    "capability":   _p_capability,
-    "facts_match":  _p_facts_match,
+    "always":        _p_always,
+    "sudo_allows":   _p_sudo_allows,
+    "suid":          _p_suid,
+    "capability":    _p_capability,
+    "facts_match":   _p_facts_match,
+    "privilege":     _p_privilege,
+    "group_member":  _p_group_member,
 }
 
 
 def _key_for(ttp, matched_payload):
     """Vector key that matches the inlined-driver naming so `vectors_for`'s
     dedup collapses same-target vectors regardless of source."""
+    # Explicit override wins — used when the TTP's dedup key differs from
+    # the naming default (e.g. SeDebug's key `sedebug` vs vector_type `lsass`).
+    if ttp.key:
+        return ttp.key
     kind = ttp.detect.kind
     if kind == "sudo_allows" and matched_payload:
         return f"sudo:{matched_payload}"
@@ -75,19 +98,36 @@ def _key_for(ttp, matched_payload):
         return f"suid:{matched_payload}"
     if kind == "capability" and matched_payload:
         return f"cap:{matched_payload}"
+    # For privilege/group_member predicates, use the report.vector_type as the
+    # key — this matches how the inlined WIN_PRIVS/WIN_GROUPS tables set both
+    # SeBackupPrivilege and "Backup Operators" to key=`sebackup`, so dedup
+    # collapses them to one vector regardless of which fact matched.
+    if kind in ("privilege", "group_member"):
+        return ttp.report.vector_type
     return f"ttp:{ttp.technique}"
 
 
-def _substitute(command, payload):
-    """Fill template variables in the command with the matched payload.
+def _substitute(command, payload, ctx):
+    """Fill template variables in the command with the matched payload / ctx.
 
-    Currently supports ``{{binary}}`` — the binary basename the predicate
-    matched (e.g. the binary that carries a capability, or the sudo-allowed
-    binary). Kept intentionally small; extend when a real use case appears.
+    Supported:
+      * ``{{binary}}`` — the binary basename the predicate matched (a
+        sudo-allowed binary, a cap-carrying binary, …).
+      * ``{{stage}}`` — the platform-appropriate staging dir from ctx
+        (Windows: ``ctx.stage_win``; Linux: ``ctx.stage_lin``). Matches the
+        inlined `_win_vector`'s ``{stage}`` substitution convention.
     """
-    if payload and isinstance(payload, str) and "{{binary}}" in command:
-        return command.replace("{{binary}}", payload)
-    return command
+    out = command
+    if payload and isinstance(payload, str) and "{{binary}}" in out:
+        out = out.replace("{{binary}}", payload)
+    if "{{stage}}" in out:
+        stage = getattr(ctx, "stage_win", None) or getattr(ctx, "stage_lin", None) or ""
+        # Pick per-platform when both are set (impersonation TTPs will use win).
+        # For now the ctx passes both; the YAML's platform disambiguates via
+        # which TTP is running — Windows TTPs read stage_win, Linux stage_lin.
+        # The ctx already has the right one loaded for the acting OS.
+        out = out.replace("{{stage}}", stage)
+    return out
 
 
 def ttp_to_vector(ttp, facts, ctx):
@@ -107,19 +147,22 @@ def ttp_to_vector(ttp, facts, ctx):
     matched, payload = predicate(facts, ttp.detect.value)
     if not matched:
         return None
-    shell = "cmd" if facts.os == "windows" else "sh"
+    # Shell selection: honor YAML's `execute.shell` if declared, else default
+    # per platform (`cmd` on windows, `sh` on linux). Windows TTPs that use
+    # PowerShell explicitly set `execute.shell: powershell`.
+    shell = ttp.execute.shell or ("cmd" if facts.os == "windows" else "sh")
     return Vector(
         key=_key_for(ttp, payload),
         title=ttp.name,
         exploitability=ttp.ranking.exploitability,
         safety=ttp.ranking.safety,
         detection=ttp.ranking.detection,
-        command=_substitute(ttp.execute.command, payload),
+        command=_substitute(ttp.execute.command, payload, ctx),
         shell=shell,
         host=ctx.host,
         detail=ttp.report.description or f"loaded from TTP {ttp.technique}",
         evidence=f"detected via TTP {ttp.technique} ({ttp.detect.kind})",
-        safe_proof=_substitute(ttp.verify.proof, payload) if ttp.verify.proof else None,
-        cleanup=_substitute(ttp.cleanup.command, payload) if ttp.cleanup.command else None,
+        safe_proof=_substitute(ttp.verify.proof, payload, ctx) if ttp.verify.proof else None,
+        cleanup=_substitute(ttp.cleanup.command, payload, ctx) if ttp.cleanup.command else None,
         report_type=ttp.report.vector_type,
     )
