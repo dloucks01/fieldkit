@@ -140,12 +140,15 @@ Footer {{
     background: {C.BG};
     color: {C.INK_DIM};
 }}
-Footer > .footer--key {{
+FooterKey {{
+    background: {C.BG};
+}}
+FooterKey > .footer-key--key {{
     color: {C.ACCENT};
     background: {C.BG};
     text-style: bold;
 }}
-Footer > .footer--description {{
+FooterKey > .footer-key--description {{
     color: {C.INK_DIM};
     background: {C.BG};
 }}
@@ -154,7 +157,6 @@ Footer > .footer--description {{
 .stub {{
     color: {C.INK_DIM};
     padding: 2 4;
-    text-align: center;
 }}
 .stub-glyph {{
     color: {C.ACCENT};
