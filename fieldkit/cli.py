@@ -1591,6 +1591,115 @@ def _domain_credential(store):
     return None
 
 
+# ------------------------------------------------------------- coerce chains
+
+@needs_engagement
+def cmd_chain_plan(args, store):
+    """Show the ordered steps of a chain profile without firing them.
+
+    D1 lands only the reachability preflight; every subsequent step
+    prints its manual-outcome message so the operator sees exactly
+    where the chain will hand off pending D2/D3/D4 slice landings.
+    """
+    from . import chain as chain_mod
+    _ = store
+    try:
+        factory = chain_mod.profile(args.profile)
+    except KeyError as exc:
+        _err(str(exc))
+        return 2
+    ch = factory(args.target)
+    print(f"chain plan: {ch.profile} → {ch.target}")
+    print(f"  {len(ch.steps)} steps, aggregate detection cost = "
+          f"{sum(s.detection_cost for s in ch.steps)}")
+    for i, s in enumerate(ch.steps):
+        marker = "*" if i == 0 else " "
+        print(f"  {marker} {i}. {s.name:30s}  [{s.kind:14s}]  cost={s.detection_cost}")
+    print()
+    print("plan only — nothing fired. `fieldkit chain run` walks it.")
+    return 0
+
+
+@needs_engagement
+def cmd_chain_run(args, store):
+    """Walk every step of a chain profile against a target, persist
+    the trail. Manual outcomes advance; fail / skip aborts.
+
+    Exit codes:
+      * 0 — chain proven (every step ok/manual)
+      * 1 — chain aborted mid-walk (fail or skip)
+      * 2 — bad invocation (unknown profile, etc.)
+    """
+    from . import chain as chain_mod
+    try:
+        factory = chain_mod.profile(args.profile)
+    except KeyError as exc:
+        _err(str(exc))
+        return 2
+    ch = factory(args.target)
+    if not _confirm(f"walk chain {args.profile} against {args.target}?  "
+                    f"({len(ch.steps)} steps, aggregate detection cost = "
+                    f"{sum(s.detection_cost for s in ch.steps)})",
+                    args.yes):
+        print("aborted — nothing ran")
+        return 1
+
+    class _Ctx:
+        probe_port = args.probe_port
+        probe_timeout = args.probe_timeout
+
+    def _render(chain, step, outcome):
+        marker = {"ok": "  ok ", "manual": " man ", "skip": "skip ",
+                  "fail": "FAIL "}[outcome.kind]
+        print(f"  {marker} {step.name:30s}  {outcome.evidence}")
+
+    chain_mod.walk(ch, _Ctx(), on_step=_render)
+    chain_id = store.add_chain(ch)
+    total_cost = ch.total_detection_cost
+    print(f"\nchain #{chain_id}  status={ch.status}  detection cost so far = {total_cost}")
+    if ch.aborted_reason:
+        print(f"aborted: {ch.aborted_reason}")
+        return 1
+    manual = [o for o in ch.outcomes if o.kind == "manual"]
+    if manual:
+        print(f"{len(manual)} step(s) need operator hands — see the trail above")
+    return 0
+
+
+@needs_engagement
+def cmd_chain_list(args, store):
+    """Every recorded chain, newest first. Optional --profile filter."""
+    rows = store.chains(profile=args.profile)
+    if not rows:
+        print("no chains recorded yet — try `fieldkit chain plan esc8 <dc-ip>`")
+        return 0
+    print(f"{'id':>4}  {'profile':10}  {'target':16}  {'status':12}  {'cost':>5}  started")
+    for r in rows:
+        print(f"{r['id']:>4}  {r['profile']:10}  {r['target']:16}  {r['status']:12}  "
+              f"{r['total_detection_cost']:>5}  {r['started_at'] or '-'}")
+    return 0
+
+
+@needs_engagement
+def cmd_chain_show(args, store):
+    """The per-step trail of one recorded chain."""
+    row = store.chain_by_id(args.chain_id)
+    if not row:
+        _err(f"no chain #{args.chain_id} in this engagement")
+        return 2
+    print(f"chain #{row['id']}: {row['profile']} → {row['target']}")
+    print(f"  status={row['status']}  detection cost={row['total_detection_cost']}")
+    print(f"  started {row['started_at'] or '-'}  finished {row['finished_at'] or '-'}")
+    if row["aborted_reason"]:
+        print(f"  aborted: {row['aborted_reason']}")
+    trail = store.chain_step_trail(args.chain_id)
+    print(f"\ntrail ({len(trail)} steps):")
+    for t in trail:
+        print(f"  {t['idx']:>2}. {t['step_name']:30s}  [{t['step_kind']:14s}]  "
+              f"{t['outcome_kind']:6s}  cost={t['detection_cost']}  {t['evidence']}")
+    return 0
+
+
 @needs_engagement
 def cmd_roast(args, store):
     dcs = [h for h in store.hosts() if h["is_dc"]]
@@ -2578,6 +2687,49 @@ the spec is missing that field. `--from-file` reads one credential per line.
                          help="which roast (default: both)")
     p_roast.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
     p_roast.set_defaults(func=cmd_roast)
+
+    # ------------------------------------------------------- coerce chains
+    p_chain = sub.add_parser(
+        "chain",
+        help="orchestrate multi-step coerce chains (ESC8, RBCD, SMB-relay-exec)",
+        description="fieldkit's charter piece: coerce a target to authenticate to a "
+                    "fieldkit-hosted relay, then walk the outcome (cert, TGT, RBCD ACL) "
+                    "into DA. D1 lands the state machine + reachability preflight only; "
+                    "the coerce primitive (D2), relay wrap (D3), and post-relay actions "
+                    "(D4) hand off manually until their slices ship.")
+    chain_sub = p_chain.add_subparsers(dest="chain_command", metavar="<action>")
+
+    from . import chain as _chain_mod
+    _chain_choices = _chain_mod.known_profiles() or ["esc8"]
+
+    c_plan = chain_sub.add_parser(
+        "plan", help="show the ordered steps of a chain profile without firing")
+    c_plan.add_argument("profile", choices=_chain_choices,
+                        help="chain profile to plan")
+    c_plan.add_argument("target", help="chain target (DC IP for esc8, etc.)")
+    c_plan.set_defaults(func=cmd_chain_plan)
+
+    c_run = chain_sub.add_parser(
+        "run", help="walk every step of a chain profile against a target")
+    c_run.add_argument("profile", choices=_chain_choices, help="chain profile to run")
+    c_run.add_argument("target", help="chain target (DC IP for esc8, etc.)")
+    c_run.add_argument("--probe-port", type=int, default=445,
+                       help="reachability probe TCP port (default: 445 for SMB)")
+    c_run.add_argument("--probe-timeout", type=float, default=3.0,
+                       help="reachability probe timeout in seconds (default: 3.0)")
+    c_run.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
+    c_run.set_defaults(func=cmd_chain_run)
+
+    c_list = chain_sub.add_parser(
+        "list", help="every recorded chain in this engagement, newest first")
+    c_list.add_argument("--profile", choices=_chain_choices,
+                        help="filter to one profile (default: all)")
+    c_list.set_defaults(func=cmd_chain_list)
+
+    c_show = chain_sub.add_parser(
+        "show", help="the per-step trail of one recorded chain")
+    c_show.add_argument("chain_id", type=int, help="chain id from `fieldkit chain list`")
+    c_show.set_defaults(func=cmd_chain_show)
 
     p_bh = sub.add_parser("bloodhound", help="ingest SharpHound data + find owned→DA paths")
     bh_sub = p_bh.add_subparsers(dest="bloodhound_command", metavar="<action>")

@@ -257,9 +257,49 @@ _V5 = [
     """,
 ]
 
+#: v6 lands the coerce-chain state: one row per chain run in
+#: :data:`coerce_chain`, one row per walked step in :data:`chain_step`.
+#: These persist chain history so `fieldkit chain list` / `chain show <id>`
+#: can render past runs and the D6 detection-debt aggregate can be
+#: computed offline from the trail. Kept separate from the ``finding``
+#: table because a chain isn't (yet) a finding — the terminal step may
+#: promote a chain's outcome to a finding, but the intermediate trail
+#: is chain-specific and clogging findings with per-step rows would
+#: make the report unreadable.
+_V6 = [
+    """
+    CREATE TABLE coerce_chain (
+        id                    INTEGER PRIMARY KEY,
+        profile               TEXT NOT NULL,
+        target                TEXT NOT NULL,
+        status                TEXT NOT NULL,       -- planned|in_progress|proven|aborted
+        aborted_reason        TEXT,
+        total_detection_cost  INTEGER NOT NULL DEFAULT 0,
+        artifacts_json        TEXT NOT NULL DEFAULT '{}',
+        started_at            TEXT,
+        finished_at           TEXT,
+        created               TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE chain_step (
+        id                INTEGER PRIMARY KEY,
+        chain_id          INTEGER NOT NULL REFERENCES coerce_chain(id) ON DELETE CASCADE,
+        idx               INTEGER NOT NULL,        -- step order within the chain
+        step_name         TEXT NOT NULL,
+        step_kind         TEXT NOT NULL,           -- preflight|target-side|attacker-side
+        outcome_kind      TEXT NOT NULL,           -- ok|skip|fail|manual
+        evidence          TEXT NOT NULL DEFAULT '',
+        detection_cost    INTEGER NOT NULL DEFAULT 0,
+        ran_at            TEXT NOT NULL,
+        UNIQUE (chain_id, idx)
+    )
+    """,
+]
+
 #: (version, [statements]) applied in order; a database records the last applied
 #: version in PRAGMA user_version. Append to migrate; never edit a shipped entry.
-MIGRATIONS = [(1, _V1), (2, _V2), (3, _V3), (4, _V4), (5, _V5)]
+MIGRATIONS = [(1, _V1), (2, _V2), (3, _V3), (4, _V4), (5, _V5), (6, _V6)]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -893,6 +933,64 @@ class Store:
             "WHERE a.admin = 0 AND NOT EXISTS "
             "(SELECT 1 FROM access a2 WHERE a2.host_id = h.id AND a2.admin = 1) "
             "ORDER BY h.id").fetchall()
+
+    # -- coerce chains ------------------------------------------------------
+
+    def add_chain(self, chain):
+        """Persist a :class:`fieldkit.chain.Chain` and every walked
+        :class:`fieldkit.chain.Outcome` in one transaction. Returns the
+        new coerce_chain row id.
+
+        The chain is stored as its post-walk state — the id comes back
+        AFTER the walker has finished (successfully or not). Chains
+        that were only planned (no steps run) still land, so
+        `fieldkit chain plan` produces a persistable trail even without
+        firing anything.
+        """
+        with self.transaction():
+            cur = self.conn.execute(
+                "INSERT INTO coerce_chain (profile, target, status, aborted_reason, "
+                "total_detection_cost, artifacts_json, started_at, finished_at, created) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (chain.profile, chain.target, chain.status,
+                 chain.aborted_reason, chain.total_detection_cost,
+                 json.dumps(chain.artifacts, default=repr),
+                 chain.started_at, chain.finished_at, utcnow()))
+            chain_id = cur.lastrowid
+            for idx, outcome in enumerate(chain.outcomes):
+                step = chain.steps[idx]
+                self.conn.execute(
+                    "INSERT INTO chain_step (chain_id, idx, step_name, step_kind, "
+                    "outcome_kind, evidence, detection_cost, ran_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (chain_id, idx, step.name, step.kind,
+                     outcome.kind, outcome.evidence, step.detection_cost,
+                     utcnow()))
+        return chain_id
+
+    def chains(self, profile=None):
+        """Every recorded coerce_chain, newest first. Optionally filter
+        by profile name."""
+        if profile:
+            rows = self.conn.execute(
+                "SELECT * FROM coerce_chain WHERE profile = ? "
+                "ORDER BY id DESC", (profile,)).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM coerce_chain ORDER BY id DESC").fetchall()
+        return [dict(r) for r in rows]
+
+    def chain_by_id(self, chain_id):
+        row = self.conn.execute(
+            "SELECT * FROM coerce_chain WHERE id = ?", (chain_id,)).fetchone()
+        return dict(row) if row else None
+
+    def chain_step_trail(self, chain_id):
+        """Ordered list of chain_step rows for `chain_id`."""
+        rows = self.conn.execute(
+            "SELECT * FROM chain_step WHERE chain_id = ? ORDER BY idx",
+            (chain_id,)).fetchall()
+        return [dict(r) for r in rows]
 
     # -- board --------------------------------------------------------------
 
