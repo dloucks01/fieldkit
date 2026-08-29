@@ -98,6 +98,10 @@ KEYS = {
                     "'off' (default), or your own PowerShell one-liner"),
     "confuser_cli": (lambda k, v: v, "path to the ConfuserEx CLI (Confuser.CLI[.exe]) for "
                      "`poc obfuscate` — run under mono if it's a .exe"),
+    "recce_url": (_v_url, "recce webui URL for the `recce-session` execution transport, "
+                  "e.g. http://localhost:8000 (empty = transport disabled)"),
+    "recce_tester": (lambda k, v: v, "attribution string sent as X-Tester to recce's "
+                     "task endpoint (default: 'fieldkit')"),
 }
 
 DEFAULTS = {

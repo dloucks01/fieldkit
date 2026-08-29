@@ -32,6 +32,7 @@ from . import (__version__, adcs as adcs_mod, archive as archive_mod,
                mongodb as mongodb_mod, mssql as mssql_mod, nmap as nmap_mod,
                poc as poc_mod,
                postgres as postgres_mod, preflight as preflight_mod, recce as recce_mod,
+               recce_transport as recce_transport_mod,
                privesc as privesc_mod, provision as provision_mod,
                report as report_mod, scope as scope_mod,
                sharespider as sharespider_mod, spray as spray_mod,
@@ -1483,6 +1484,32 @@ def cmd_mongodb_escalate(args, store, host, cred):
     return 0
 
 
+def cmd_recce_ping(args):
+    """Diagnostic: POST a one-shot command through a recce-caught session and
+    print the output. Proves the recce-session execution transport is wired up
+    without touching escalate/enum. Defaults to `whoami` (windows-safe on both
+    platforms since PowerShell also has it; use --cmd to override).
+    """
+    with _open_store(args) as store:
+        store.require_engagement()
+        cfg = recce_transport_mod._config_from_store(store)
+        if not cfg.url:
+            _err("recce_url not set — `fieldkit config set recce_url=http://<host>:<port>`")
+            return 2
+        command = args.cmd or "whoami"
+        print(f"POST {cfg.url}/api/sessions/{args.session_id}/task  (X-Tester={cfg.tester})")
+        print(f"  command: {command}")
+        result = recce_transport_mod.task_session(
+            cfg, args.session_id, command, timeout=args.timeout)
+    if result.error:
+        _err(result.error)
+        return 2
+    print(f"  captured in {result.duration:.2f}s (exit {result.exit_code})")
+    print("---")
+    print(result.output.rstrip() or "(no output)")
+    return 0
+
+
 def cmd_lab_test(args):
     with _open_store(args) as store:
         store.require_engagement()
@@ -2429,6 +2456,24 @@ the spec is missing that field. `--from-file` reads one credential per line.
     l_test.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
     l_test.set_defaults(func=cmd_lab_test)
     p_lab.set_defaults(func=lambda a: _missing(p_lab))
+
+    p_recce = sub.add_parser(
+        "recce", help="drive recce webui — currently the session-task diagnostic",
+        description="Endpoints for the recce-session execution transport. Requires "
+                    "`recce_url` in engagement config.")
+    recce_sub = p_recce.add_subparsers(dest="recce_command", metavar="<cmd>")
+    r_ping = recce_sub.add_parser(
+        "ping", help="POST a one-shot command through a recce-caught session",
+        description="Diagnostic: proves the recce-session transport is wired. Runs "
+                    "one command on the target through recce and prints the captured "
+                    "output. Use before `escalate --via-recce=<id>`.")
+    r_ping.add_argument("session_id", help="recce session id (12-hex from recce webui)")
+    r_ping.add_argument("--cmd", default=None,
+                        help="command to run on the target (default: whoami)")
+    r_ping.add_argument("--timeout", type=float, default=30.0,
+                        help="task timeout in seconds (default: 30)")
+    r_ping.set_defaults(func=cmd_recce_ping)
+    p_recce.set_defaults(func=lambda a: _missing(p_recce))
 
     p_posture = sub.add_parser(
         "posture", help="the evasion green/red matrix + recommended delivery",
