@@ -21,6 +21,7 @@ from textual.widgets import Footer, Static
 
 from ..state import Store, default_db_path
 from . import theme
+from .analyze import AnalyzeScreen, ANALYZE_TCSS
 from .dashboard import DashboardScreen, DASHBOARD_TCSS
 from .watch_screen import WatchScreen, WATCH_TCSS
 
@@ -70,27 +71,6 @@ def _stub_body(name, ships_in):
         f"    to one screen at a time.[/]\n"
     )
     return Static(body, classes="stub")
-
-
-class AnalyzeScreen(Screen):
-    """Ranked opportunities + detail. Ship 4."""
-
-    BINDINGS = [
-        Binding("g", "app.switch_screen('dashboard')", "dashboard"),
-        Binding("e", "app.switch_screen('escalate')", "escalate"),
-        Binding("w", "app.switch_screen('watch')", "watch"),
-        Binding("?", "app.push_screen('help')", "help"),
-        Binding("q", "app.quit", "quit"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="frame"):
-            yield TitleBar(id="title-bar")
-            yield _stub_body("Analyze", "Ship 4")
-        yield Footer()
-
-    def on_mount(self):
-        self.query_one(TitleBar).engagement = self.app.engagement_name
 
 
 class EscalateScreen(Screen):
@@ -162,7 +142,7 @@ class FieldkitTUI(App):
     display and dispatch subprocess `fieldkit` commands for actions.
     """
 
-    CSS = theme.APP_TCSS + DASHBOARD_TCSS + WATCH_TCSS
+    CSS = theme.APP_TCSS + DASHBOARD_TCSS + WATCH_TCSS + ANALYZE_TCSS
     TITLE = "fieldkit"
 
     SCREENS = {
