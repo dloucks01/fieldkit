@@ -1,0 +1,25 @@
+# Sudo → root via sh (GTFOBins)
+technique: T1548.003
+name: Sudo → root via sh (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  sudo_allows: sh
+execute:
+  command: |-
+    sudo sh -c 'id'
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_sudo
+  description: >
+    Sudo NOPASSWD on `sh` — trivially a root shell.
+  remediation: >
+    Drop `sh` from sudoers.
+  refs: [T1548.003, GTFOBins/sh]
