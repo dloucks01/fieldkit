@@ -122,8 +122,25 @@ def _parse_execute(doc, source):
     if not isinstance(serves_raw, list) or not all(isinstance(x, str) for x in serves_raw):
         raise LoaderError(
             f"{source}: execute.serves must be a list of strings, got {serves_raw!r}")
+    # builds: list of {format, as, run} dicts → tuple of (format, remote_path,
+    # build_command) triples. `run` is optional (None = poc's default proof).
+    builds_raw = e.get("builds") or []
+    if not isinstance(builds_raw, list):
+        raise LoaderError(f"{source}: execute.builds must be a list, got {builds_raw!r}")
+    builds = []
+    for i, b in enumerate(builds_raw):
+        if not isinstance(b, dict) or "format" not in b or "as" not in b:
+            raise LoaderError(
+                f"{source}: execute.builds[{i}] must be a mapping with 'format' + 'as' keys, "
+                f"got {b!r}")
+        run = b.get("run")
+        if run is not None and not isinstance(run, str):
+            raise LoaderError(
+                f"{source}: execute.builds[{i}].run must be a string or absent, got {run!r}")
+        builds.append((str(b["format"]), str(b["as"]), run))
     return Execute(command=command, transport=transport, shell=shell,
-                    stages=tuple(stages), serves=tuple(serves_raw))
+                    stages=tuple(stages), serves=tuple(serves_raw),
+                    builds=tuple(builds))
 
 
 def _parse_verify(doc, source):

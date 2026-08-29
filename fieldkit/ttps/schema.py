@@ -79,12 +79,21 @@ class Execute:
     for the duration of the command run. The command references them via
     the ``{url}{served}`` placeholders (resolved by provision.py at run time),
     so the target loads them into memory — nothing lands on disk.
+
+    ``builds`` is a tuple of ``(format, remote_path, build_command)`` triples.
+    Unlike ``stages`` (which pushes an existing arsenal artifact), ``builds``
+    tells the escalate loop to *build* an artifact on the operator side
+    then stage it — used by TTPs that need a per-target payload (an .msi for
+    AlwaysInstallElevated, a per-service .exe or .dll for the service-abuse
+    routes). ``build_command`` is what the built artifact runs when
+    executed on the target; None means "use the poc's default proof".
     """
     command: str
     transport: tuple = ()
     shell: str = ""
     stages: tuple = ()
     serves: tuple = ()
+    builds: tuple = ()
 
 
 @dataclass(frozen=True)
