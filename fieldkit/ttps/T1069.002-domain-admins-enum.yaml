@@ -1,0 +1,56 @@
+# Domain Admins enumeration → escalation target list
+#
+# `net group "Domain Admins" /domain` returns the human list of
+# accounts that own the whole AD. On a foothold this is the FIRST
+# thing the operator wants — every subsequent move (kerberoast
+# priority, coerce target, workstation to lateral to) is picked
+# from this list.
+#
+# Recon, not a direct escalation — ranked low so it sorts below
+# real vectors + the higher-value AD routes but still surfaces in
+# analyze so the operator sees the "you should run this next"
+# prompt.
+technique: T1069.002
+name: Domain Admins enumeration → escalation target list
+tactic: [discovery]
+platform: [windows]
+key: adroute:domain-admins-enum
+ranking:
+  exploitability: low            # pure recon — output is a list, not a shell
+  safety: read-only
+  detection: quiet                # `net group` is a normal domain query
+detect:
+  group_member: Domain Users
+execute:
+  # Enumerate every high-value default group + Enterprise Admins
+  # + Schema Admins. `& 2>nul` chains so a missing group (Enterprise
+  # / Schema won't exist on a single-domain forest) doesn't abort
+  # the sequence.
+  command: |-
+    net group "Domain Admins" /domain 2>nul & net group "Enterprise Admins" /domain 2>nul & net group "Schema Admins" /domain 2>nul & net group "Administrators" /domain 2>nul
+verify:
+  # Every group query prints "The command completed successfully"
+  # on the last line when it works; every member row starts with
+  # the domain prefix or the account name.
+  success: "successfully"
+cleanup:
+  command: ""
+report:
+  vector_type: kerberoast          # sits in the same reportkb bucket — reuse
+  evidence: "on a domain (Domain Users); high-privilege groups enumerable"
+  description: >
+    The Domain Admins / Enterprise Admins / Schema Admins group
+    lists are the escalation target roadmap for any AD foothold.
+    Every subsequent move (kerberoast priority, coerce target,
+    workstation to lateral to for a token) is picked from these
+    lists. Enumeration is a normal domain query — no unusual
+    detection weight — and the output feeds the operator's
+    ranking of what to do next.
+  remediation: >
+    Reduce DA group membership to the absolute minimum (tier-0
+    accounts only; ideally 3-5 people). Enforce Privileged Access
+    Workstations (PAW) so DA accounts only sign in on hardened
+    boxes. Monitor for unusual `net group` volume from
+    workstation accounts as a signal, though the default noise is
+    high enough that this rarely alerts on its own.
+  refs: [T1069.002, domain-groups-discovery]
