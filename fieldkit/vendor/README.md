@@ -18,6 +18,7 @@ upstream license text of each package.
 | `linkify_it`        | 2.1.1    | link detection (markdown-it transitive dep)  |
 | `platformdirs`      | 4.11.5   | user-dirs helper (textual transitive dep)    |
 | `typing_extensions` | 4.16.0   | typing back-compat (single .py file)         |
+| `yaml` (PyYAML)     | 6.0.3    | YAML parser for TTP files (fieldkit.ttps)    |
 
 ## How the path shim works
 
