@@ -1,0 +1,51 @@
+# SSH keys + PuTTY session data on Windows → lateral SSH
+#
+# Modern Windows ships OpenSSH client and admins now routinely
+# keep `~\.ssh\id_rsa` on Windows too. PuTTY is the older story:
+# it stores session state (username, hostname, private-key path)
+# under HKCU\Software\SimonTatham\PuTTY\Sessions. Both paths
+# give an operator a list of servers the user has SSH access to
+# — a lateral-movement map for free.
+#
+# Genuinely new coverage — Windows mirror of the C2 private-key-loot.
+technique: T1552.004
+name: SSH keys + PuTTY sessions → lateral SSH map
+tactic: [credential-access, lateral-movement, discovery]
+platform: [windows]
+key: loot:win-ssh-putty-keys
+ranking:
+  exploitability: medium
+  safety: read-only
+  detection: quiet
+detect:
+  always: true
+execute:
+  # Three surfaces: (1) OpenSSH keys under any user profile;
+  # (2) PuTTY session registry entries; (3) PuTTY private key
+  # files (.ppk) anywhere. Each is worth a separate line so a
+  # tightened profile mode doesn't hide the others.
+  command: |-
+    dir /s /b "%USERPROFILE%\..\*\.ssh\id_*" 2>nul & reg query "HKCU\Software\SimonTatham\PuTTY\Sessions" /s 2>nul & where /r C:\ *.ppk 2>nul
+verify:
+  # id_* files print as full paths; PuTTY reg entries print the
+  # `HKEY_CURRENT_USER\...` prefix; .ppk hits print full paths.
+  success: ":\\"
+cleanup:
+  command: ""
+report:
+  vector_type: exposed_secret
+  evidence: "one or more SSH keys / PuTTY sessions / .ppk keys present"
+  description: >
+    Windows-side SSH keys (`%USERPROFILE%\.ssh\id_rsa`, `.ppk`
+    files) and PuTTY session data
+    (`HKCU\Software\SimonTatham\PuTTY\Sessions`) give an operator
+    both the credential to SSH out and the destination list —
+    every server the user has ever connected to. On a jump box,
+    this is the whole lateral map.
+  remediation: >
+    Enforce SSH key encryption (`ssh-keygen -p` on every private
+    key); prefer hardware-backed keys (YubiKey ssh-agent) so a
+    file copy is inert. For PuTTY, clear old session entries
+    periodically and don't check "remember password" — the value
+    is stored plaintext in the registry.
+  refs: [T1552.004, unsecured-private-keys]

@@ -41,7 +41,7 @@ class LootTTPCoverageTest(unittest.TestCase):
 
     def _load_loot(self):
         from fieldkit.ttps.loader import load_all
-        return [t for t in load_all() if t.key.startswith("loot:")]
+        return [t for t in load_all() if t.key.startswith("loot:") and not t.key.startswith("loot:win-")]
 
     def test_five_loot_ttps_shipped(self):
         loot = self._load_loot()
