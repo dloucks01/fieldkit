@@ -1,0 +1,46 @@
+# cap_setuid on python → root
+#
+# A Python interpreter carrying cap_setuid (typically set via `setcap
+# cap_setuid+ep /usr/bin/python3`) can call os.setuid(0) without holding
+# root and without needing the SUID bit. Same primitive shape as the
+# SUID python TTP; different detect trigger.
+#
+# Detect: python has cap_setuid AND its basename canonicalizes to
+# `python` (so `python3.8` matches; `openssl` with cap_setuid does not
+# — the port is per-interpreter, mirroring the inlined
+# `_cap_vector`'s `canon in _SETUID_INTERP` gate).
+technique: T1548.001
+name: cap_setuid on python → root
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  capability_on_binary:
+    binary: python
+    cap: cap_setuid
+execute:
+  # Same body as SUID python — {{binary}} substitutes the actual host
+  # basename (python3.8, python3, python2, etc.).
+  command: "{{binary}} -c 'import os;os.setuid(0);os.system(\"id\")'"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: capability
+  evidence: "getcap: {{binary}} cap_setuid"
+  description: >
+    Python with cap_setuid can promote itself to uid=0 via os.setuid(0),
+    then shell out with the fresh root context. No SUID bit needed,
+    no sudo needed — a plain `python -c` invocation. Distros
+    occasionally grant cap_setuid to Python for a specific tool and
+    forget to scope it via a wrapper.
+  remediation: >
+    Remove the capability (`setcap -r $(which python3)`). Where the
+    tool that needed setuid can't be replaced, isolate it in a
+    dedicated helper binary with the capability instead of granting
+    it to the whole interpreter.
+  refs: [T1548.001, capabilities(7), setcap]

