@@ -78,7 +78,7 @@ class DashboardScreen(Screen):
         Binding("e", "app.switch_screen('escalate')", "escalate"),
         Binding("w", "app.switch_screen('watch')", "watch"),
         Binding("?", "app.push_screen('help')", "help"),
-        Binding("q", "app.action_quit", "quit"),
+        Binding("q", "app.quit", "quit"),
     ]
 
     def compose(self) -> ComposeResult:
@@ -99,7 +99,7 @@ class AnalyzeScreen(Screen):
         Binding("e", "app.switch_screen('escalate')", "escalate"),
         Binding("w", "app.switch_screen('watch')", "watch"),
         Binding("?", "app.push_screen('help')", "help"),
-        Binding("q", "app.action_quit", "quit"),
+        Binding("q", "app.quit", "quit"),
     ]
 
     def compose(self) -> ComposeResult:
@@ -120,7 +120,7 @@ class EscalateScreen(Screen):
         Binding("a", "app.switch_screen('analyze')", "analyze"),
         Binding("w", "app.switch_screen('watch')", "watch"),
         Binding("?", "app.push_screen('help')", "help"),
-        Binding("q", "app.action_quit", "quit"),
+        Binding("q", "app.quit", "quit"),
     ]
 
     def compose(self) -> ComposeResult:
@@ -141,7 +141,7 @@ class WatchScreen(Screen):
         Binding("a", "app.switch_screen('analyze')", "analyze"),
         Binding("e", "app.switch_screen('escalate')", "escalate"),
         Binding("?", "app.push_screen('help')", "help"),
-        Binding("q", "app.action_quit", "quit"),
+        Binding("q", "app.quit", "quit"),
     ]
 
     def compose(self) -> ComposeResult:
@@ -219,7 +219,8 @@ class FieldkitTUI(App):
         Binding("e", "switch_screen('escalate')",  "escalate",  show=False),
         Binding("w", "switch_screen('watch')",     "watch",     show=False),
         Binding("?", "push_screen('help')",        "help",      show=False),
-        Binding("q", "action_quit",                "quit",      show=False),
+        Binding("q", "quit",                       "quit",      show=False),
+        Binding("ctrl+c", "quit",                  "quit",      show=False),
     ]
 
     def __init__(self, db_path=None):
