@@ -944,10 +944,14 @@ def _reset_ttp_cache_for_tests():
 #: the GTFO dict are now covered by T1548.003-sudo-*.yaml TTPs. `_d_suid_gtfo`
 #: remains until Phase B3 ports the SUID mode too. The GTFO dict itself stays
 #: because `_d_suid_gtfo` still reads it for SUID execution.
+#:
+#: `_d_win_privs` was retired at Phase B4.2 completion — the 5 WIN_PRIVS entries,
+#: the Backup Operators group, and all 8 WIN_IMPERSONATION Potato ladder rungs
+#: are now covered by TTP YAMLs (T1003.002-*, T1068-*, T1134.002-seimpersonate-*).
 DRIVERS = {
     LINUX: (_d_ttp_yaml, _d_sudo_all, _d_suid_gtfo, _d_caps,
             _d_docker_group, _d_sudo_env, _d_kernel_lpe),
-    WINDOWS: (_d_ttp_yaml, _d_win_privs, _d_win_aie, _d_win_unquoted,
+    WINDOWS: (_d_ttp_yaml, _d_win_aie, _d_win_unquoted,
               _d_win_weak_service, _d_win_writable_service, _d_win_dll_hijack,
               _d_win_lpe),
 }

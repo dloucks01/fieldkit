@@ -64,14 +64,27 @@ class Detect:
 
 @dataclass(frozen=True)
 class Execute:
-    """The target-side proof command. ``transport`` (optional) constrains which
-    transports the executor may pick — otherwise the auto-selection rules from
-    :mod:`fieldkit.transport` apply. ``shell`` overrides the platform default
-    (cmd on windows, sh on linux) — Windows TTPs that need PowerShell set
-    ``shell: powershell``."""
+    """The target-side proof command.
+
+    ``transport`` (optional) constrains which transports the executor may
+    pick. ``shell`` overrides the platform default (cmd/sh) — Windows TTPs
+    that need PowerShell set ``shell: powershell``.
+
+    ``stages`` is a tuple of ``(name, remote_path)`` pairs. The escalate
+    loop auto-pushes each named arsenal artifact to the given remote path
+    before firing the command. Used by Potato-style TTPs that need a binary
+    dropped on the target first.
+
+    ``serves`` is a tuple of arsenal-artifact names to expose over HTTP
+    for the duration of the command run. The command references them via
+    the ``{url}{served}`` placeholders (resolved by provision.py at run time),
+    so the target loads them into memory — nothing lands on disk.
+    """
     command: str
     transport: tuple = ()
     shell: str = ""
+    stages: tuple = ()
+    serves: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -121,6 +134,14 @@ class TTP:
     #: SeDebug uses key `sedebug` but reports as vector_type `lsass`. Most
     #: TTPs omit this; the adapter's default naming rules match cleanly.
     key: str = field(default="")
+    #: Evasion-loop family — vectors sharing a family are delivery alternates
+    #: for the same objective (e.g. all Potato variants share `seimpersonate`).
+    #: The escalate loop climbs to another family member on a caught delivery.
+    family: str = field(default="")
+    #: The :mod:`fieldkit.evasion` technique key this vector's delivery
+    #: presents. Marking a caught technique red keeps the loop from re-burning
+    #: it. Empty means "no specific delivery technique" (a plain nxc command).
+    delivery: str = field(default="")
     #: Source path of the YAML file — populated by the loader, used in error
     #: messages when a TTP misbehaves at runtime.
     source_path: str = field(default="")

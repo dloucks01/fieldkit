@@ -322,6 +322,117 @@ class WindowsPredicateTest(unittest.TestCase):
                          f"sebackup priv + group should dedup to one, got {len(sebackup)}")
 
 
+class ImpersonationLadderTest(unittest.TestCase):
+    """The Potato ladder: privilege list, family/delivery, stages/serves."""
+
+    def _facts_with_impersonation(self, priv="SeImpersonatePrivilege"):
+        return _facts(os="windows", privs={priv})
+
+    def test_privilege_list_matches_any_of(self):
+        # `privilege: [A, B]` — either priv in facts.privs triggers.
+        from fieldkit.ttps.adapter import ttp_to_vector
+        ttp = _mk_ttp("privilege",
+                       ["SeImpersonatePrivilege", "SeAssignPrimaryTokenPrivilege"],
+                       platform=("windows",))
+        self.assertIsNotNone(ttp_to_vector(
+            ttp, self._facts_with_impersonation("SeImpersonatePrivilege"), _ctx()))
+        self.assertIsNotNone(ttp_to_vector(
+            ttp, self._facts_with_impersonation("SeAssignPrimaryTokenPrivilege"), _ctx()))
+        # Neither — no match
+        self.assertIsNone(ttp_to_vector(
+            ttp, _facts(os="windows", privs={"SeBackupPrivilege"}), _ctx()))
+
+    def test_family_and_delivery_flow_from_yaml_to_vector(self):
+        # These are what the escalate loop's fallback axis reads.
+        from fieldkit.ttps.adapter import ttp_to_vector
+        from fieldkit.ttps.schema import (
+            Cleanup, Detect, Execute, Ranking, Report, TTP, Verify,
+        )
+        ttp = TTP(
+            technique="T1134.002", name="GodPotato native",
+            tactic=("privilege-escalation",), platform=("windows",),
+            ranking=Ranking(exploitability="high", safety="config-change",
+                             detection="moderate"),
+            detect=Detect(kind="privilege", value=["SeImpersonatePrivilege"]),
+            execute=Execute(command="godpotato -cmd whoami"),
+            verify=Verify(success="NT AUTHORITY"),
+            cleanup=Cleanup(),
+            report=Report(vector_type="seimpersonate"),
+            key="seimpersonate:godpotato",
+            family="seimpersonate",
+            delivery="native-exe",
+        )
+        v = ttp_to_vector(ttp, self._facts_with_impersonation(), _ctx())
+        self.assertEqual(v.family, "seimpersonate")
+        self.assertEqual(v.delivery, "native-exe")
+
+    def test_stages_flow_through_with_stage_substitution(self):
+        from fieldkit.ttps.adapter import ttp_to_vector
+        from fieldkit.ttps.schema import (
+            Cleanup, Detect, Execute, Ranking, Report, TTP, Verify,
+        )
+        ttp = TTP(
+            technique="T1134.002", name="tool test",
+            tactic=("privilege-escalation",), platform=("windows",),
+            ranking=Ranking(exploitability="high", safety="config-change",
+                             detection="moderate"),
+            detect=Detect(kind="privilege", value=["SeImpersonatePrivilege"]),
+            execute=Execute(command="run",
+                              stages=(("GodPotato", "{{stage}}\\GodPotato.exe"),)),
+            verify=Verify(success="ok"),
+            cleanup=Cleanup(),
+            report=Report(vector_type="seimpersonate"),
+            key="seimpersonate:godpotato",
+        )
+        v = ttp_to_vector(ttp, self._facts_with_impersonation(), _ctx())
+        self.assertEqual(v.stages, (("GodPotato", "C:\\Windows\\Temp\\GodPotato.exe"),))
+
+    def test_serves_flow_through_verbatim(self):
+        # `serves` names arsenal artifacts; provision.py resolves them at
+        # serve time. No substitution needed here.
+        from fieldkit.ttps.adapter import ttp_to_vector
+        from fieldkit.ttps.schema import (
+            Cleanup, Detect, Execute, Ranking, Report, TTP, Verify,
+        )
+        ttp = TTP(
+            technique="T1134.002", name="fileless test",
+            tactic=("privilege-escalation",), platform=("windows",),
+            ranking=Ranking(exploitability="high", safety="config-change",
+                             detection="moderate"),
+            detect=Detect(kind="privilege", value=["SeImpersonatePrivilege"]),
+            execute=Execute(command="powershell -c '{url}{served}'",
+                              serves=("GodPotato",)),
+            verify=Verify(success="ok"),
+            cleanup=Cleanup(),
+            report=Report(vector_type="seimpersonate"),
+            key="seimpersonate:ps-godpotato",
+        )
+        v = ttp_to_vector(ttp, self._facts_with_impersonation(), _ctx())
+        self.assertEqual(v.serves, ("GodPotato",))
+        # single-brace {url}/{served} are provision-side; not substituted here
+        self.assertIn("{url}{served}", v.command)
+
+    def test_shipped_ladder_produces_8_rungs_from_seimpersonate(self):
+        # Full integration — a Windows host with SeImpersonatePrivilege sees
+        # every ladder rung as a distinct opportunity.
+        from fieldkit.hostenum import HostFacts, WINDOWS
+        from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
+        _reset_ttp_cache_for_tests()
+        vs = vectors_for(
+            HostFacts(os=WINDOWS, privs={"SeImpersonatePrivilege"}),
+            "10.0.0.7", stage_win="C:\\Windows\\Temp")
+        ladder = [v for v in vs if v.family == "seimpersonate"]
+        self.assertEqual(len(ladder), 8)
+        # Delivery mix: 5 native + 3 fileless (GodPotato + SweetPotato +
+        # SharpEfsPotato are .NET, so they have a fileless rung too)
+        native = [v for v in ladder if v.delivery == "native-exe"]
+        fileless = [v for v in ladder if v.delivery == "inmem-fileless"]
+        self.assertEqual(len(native), 5)
+        self.assertEqual(len(fileless), 3)
+        # Every rung is TTP-sourced (proves _d_win_privs retirement worked)
+        self.assertTrue(all(v.evidence.startswith("detected via TTP") for v in ladder))
+
+
 class ShippedTTPsTest(unittest.TestCase):
     """The shipped ~7 sudo TTPs each match their intended binary."""
 
