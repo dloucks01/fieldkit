@@ -1,0 +1,132 @@
+{
+  "_recce_bridge": 1,
+  "engagement": "ACME Internal",
+  "generated": "2026-08-28T13:45:00Z",
+  "users": ["alice", "bob", "charlie", "svc_backup"],
+  "creds_count": 2,
+  "hosts": [
+    {
+      "ip": "10.0.0.7",
+      "hostname": "WS02",
+      "os": "Windows 10 Pro 22H2",
+      "roles": ["workstation"],
+      "smb_signing": "not required",
+      "null_smb": false,
+      "access_gained": false,
+      "access_detail": "",
+      "ports": [
+        {"port": 445, "service": "microsoft-ds", "product": "Microsoft Windows SMB", "version": ""},
+        {"port": 3389, "service": "ms-wbt-server", "product": "", "version": ""},
+        {"port": 5985, "service": "http", "product": "Microsoft HTTPAPI httpd", "version": "2.0"}
+      ],
+      "findings": [
+        {
+          "title": "EternalBlue SMBv1 RCE (MS17-010)",
+          "severity": "critical",
+          "confidence": "confirmed",
+          "ports": [445],
+          "cves": ["CVE-2017-0143", "CVE-2017-0144"],
+          "cwes": ["CWE-20"],
+          "source": "nse:smb-vuln-ms17-010"
+        },
+        {
+          "title": "SMB signing not required — NTLM relay eligible",
+          "severity": "high",
+          "confidence": "confirmed",
+          "ports": [445],
+          "cves": [],
+          "cwes": ["CWE-287"],
+          "source": "recce:smb"
+        }
+      ],
+      "suggested": [
+        {"port": 445, "service": "smb", "label": "smb",
+         "module": "null-session/relay/EternalBlue: services/gen_smb + access/gen_relay",
+         "juiciness": 1}
+      ],
+      "exploit_cmds": [],
+      "access_cmds": []
+    },
+    {
+      "ip": "10.0.0.11",
+      "hostname": "WEB01",
+      "os": "Ubuntu 22.04 LTS",
+      "roles": ["web"],
+      "smb_signing": null,
+      "null_smb": false,
+      "access_gained": false,
+      "access_detail": "",
+      "ports": [
+        {"port": 22, "service": "ssh", "product": "OpenSSH", "version": "8.9p1"},
+        {"port": 80, "service": "http", "product": "Apache httpd", "version": "2.4.49"},
+        {"port": 5432, "service": "postgresql", "product": "PostgreSQL DB", "version": "12.9"}
+      ],
+      "findings": [
+        {
+          "title": "Apache HTTP Server path traversal (CVE-2021-41773)",
+          "severity": "high",
+          "confidence": "confirmed",
+          "ports": [80],
+          "cves": ["CVE-2021-41773"],
+          "cwes": ["CWE-22"],
+          "source": "vulners"
+        }
+      ],
+      "suggested": [
+        {"port": 5432, "service": "postgresql", "label": "postgres",
+         "module": "COPY...PROGRAM RCE: services/gen_db.py --db postgres",
+         "juiciness": 2},
+        {"port": 80, "service": "http", "label": "http",
+         "module": "web app -> access/web/ (nuclei/ffuf first)",
+         "juiciness": 2}
+      ],
+      "exploit_cmds": [
+        {"port": 80, "service": "apache", "version": "2.4.49",
+         "cmd": "python3 access/network/gen_exploit.py find --service apache --version \"2.4.49\"",
+         "cves": ["CVE-2021-41773"]},
+        {"port": 5432, "service": "postgres", "version": "12.9",
+         "cmd": "python3 access/network/gen_exploit.py find --service postgres --version \"12.9\"",
+         "cves": []}
+      ],
+      "access_cmds": []
+    },
+    {
+      "ip": "10.0.0.13",
+      "hostname": "PRINT01",
+      "os": "Windows Server 2019",
+      "roles": ["print-server"],
+      "smb_signing": "not required",
+      "null_smb": true,
+      "access_gained": false,
+      "access_detail": "",
+      "ports": [
+        {"port": 445, "service": "microsoft-ds", "product": "", "version": ""}
+      ],
+      "findings": [],
+      "suggested": [
+        {"port": 445, "service": "smb", "label": "smb",
+         "module": "null-session/relay/EternalBlue: services/gen_smb + access/gen_relay",
+         "juiciness": 0}
+      ],
+      "exploit_cmds": [],
+      "access_cmds": []
+    },
+    {
+      "ip": "10.0.0.42",
+      "hostname": "JUMPBOX",
+      "os": "CentOS 7",
+      "roles": [],
+      "smb_signing": null,
+      "null_smb": false,
+      "access_gained": true,
+      "access_detail": "ssh root:proven from prior deploy",
+      "ports": [
+        {"port": 22, "service": "ssh", "product": "OpenSSH", "version": "7.4"}
+      ],
+      "findings": [],
+      "suggested": [],
+      "exploit_cmds": [],
+      "access_cmds": []
+    }
+  ]
+}

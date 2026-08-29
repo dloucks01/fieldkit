@@ -54,3 +54,6 @@ sh.sh
 
 # kit packages built by package.sh
 *.tar.gz
+
+# ---- Per-operator local settings (auto-allow permissions, etc.) ----
+.claude/

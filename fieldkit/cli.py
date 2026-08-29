@@ -31,7 +31,7 @@ from . import (__version__, adcs as adcs_mod, archive as archive_mod,
                kb as kb_mod, kerberos as kerberos_mod, lab as lab_mod,
                mongodb as mongodb_mod, mssql as mssql_mod, nmap as nmap_mod,
                poc as poc_mod,
-               postgres as postgres_mod, preflight as preflight_mod,
+               postgres as postgres_mod, preflight as preflight_mod, recce as recce_mod,
                privesc as privesc_mod, provision as provision_mod,
                report as report_mod, scope as scope_mod,
                sharespider as sharespider_mod, spray as spray_mod,
@@ -429,6 +429,78 @@ def cmd_ingest_hashcat(args):
             print(f"  ... (+{len(rep.matches) - 10} more)")
     if rep.creds_promoted:
         print(f"\nnext: `{PROG} spray` to chase the newly promoted credentials")
+    return 0
+
+
+def cmd_ingest_recce(args):
+    """Read a recce-bridge.json and fold recce's confirmed findings +
+    hosts/services into state, so `analyze` promotes recce-confirmed hosts.
+    Idempotent: re-ingest an updated bridge to upsert.
+    """
+    if args.file and args.file != "-":
+        try:
+            with open(args.file, "r", errors="replace") as fh:
+                text = fh.read()
+        except OSError as exc:
+            _err(f"{args.file}: {exc}")
+            return 2
+    elif sys.stdin.isatty():
+        _err("no bridge given — pass eng/fieldkit/recce-bridge.json or pipe on "
+             "stdin. Written by `recce fieldkit-export`.")
+        return 2
+    else:
+        text = sys.stdin.read()
+
+    try:
+        intent = recce_mod.parse(text)
+    except recce_mod.RecceBridgeError as exc:
+        _err(str(exc))
+        return 2
+
+    if not intent.hosts:
+        _err("bridge has no hosts — nothing to ingest.")
+        return 2
+
+    n_svc = sum(len(h.services) for h in intent.hosts)
+    n_conf = sum(len(h.findings) for h in intent.hosts)
+    n_ver = sum(len(h.version_routes) for h in intent.hosts)
+    tag = f" — engagement '{intent.engagement}'" if intent.engagement else ""
+    print(f"read {_plural(len(intent.hosts), 'host')} with "
+          f"{_plural(n_svc, 'service')}, "
+          f"{_plural(n_conf, 'confirmed finding')}, "
+          f"{_plural(n_ver, 'version→CVE lead')}{tag}")
+    for h in intent.hosts[:12]:
+        os_tag = f" ({h.os})" if h.os else ""
+        f_hi = sum(1 for f in h.findings if f.severity in ("critical", "high"))
+        f_tag = f"  [{f_hi} high+ finding(s)]" if f_hi else ""
+        print(f"  {h.ip:<15} {h.hostname or '':<24}{os_tag}{f_tag}")
+    if len(intent.hosts) > 12:
+        print(f"  ... (+{len(intent.hosts) - 12} more)")
+
+    if not _confirm("record into the engagement?", args.yes):
+        print("aborted — nothing was stored")
+        return 1
+
+    with _open_store(args) as store:
+        store.require_engagement()
+        rep = recce_mod.apply(store, intent)
+    print(f"stored {_plural(rep.hosts_added, 'host')}"
+          + (f" ({rep.hosts_enriched} enriched)" if rep.hosts_enriched else "")
+          + f", {_plural(rep.services_added, 'service')}"
+          + (f" ({rep.services_enriched} enriched)" if rep.services_enriched else ""))
+    print(f"folded {_plural(rep.confirmed_added, 'confirmed finding')}"
+          + (f" ({rep.confirmed_seen} already known)" if rep.confirmed_seen else "")
+          + f"; {_plural(rep.version_routes_added, 'version→CVE lead')}"
+          + (f" ({rep.version_routes_seen} already known)" if rep.version_routes_seen else ""))
+    if rep.out_of_scope:
+        preview = ", ".join(rep.out_of_scope[:5]) + (
+            f" (+{len(rep.out_of_scope) - 5} more)" if len(rep.out_of_scope) > 5 else "")
+        _err(f"{len(rep.out_of_scope)} host(s) skipped — outside engagement scope: "
+             f"{preview}. See `fieldkit scope show`.")
+    if intent.users:
+        print(f"bridge also carried {_plural(len(intent.users), 'username')} — "
+              "seed a spray with: `fieldkit spray smb --users -` "
+              "(paste the users list, or generate via `fieldkit usernames`).")
     return 0
 
 
@@ -2151,6 +2223,20 @@ the spec is missing that field. `--from-file` reads one credential per line.
                            help="hashcat potfile (or `-` / stdin)")
     i_hashcat.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
     i_hashcat.set_defaults(func=cmd_ingest_hashcat)
+
+    i_recce = ingest_sub.add_parser(
+        "recce", help="ingest a recce-bridge.json (recce -> fieldkit handoff)",
+        description="Reads `recce-bridge.json` (written by `recce fieldkit-export`) "
+                    "and folds recce's confirmed findings + per-host services into "
+                    "state, so `fieldkit analyze` promotes recce-confirmed hosts "
+                    "above unranked ones. Idempotent: re-ingesting an updated "
+                    "bridge upserts rather than duplicates. "
+                    "Version pinned on _recce_bridge major "
+                    f"{recce_mod.BRIDGE_MAJOR}.")
+    i_recce.add_argument("file", nargs="?",
+                         help="recce-bridge.json path (or `-` / stdin)")
+    i_recce.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
+    i_recce.set_defaults(func=cmd_ingest_recce)
 
     p_ingest.set_defaults(func=lambda a: _missing(p_ingest))
 

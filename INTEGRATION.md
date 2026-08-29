@@ -17,30 +17,38 @@ recce (survey · confirm · rank · catch)  ──scope + ranked findings──�
                     (proven findings, KB-enriched, confidence: confirmed)
 ```
 
-## recce → fieldkit (scope in)
+## recce → fieldkit (scope in + the rich feed)
 
-recce has already swept the network and confirmed vulnerable hosts. Feed that scope to
-fieldkit and run the loop:
+recce has already swept the network and confirmed vulnerable hosts. Feed the rich handoff
+to fieldkit and run the loop:
 
 ```bash
-recce fieldkit-export <engagement>          # recce writes the in-scope hosts
-fieldkit add hosts recce-scope.txt          # IPs / CIDRs / 'IP hostname' lines
+recce fieldkit-export <engagement>                              # writes eng/fieldkit/
+fieldkit ingest recce eng/fieldkit/recce-bridge.json            # rich feed: hosts + services
+                                                                # + recce-confirmed findings
+                                                                # + version→CVE leads
 fieldkit add cred 'CORP/jdoe:Winter2025!'
-fieldkit spray smb                          # ... enum / analyze / escalate ...
+fieldkit analyze                                                # recce-confirmed hosts float
+                                                                # to the top of Opportunities
+fieldkit spray smb                                              # ... escalate ...
 ```
 
 fieldkit's `analyze` ranks the next move from what it has **proven** (access, loot, enum
-facts). recce's confirmed findings are the *exploitability* input to that ranking — not guesses
-to be re-proved, but a prioritized work-queue: recce says *what is worth hitting and why*,
-fieldkit proves the *compromise* and reports what it cost to detect.
+facts) *plus* what recce has confirmed. recce's confirmed findings are the *exploitability*
+input to fieldkit's three-axis ranking — not guesses to be re-proved, but a prioritized
+work-queue: recce says *what is worth hitting and why*, fieldkit proves the *compromise* and
+reports what it cost to detect.
 
-> **Roadmap — the rich feed.** `recce fieldkit-export` already writes `recce-bridge.json`
-> (per-host ports/service/version, recce's *confirmed* findings, and the exact generator to
-> run, severity-ranked). Today fieldkit ingests the bare `recce-scope.txt`; folding the full
-> `recce-bridge.json` into `analyze`'s exploitability axis (an `ingest recce` path) is the
-> next integration step, so fieldkit inherits recce's ranking instead of re-deriving it.
-> A second step drives a recce-caught **session** as a fieldkit execution transport, so the
-> loop runs through recce's foothold and SOCKS pivot rather than fieldkit rebuilding C2.
+Confirmed findings land as `vector_type=recce_confirmed_vuln` (high-priority Opportunities);
+version→CVE leads land as `vector_type=recce_version_lookup` (verify before escalating).
+Ingest is idempotent — re-run as recce updates its bridge. Fieldkit's own confirm-before-write
+habit still holds (`-y` to skip in scripts).
+
+> **Roadmap — session-as-transport (Phase A2).** Fieldkit can already run through nxc/ssh/
+> mssql. The next integration step adds a `recce-session` transport that pipes fieldkit's
+> argv through a recce-caught shell's tasking channel — so the escalate loop runs *through*
+> recce's foothold and SOCKS pivot rather than fieldkit rebuilding C2. Needs one small route
+> on recce's webui (~40 LoC); ships as fieldkit v3.0.0-a2.
 
 ## fieldkit → recce (proven findings back)
 
