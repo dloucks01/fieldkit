@@ -64,7 +64,13 @@ ENUM_PLAN = {
                   # hostPID: /proc/1 is a well-known host init, not a container init.
                   "read comm < /proc/1/comm 2>/dev/null && "
                   "  case \"$comm\" in systemd|init|systemd-init) "
-                  "    echo 'FK-HOSTPID' ;; esac"),
+                  "    echo 'FK-HOSTPID' ;; esac; "
+                  # hostNetwork: host-only interfaces (docker0, cni*, br-*,
+                  # flannel*, weave*, cali*, tunl*) inside a container mean
+                  # the network namespace is shared with the host.
+                  "ls /sys/class/net 2>/dev/null | grep -qE "
+                  "  '^(docker0|cni|flannel|br-|weave|cali|tunl)' "
+                  "  && echo 'FK-HOSTNETWORK'"),
     ),
     WINDOWS: (
         EnumCheck("priv", "whoami /priv"),
@@ -134,6 +140,14 @@ class HostFacts:
     #: init) rather than a container init (sh, pause, tini). Combined
     #: with root inside the container this enables nsenter-into-host.
     hostpid_visible: bool = False
+    #: `True` when the container/pod shares the host's network namespace
+    #: (`docker run --network=host` / k8s `hostNetwork: true`). Detected
+    #: by the presence of host-only interface names (docker0, cni*,
+    #: flannel*, br-*, weave, cali*, tunl*) inside the container — a
+    #: normal container sees only lo + eth0. With hostNetwork the pod
+    #: can sniff the node's traffic, hit localhost-bound services on the
+    #: node (kubelet's 10248/10250), and reach cluster peers.
+    has_hostnetwork: bool = False
     # -- windows --
     privs: set = field(default_factory=set)            # SeImpersonatePrivilege, ...
     win_groups: set = field(default_factory=set)        # Administrators, Backup Operators, ...
@@ -281,6 +295,8 @@ def _p_container(facts, text):
         facts.cgroup_v1 = True
     if "FK-HOSTPID" in text:
         facts.hostpid_visible = True
+    if "FK-HOSTNETWORK" in text:
+        facts.has_hostnetwork = True
 
 
 def _p_versions(facts, text):
