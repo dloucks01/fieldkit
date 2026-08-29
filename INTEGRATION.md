@@ -44,11 +44,27 @@ version→CVE leads land as `vector_type=recce_version_lookup` (verify before es
 Ingest is idempotent — re-run as recce updates its bridge. Fieldkit's own confirm-before-write
 habit still holds (`-y` to skip in scripts).
 
-> **Roadmap — session-as-transport (Phase A2).** Fieldkit can already run through nxc/ssh/
-> mssql. The next integration step adds a `recce-session` transport that pipes fieldkit's
-> argv through a recce-caught shell's tasking channel — so the escalate loop runs *through*
-> recce's foothold and SOCKS pivot rather than fieldkit rebuilding C2. Needs one small route
-> on recce's webui (~40 LoC); ships as fieldkit v3.0.0-a2.
+## Session-as-transport (recce-session execution)
+
+Fieldkit's escalate loop can now run *through* a recce-caught shell. Configure the recce
+webui URL, then invoke fieldkit with the recce session id:
+
+```bash
+fieldkit config set recce_url=http://recce-host:8000 recce_tester=alice
+fieldkit recce ping <session_id>                # diagnostic — one command, prints output
+# then (A3 lands the escalate wiring):
+fieldkit escalate 10.0.0.7 --via-recce=<session_id> --allow config-change
+```
+
+Under the hood: fieldkit POSTs each target-side command to recce's
+`POST /api/sessions/{id}/task`, which runs it via the caught shell's tasking channel and
+returns the captured output. The step lands in fieldkit's `step` table with the same shape
+as an nxc-driven step — `report --check` sees no difference. Two `recce-session-*`
+transports are registered (Windows + Linux); the executor branches on `proto ==
+"recce-session"` and skips the nxc render + subprocess path entirely.
+
+Recce's task endpoint sends an activity-feed entry attributed via `X-Tester` so team
+members watching recce's collab log see what fieldkit did through this session.
 
 ## fieldkit → recce (proven findings back)
 

@@ -20,6 +20,7 @@ spray loop.
 """
 from dataclasses import dataclass
 
+from . import recce_transport as recce_transport_mod
 from . import runner as runner_mod
 from . import transport as transport_mod
 from .creds import Credential
@@ -45,6 +46,9 @@ class Action:
     #: (local, remote) to push instead of running a command — a stage step. Uses a
     #: file-transfer transport (smb/ssh); config-change by nature (it writes to disk).
     upload: tuple = None
+    #: When ``transport`` names a recce-session transport, this identifies the caught
+    #: recce session the command runs through. Ignored for nxc-driven transports.
+    recce_session_id: str = None
 
 
 @dataclass
@@ -80,9 +84,15 @@ def _proven_path(store, host_id, cred_id):
     return {r["method"] for r in rows}, any(r["admin"] for r in rows)
 
 
-def execute(store, action, *, run=None, allow="read-only", timeout=600, on_event=None):
+def execute(store, action, *, run=None, allow="read-only", timeout=600, on_event=None,
+            recce_http=None):
     """Run one :class:`Action`. Returns an :class:`ExecResult`; never raises for an
-    operator-caused failure (a missing transport, a blocked action, a dead tool)."""
+    operator-caused failure (a missing transport, a blocked action, a dead tool).
+
+    ``recce_http`` is an optional injected HTTP call for the ``recce-session``
+    transport — tests pass a fake handler so no socket opens; production leaves it
+    at ``None`` and stdlib :func:`http.client` is used.
+    """
     run = run or _default_runner(timeout)
     host, cred_row = action.host, action.cred
 
@@ -113,6 +123,15 @@ def execute(store, action, *, run=None, allow="read-only", timeout=600, on_event
                         SAFETY_LEVELS[1: SAFETY_LEVELS.index(action.safety) + 1]),
             transport=transport.name)
 
+    # ---- recce-session path ------------------------------------------------
+    # POST fieldkit's target-side command through recce's session-task endpoint
+    # instead of rendering an nxc argv and spawning a subprocess. The step-write
+    # below runs the same way, so `report --check` sees an identical shape.
+    if transport.proto == "recce-session":
+        return _execute_via_recce_session(
+            store, action, transport, timeout=timeout,
+            on_event=on_event, http_call=recce_http)
+
     cred = Credential.from_row(cred_row)
     if action.upload:
         local, remote = action.upload
@@ -135,3 +154,51 @@ def execute(store, action, *, run=None, allow="read-only", timeout=600, on_event
             store.add_artifact(desc, cleanup_cmd=cleanup, host_id=host["id"],
                                finding_id=action.finding_id)
     return ExecResult(ok=result.ok, transport=transport.name, run=result, step_id=step_id)
+
+
+def _execute_via_recce_session(store, action, transport, *,
+                               timeout, on_event, http_call):
+    """The recce-session execution path.
+
+    Skips ``_proven_path`` (a session_id IS the proof of access) and ``render_exec``
+    (no nxc argv — HTTP body carries the target-side command). Preserves the step-
+    write so ``report --check`` passes by construction: the captured evidence is the
+    ``(POST url, command, output, exit_code)`` tuple, identical in shape to the
+    subprocess path.
+
+    Recce-session actions cannot ``upload`` a file (yet) — a session's tasking channel
+    only runs commands, not file-pushes. Callers requesting an upload get a clear
+    error rather than a silent no-op.
+    """
+    host = action.host
+    if action.upload:
+        return ExecResult(
+            blocked="recce-session transport can't push files — use a session-side "
+                    "command that writes the payload (e.g. `printf ... | base64 -d > /tmp/x`)",
+            transport=transport.name)
+    if not action.recce_session_id:
+        return ExecResult(
+            blocked="recce-session transport requires a session id — invoke with "
+                    "`--via-recce=<session_id>`",
+            transport=transport.name)
+
+    cfg = recce_transport_mod._config_from_store(store)
+    label = f"recce-session:{action.recce_session_id}"
+    if on_event:
+        on_event(f"  [{label}] {host['ip']}: {action.command}")
+
+    result = recce_transport_mod.task_session(
+        cfg, action.recce_session_id, action.command,
+        timeout=timeout, http_call=http_call)
+
+    with store.transaction():
+        step_id = store.add_step(
+            cmd=action.command, output=result.output,
+            exit_code=result.exit_code, host_id=host["id"],
+            finding_id=action.finding_id, label=action.label,
+            transport=label)
+        for entry in action.creates:
+            desc, cleanup = entry if isinstance(entry, (tuple, list)) else (entry, None)
+            store.add_artifact(desc, cleanup_cmd=cleanup, host_id=host["id"],
+                               finding_id=action.finding_id)
+    return ExecResult(ok=result.ok, transport=label, run=result, step_id=step_id)

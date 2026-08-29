@@ -48,6 +48,14 @@ TRANSPORTS = (
     # service account (commonly SeImpersonate-holding), and is loud (enables xp_cmdshell,
     # event-logged), so it sinks below SMB.
     Transport("mssql", "mssql", WINDOWS, "cmd", True, "-x", rank=40),
+    # Recce-session transports — route argv through a recce-caught shell's tasking
+    # channel instead of an nxc subprocess. The `flag` is None because there is no
+    # nxc argv to build; the executor branches on `proto == "recce-session"` and calls
+    # `fieldkit.recce_transport.task_session` instead of `render_exec + run`. Two
+    # entries so the OS-picker can select the right shell for the target; operator
+    # binds the session_id at CLI time via `--via-recce=<id>`.
+    Transport("recce-session-win", "recce-session", WINDOWS, "cmd", False, None, rank=20),
+    Transport("recce-session-linux", "recce-session", LINUX, "sh", False, None, rank=20),
 )
 
 _BY_NAME = {t.name: t for t in TRANSPORTS}
