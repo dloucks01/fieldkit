@@ -22,6 +22,7 @@ from textual.widgets import Footer, Static
 from ..state import Store, default_db_path
 from . import theme
 from .dashboard import DashboardScreen, DASHBOARD_TCSS
+from .watch_screen import WatchScreen, WATCH_TCSS
 
 
 # ---------------------------------------------------------------------------
@@ -113,27 +114,6 @@ class EscalateScreen(Screen):
         self.query_one(TitleBar).engagement = self.app.engagement_name
 
 
-class WatchScreen(Screen):
-    """Live event tail. Ship 3."""
-
-    BINDINGS = [
-        Binding("g", "app.switch_screen('dashboard')", "dashboard"),
-        Binding("a", "app.switch_screen('analyze')", "analyze"),
-        Binding("e", "app.switch_screen('escalate')", "escalate"),
-        Binding("?", "app.push_screen('help')", "help"),
-        Binding("q", "app.quit", "quit"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="frame"):
-            yield TitleBar(id="title-bar")
-            yield _stub_body("Watch", "Ship 3")
-        yield Footer()
-
-    def on_mount(self):
-        self.query_one(TitleBar).engagement = self.app.engagement_name
-
-
 class HelpScreen(Screen):
     """Translucent-feeling keymap overlay (pushed with ?, closed with esc)."""
 
@@ -182,7 +162,7 @@ class FieldkitTUI(App):
     display and dispatch subprocess `fieldkit` commands for actions.
     """
 
-    CSS = theme.APP_TCSS + DASHBOARD_TCSS
+    CSS = theme.APP_TCSS + DASHBOARD_TCSS + WATCH_TCSS
     TITLE = "fieldkit"
 
     SCREENS = {
