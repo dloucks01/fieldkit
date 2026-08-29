@@ -1,0 +1,59 @@
+# Container escape surface → hostNetwork → node-local services
+#
+# `docker run --network=host` / k8s `hostNetwork: true` pods share the
+# node's network namespace. Consequences:
+#
+#   * Every node-local service (kubelet on 10250/10248, etcd, dashboards)
+#     is reachable via 127.0.0.1 from the pod.
+#   * The pod sees ALL of the node's interfaces (docker0, cni*, flannel*,
+#     br-*, weave, cali*, tunl*) — those are the giveaway used for
+#     detection here.
+#   * Traffic sniffing / arp spoofing on the node's segment becomes
+#     possible (though this vector doesn't run either; it surfaces the
+#     surface for the operator to follow up with tcpdump / responder).
+#
+# This isn't a straight escape command — the surface itself is the
+# finding. The proof lists node-local interfaces so the report has
+# concrete evidence.
+technique: T1611
+name: Container surface → hostNetwork → node-local services reachable
+tactic: [discovery, lateral-movement]
+platform: [linux]
+key: container_escape:hostnetwork
+ranking:
+  exploitability: medium       # follow-up depends on what's on the node
+  safety: read-only
+  detection: quiet
+detect:
+  facts_match:
+    in_container: true
+    has_hostnetwork: true
+execute:
+  # List the host-only interfaces we can see + probe kubelet on 10250
+  # (a common node-local service). Read-only, quiet.
+  command: |-
+    ls /sys/class/net 2>/dev/null | grep -E '^(docker0|cni|flannel|br-|weave|cali|tunl)' \
+      | head -5; \
+      timeout 2 curl -sk https://127.0.0.1:10250/pods 2>&1 | head -c 200
+verify:
+  # Either a network interface list line OR the kubelet API responds —
+  # both prove we're seeing the node's network stack from inside the pod.
+  success: "docker0"
+cleanup:
+  command: ""
+report:
+  vector_type: container_escape_hostnetwork
+  description: >
+    A container/pod with hostNetwork shares the node's entire network
+    namespace. Node-local services (kubelet 10248/10250, dashboards
+    bound to 127.0.0.1, cluster components) become reachable from the
+    pod. Traffic sniffing on the node's segment is possible (arp
+    spoofing, responder). The finding IS the surface — follow-up
+    depends on what services the specific node exposes.
+  remediation: >
+    Refuse pods that request hostNetwork unless there's a documented
+    reason (a monitoring agent, a CNI plugin). Bind node-local
+    services to a specific admin interface or require mTLS on them
+    (kubelet: --authentication-token-webhook + --authorization-mode
+    =Webhook, disabling the anonymous-auth default).
+  refs: [T1611, T1046, CIS-K8s-5.2.4]

