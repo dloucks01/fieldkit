@@ -224,6 +224,41 @@ class DetectionBlock(Static):
             f"Every action captured to the step table.[/]")
 
 
+class ChainsBlock(Static):
+    """Recent coerce-chain runs — the "what's mid-flight, what
+    landed, what aborted" strip. Renders nothing when no chains
+    have been recorded in the engagement, so the dashboard stays
+    clean on pre-chain engagements."""
+
+    def render_from(self, d):
+        summary = d.chains_summary
+        recent = d.chains_recent
+        if summary["total"] == 0:
+            self.update("")
+            return
+        lines = [
+            f"\n  {_accent(theme.G.ACTION + ' CHAINS')}   "
+            f"[{theme.C.INK_DIM2}]{summary['total']} recorded "
+            f"({summary['proven']} proven, "
+            f"{summary['in_progress']} in-progress, "
+            f"{summary['aborted']} aborted)[/]"
+        ]
+        for r in recent:
+            status = r["status"]
+            colour = {
+                "proven":       theme.C.GOOD,
+                "in_progress":  theme.C.WARN,
+                "aborted":      theme.C.CRIT,
+            }.get(status, theme.C.INK_DIM)
+            lines.append(
+                f"      #{r['id']:<3} "
+                f"[{theme.C.ACCENT}]{r['profile']:<16}[/] "
+                f"[{theme.C.INK}]{r['target']:<18}[/] "
+                f"[{colour}]{status:<12}[/] "
+                f"[{theme.C.INK_DIM}]debt {r['detection_debt']:>3}[/]")
+        self.update("\n".join(lines))
+
+
 class PreflightBlock(Static):
     """Shows required tools missing (nxc, impacket-secretsdump, etc.)."""
 
@@ -264,6 +299,7 @@ class DashboardScreen(Screen):
                 yield TopMovesBlock(id="top-moves")
                 yield Static(f"  [{theme.C.RULE}]" + "─" * 68 + "[/]", classes="rule-line")
                 yield PwnedBlock(id="pwned")
+                yield ChainsBlock(id="chains")
                 yield DetectionBlock(id="detection")
                 yield PreflightBlock(id="preflight")
         yield Footer()
@@ -284,6 +320,7 @@ class DashboardScreen(Screen):
         self.query_one(CountsBlock).render_from(d)
         self.query_one(TopMovesBlock).render_from(d)
         self.query_one(PwnedBlock).render_from(d)
+        self.query_one(ChainsBlock).render_from(d)
         self.query_one(DetectionBlock).render_from(d)
         self.query_one(PreflightBlock).render_from(d)
 
