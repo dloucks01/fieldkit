@@ -29,10 +29,18 @@ class CanonProductTest(unittest.TestCase):
             # Vendor prefix must be skipped ("Microsoft" isn't the product).
             ("Microsoft IIS httpd", "iis"),
             ("Microsoft SQL Server", "sql"),
-            # Vendor-adjacent tokens that ARE product names must survive
-            # (Apache is the product for httpd, not a vendor).
+            # Composite names — canon prefers the LAST non-vendor non-
+            # generic token, so the specific product wins over the shared
+            # prefix. Matters for CVE matching: Tomcat/ActiveMQ/Struts
+            # CVEs are distinct from Apache httpd's, so they need to canon
+            # to their own key. Bare "Apache" (httpd generic-filtered)
+            # still resolves to "apache".
             ("Apache httpd", "apache"),
-            ("Apache Tomcat", "apache"),
+            ("Apache Tomcat", "tomcat"),
+            ("Apache ActiveMQ", "activemq"),
+            ("Apache Struts", "struts"),
+            ("Atlassian Confluence", "confluence"),
+            ("Palo Alto Networks PAN-OS", "pan-os"),
             # Single-word products pass through.
             ("nginx", "nginx"),
             ("OpenSSH", "openssh"),
