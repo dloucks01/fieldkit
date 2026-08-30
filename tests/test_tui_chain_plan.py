@@ -25,8 +25,17 @@ class ChainProfilesDataTest(unittest.TestCase):
                           .issubset(names))
 
     def test_each_profile_has_shape(self):
+        # Scope to the shipped profiles only — other test modules
+        # register transient profiles (dup-test, test-filter-profile,
+        # etc.) with intentionally-empty step lists to exercise
+        # walker edge cases; those pollute the module-scoped registry
+        # for the full-suite run. See tests/test_chain_profiles.py's
+        # RegistryTest which uses the same subset pattern.
         from fieldkit.tui.data import chain_profiles
+        shipped = {"esc8", "rbcd", "smb-relay-exec", "esc1"}
         for p in chain_profiles():
+            if p["name"] not in shipped:
+                continue
             self.assertIn("name", p)
             self.assertIn("step_count", p)
             self.assertIn("total_cost", p)

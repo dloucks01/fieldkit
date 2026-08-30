@@ -159,8 +159,11 @@ class TUIImportTest(unittest.TestCase):
         app = FieldkitTUI(db_path=None)
         # Escalate is push-only (needs a highlighted move from Analyze),
         # not a named SCREENS entry — so the registered set is 4, not 5.
+        # C9 slice 4 added `chain-plan`; the shipped SCREENS is now 5.
+        # Escalate remains push-only (needs a highlighted move from
+        # Analyze), not a named SCREENS entry.
         self.assertEqual(sorted(app.SCREENS.keys()),
-                         ["analyze", "dashboard", "help", "watch"])
+                         ["analyze", "chain-plan", "dashboard", "help", "watch"])
 
 
 if __name__ == "__main__":
