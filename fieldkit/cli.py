@@ -2090,18 +2090,36 @@ def cmd_doctor(args):
     except Exception:                                       # noqa: BLE001
         cm = None
     try:
+        reports, code = doctor.run(store=store)
+        actions = doctor.fix(reports, store=store) \
+            if getattr(args, "fix", False) else []
+
         if getattr(args, "json", False):
             import json as _json
-            reports, code = doctor.run(store=store)
-            print(_json.dumps({
+            payload = {
                 "exit_code": code,
                 "reports": [{
                     "name": r.name, "rung": r.rung,
                     "message": r.message, "details": r.details,
                 } for r in reports],
-            }, indent=2))
+            }
+            if getattr(args, "fix", False):
+                payload["fix_actions"] = [
+                    {"action": a, "outcome": o} for a, o in actions]
+                # Re-run probes after fixes to reflect what's now green.
+                if any(o == "fixed" for _, o in actions):
+                    post_reports, post_code = doctor.run(store=store)
+                    payload["post_fix"] = {
+                        "exit_code": post_code,
+                        "reports": [{
+                            "name": r.name, "rung": r.rung,
+                            "message": r.message, "details": r.details,
+                        } for r in post_reports],
+                    }
+                    code = post_code
+            print(_json.dumps(payload, indent=2))
             return code
-        reports, code = doctor.run(store=store)
+
         rung_marker = {"ok": "ok  ", "warning": "warn",
                         "error": "ERR "}
         print("fieldkit doctor\n")
@@ -2114,6 +2132,25 @@ def cmd_doctor(args):
         n_warn = sum(1 for r in reports if r.rung == "warning")
         n_err = sum(1 for r in reports if r.rung == "error")
         print(f"summary: {n_ok} ok, {n_warn} warning(s), {n_err} error(s)")
+
+        if actions:
+            print("\nfix actions:")
+            marker = {"fixed": "fixed  "}
+            for a, o in actions:
+                m = "fixed  " if o == "fixed" else \
+                    ("skipped" if o.startswith("skipped") else "FAILED ")
+                print(f"  {m}  {a}")
+                if o != "fixed":
+                    # Show the skip / failure reason indented under
+                    detail = o.split(":", 1)[1].strip() if ":" in o else o
+                    print(f"           → {detail}")
+            fixed_count = sum(1 for _, o in actions if o == "fixed")
+            if fixed_count:
+                # Re-probe to reflect fixed state
+                post_reports, post_code = doctor.run(store=store)
+                print(f"\npost-fix re-probe: exit code {post_code} "
+                      f"(was {code}; {fixed_count} action(s) applied)")
+                code = post_code
         return code
     finally:
         if cm is not None:
@@ -3643,6 +3680,13 @@ the spec is missing that field. `--from-file` reads one credential per line.
                     "exists.")
     p_doctor.add_argument("--json", action="store_true",
                            help="emit machine-readable JSON; exit code unchanged")
+    p_doctor.add_argument("--fix", action="store_true",
+                           help="auto-remediate warnings where the action is "
+                                "unambiguous + safe (mkdir Linux stage dirs, "
+                                "restore missing config defaults). Others "
+                                "get a concrete hint but aren't touched. "
+                                "After fixing, re-runs the probes so the "
+                                "exit code reflects the post-fix state.")
     p_doctor.set_defaults(func=cmd_doctor)
 
     _build_ttps_parser(sub)
