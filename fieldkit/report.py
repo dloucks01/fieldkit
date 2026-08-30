@@ -121,7 +121,33 @@ def build(store, config, *, proven_only=True):
     # did; they don't change the finding set.
     engagement["chain_history"] = _collect_chain_history(store)
     engagement["bh_paths"] = _collect_bh_paths(store)
+
+    # Cross-reference: attach the shipped TTPs whose report_type
+    # matches each finding's vector_type. Lets the customer report
+    # cite "See also: TTP key" so a reader can look up the standard
+    # detection guidance + remediation pattern from the shipped
+    # catalog without hunting through fieldkit source. Zero-cost
+    # when the catalog can't load — findings just get empty lists.
+    ttp_index = _collect_ttp_index()
+    for f in findings:
+        f["related_ttps"] = ttp_index.get(f["vector_type"], [])
     return engagement, findings
+
+
+def _collect_ttp_index():
+    """Load the shipped TTP catalog and return
+    {vector_type: [ttp_key, ...]} for cross-referencing findings
+    against the standard-detection TTPs that would have surfaced
+    them. Returns {} on catalog import/load failure — cross-refs
+    are a nice-to-have, not load-bearing for report rendering."""
+    try:
+        from .ttps import loader as ttp_loader
+        out = {}
+        for t in ttp_loader.load_all():
+            out.setdefault(t.report.vector_type, []).append(t.key)
+        return out
+    except Exception:                                             # noqa: BLE001
+        return {}
 
 
 def _collect_chain_history(store):
@@ -374,7 +400,30 @@ def _render_finding(w, i, f):
     w("")
     w(k["rem"])
     w("")
+    _render_related_ttps(w, f)
     w("---")
+    w("")
+
+
+def _render_related_ttps(w, f):
+    """Render the "See also" cross-reference to shipped TTPs whose
+    report_type matches this finding's vector_type. When populated,
+    lets a customer reader trace back to the standard fieldkit TTP
+    catalog entry (detection guidance + remediation pattern) that
+    would have surfaced the finding. Renders nothing when empty."""
+    refs = f.get("related_ttps") or []
+    if not refs:
+        return
+    w("### See also — fieldkit TTP catalog")
+    w("")
+    w("This finding maps to the following standard-detection TTP(s) "
+      "in fieldkit's shipped catalog. Each TTP entry documents the "
+      "detection signals a defender would see + the operator's "
+      "standard exploitation shape, so the customer's SOC / IT team "
+      "can build a hunt package from the fieldkit reference.")
+    w("")
+    for ref in refs:
+        w(f"- `{ref}`")
     w("")
 
 
@@ -418,6 +467,7 @@ def _render_observation(w, i, f):
     w("")
     w(k["rem"])
     w("")
+    _render_related_ttps(w, f)
     w("---")
     w("")
 
