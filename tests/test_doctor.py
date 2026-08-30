@@ -213,13 +213,27 @@ class CLITest(unittest.TestCase):
         return code, buf.getvalue(), errbuf.getvalue()
 
     def test_doctor_prints_expected_sections(self):
-        code, out, _ = self._run(["doctor"])
-        # tools, chains, ttps always render; exit code varies
+        # Scope the chain registry to the shipped set — other tests
+        # may leak synthetic broken profiles into the process-wide
+        # registry, which would trip chain-lint errors and bump the
+        # doctor exit to 2.
+        from fieldkit import chain as chain_mod
+        snap = dict(chain_mod._PROFILES)
+        shipped = {"esc8", "rbcd", "smb-relay-exec", "esc1"}
+        chain_mod._PROFILES = {k: v for k, v in snap.items()
+                                if k in shipped}
+        try:
+            code, out, _ = self._run(["doctor"])
+        finally:
+            chain_mod._PROFILES.clear()
+            chain_mod._PROFILES.update(snap)
+        # tools, chains, ttps always render
         self.assertIn("tools", out)
         self.assertIn("chains", out)
         self.assertIn("ttps", out)
         self.assertIn("summary:", out)
-        self.assertIn(code, (0, 1))   # no errors on this box
+        # Optional-tool absence keeps this ≤ 1 on the shipped set.
+        self.assertIn(code, (0, 1))
 
     def test_doctor_json_output_parses(self):
         import json as _json
