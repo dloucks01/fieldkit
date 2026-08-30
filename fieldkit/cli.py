@@ -2272,6 +2272,75 @@ def cmd_doctor(args):
                 pass
 
 
+def cmd_chain_register(args):
+    """Install a YAML-defined chain profile into
+    ~/.fieldkit/chains/ so it auto-loads on future invocations.
+    Validates first — a bad YAML never lands in the auto-load
+    dir. Exit 0 install, 2 on validation error."""
+    from . import chain_yaml
+    try:
+        dest = chain_yaml.install_yaml(args.from_yaml)
+    except chain_yaml.ChainYamlError as exc:
+        _err(str(exc))
+        return 2
+    print(f"installed → {dest}")
+    print("chain will auto-load on the next `fieldkit ...` invocation")
+    return 0
+
+
+def cmd_chain_unregister(args):
+    """Remove a YAML-defined chain profile from
+    ~/.fieldkit/chains/. Only affects user-installed profiles;
+    shipped profiles can't be removed via this command."""
+    from . import chain_yaml
+    from . import chain as chain_mod
+    shipped = {"esc8", "rbcd", "smb-relay-exec", "esc1", "nopac"}
+    if args.name in shipped:
+        _err(f"{args.name!r} is a shipped profile — can't unregister")
+        return 2
+    if chain_yaml.uninstall(args.name):
+        print(f"removed ~/.fieldkit/chains/{args.name}.yaml + "
+              f"in-memory registration")
+    else:
+        _err(f"no user-installed chain named {args.name!r} — "
+             f"check `fieldkit chain list-profiles`")
+        return 2
+    return 0
+
+
+def cmd_chain_list_profiles(args):
+    """One line per registered chain profile — name + step count +
+    total detection cost + shipped/user origin. Read-only."""
+    from . import chain as chain_mod
+    from . import chain_yaml
+    _ = args
+    shipped = {"esc8", "rbcd", "smb-relay-exec", "esc1", "nopac"}
+    user_names = set()
+    if os.path.isdir(chain_yaml.USER_CHAINS_DIR):
+        for f in os.listdir(chain_yaml.USER_CHAINS_DIR):
+            if f.endswith(".yaml"):
+                user_names.add(f[:-5])
+    profiles = chain_mod.known_profiles()
+    if not profiles:
+        print("no chain profiles registered")
+        return 0
+    print(f"{len(profiles)} chain profile(s) registered:\n")
+    print(f"  {'name':<24}  {'steps':>5}  {'cost':>5}  origin")
+    for p in profiles:
+        try:
+            factory = chain_mod.profile(p)
+            ch = factory("<target>")
+            cost = ch.total_detection_cost or sum(
+                s.signal_cost if s.signals else s.detection_cost
+                for s in ch.steps)
+            origin = "user" if p in user_names \
+                else "shipped" if p in shipped else "session"
+            print(f"  {p:<24}  {len(ch.steps):>5}  {cost:>5}  {origin}")
+        except Exception as exc:                            # noqa: BLE001
+            print(f"  {p:<24}  ????  ????  factory-fails: {exc}")
+    return 0
+
+
 def cmd_chain_lint(args):
     """Coverage audit for every registered chain profile — surfaces
     plan gaps (missing signals, duplicate step names, preflight
@@ -3562,6 +3631,31 @@ def _build_chain_parser(sub):
                               "text mode (0 clean, 1 warnings, 2 errors), so "
                               "CI can gate on the exit code directly.")
     c_lint.set_defaults(func=cmd_chain_lint)
+
+    c_register = chain_sub.add_parser(
+        "register",
+        help="install a YAML-defined chain profile so it auto-loads",
+        description="Copies a YAML profile into ~/.fieldkit/chains/ "
+                    "so it auto-loads on subsequent fieldkit invocations. "
+                    "Validates the YAML first — a bad file never lands "
+                    "in the auto-load dir. See fieldkit/chain_yaml.py "
+                    "for the schema; the shipped profiles' YAML shape "
+                    "is a good starting template.")
+    c_register.add_argument("--from-yaml", required=True, metavar="PATH",
+                             help="path to the YAML chain profile")
+    c_register.set_defaults(func=cmd_chain_register)
+
+    c_unregister = chain_sub.add_parser(
+        "unregister",
+        help="remove a user-installed chain profile (shipped profiles kept)")
+    c_unregister.add_argument("name",
+                                help="profile name from `chain list-profiles`")
+    c_unregister.set_defaults(func=cmd_chain_unregister)
+
+    c_list_profiles = chain_sub.add_parser(
+        "list-profiles",
+        help="registered chain profiles — shipped + user-installed")
+    c_list_profiles.set_defaults(func=cmd_chain_list_profiles)
 
 
 def _build_ttps_parser(sub):

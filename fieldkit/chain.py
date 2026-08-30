@@ -1800,3 +1800,26 @@ def nopac_chain(target_dc, cred=None, domain=None, impersonate=None):
                  detection_cost=1,
                  signals=SIGNALS_NOPAC_RESTORE),
         ))
+
+
+# ---------------------------------------------------------------- user chain auto-load
+
+# Load any YAML-defined profiles from ~/.fieldkit/chains/ into
+# the registry. Silently skips malformed files (prints stderr
+# warnings) rather than breaking chain-module import; a broken
+# user file shouldn't prevent shipped profiles from loading.
+# See fieldkit/chain_yaml.py for the schema + register/install
+# helpers, and `fieldkit chain register --from-yaml <path>` for
+# the operator-facing install command.
+def _load_user_chains_on_import():
+    try:
+        from . import chain_yaml as _cy
+        _cy.load_user_chains()
+    except Exception:                                       # noqa: BLE001
+        # Never let user-chain loading fail chain module import —
+        # a syntax error in ~/.fieldkit/chains/foo.yaml shouldn't
+        # brick the whole tool.
+        pass
+
+
+_load_user_chains_on_import()
