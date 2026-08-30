@@ -96,6 +96,10 @@ class ContainerEscapeVectorTest(unittest.TestCase):
     shipped T1611 vectors; on bare metal it emits none."""
 
     def test_container_with_docker_sock_and_k8s_yields_three_escapes(self):
+        # subset check — later slices add more container_escape:*
+        # TTPs (runc CVE-2024-21626 lands here too since it gates on
+        # in_container). The three keys pinned below are the ones
+        # this test was originally about.
         from fieldkit.hostenum import HostFacts, LINUX
         from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
         _reset_ttp_cache_for_tests()
@@ -106,11 +110,12 @@ class ContainerEscapeVectorTest(unittest.TestCase):
             "10.0.0.7")
         escapes = {v.key for v in vs
                    if v.report_type.startswith("container_escape")}
-        self.assertEqual(escapes, {
+        self.assertTrue({
             "container_escape:docker_sock",
             "container_escape:sys_admin",
             "container_escape:k8s_sa",
-        })
+        }.issubset(escapes),
+        f"missing expected escapes; got {escapes}")
 
     def test_bare_metal_with_docker_installed_yields_no_escapes(self):
         # A bare-metal host that happens to have /var/run/docker.sock (root
@@ -128,8 +133,10 @@ class ContainerEscapeVectorTest(unittest.TestCase):
 
     def test_container_without_privileged_context_only_yields_k8s(self):
         # A pod with just an SA token but no docker.sock/sys_admin only
-        # gets the K8s escape — proves each TTP's detect predicate is
-        # independent, not a shared always-on set.
+        # gets the K8s escape (plus the runc CVE which gates on
+        # in_container alone) — proves each TTP's detect predicate is
+        # independent, not a shared always-on set. Docker/sys_admin
+        # -specific escapes stay excluded.
         from fieldkit.hostenum import HostFacts, LINUX
         from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
         _reset_ttp_cache_for_tests()
@@ -138,7 +145,9 @@ class ContainerEscapeVectorTest(unittest.TestCase):
             "10.0.0.7")
         escapes = {v.key for v in vs
                    if v.report_type.startswith("container_escape")}
-        self.assertEqual(escapes, {"container_escape:k8s_sa"})
+        self.assertIn("container_escape:k8s_sa", escapes)
+        self.assertNotIn("container_escape:docker_sock", escapes)
+        self.assertNotIn("container_escape:sys_admin", escapes)
 
 
 class NsenterHostpidTest(unittest.TestCase):

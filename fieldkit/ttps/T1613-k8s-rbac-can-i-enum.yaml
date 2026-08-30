@@ -1,0 +1,58 @@
+# Kubernetes RBAC enumeration via `kubectl auth can-i --list`
+#
+# From inside a pod with a mounted ServiceAccount token, the
+# operator can enumerate exactly which API verbs + resources the
+# SA is authorized to hit — no admin required, RBAC exposes this
+# to every principal. Common findings:
+#
+#   * get/list secrets (any namespace)   → dump every registered secret → pivot to their creds
+#   * create pods                         → run a pod that mounts /host or elevates via node role
+#   * impersonate users/groups/service-   → assume any identity ("kubectl --as system:masters")
+#   * update roles/rolebindings/clusterroles → self-grant admin
+#   * exec pods                           → runtime-exec into any workload → pivot creds
+#
+# fieldkit's T1611-container-k8s-serviceaccount.yaml already
+# fires on has_k8s_token; this TTP is the actionable "what CAN
+# this token do" enum — one command surfaces the whole map.
+technique: T1613
+name: Kubernetes RBAC — `kubectl auth can-i --list` enum
+tactic: [discovery, privilege-escalation]
+platform: [linux]
+key: 'container:k8s-rbac-can-i'
+ranking:
+  exploitability: medium
+  safety: read-only                # pure query; no state change
+  detection: quiet                  # can-i is a legitimate self-check API call
+detect:
+  facts_match:
+    has_k8s_token: true
+execute:
+  # `kubectl auth can-i --list` prints every allowed verb+resource
+  # combination for the current SA. Falls back to raw API on hosts
+  # without kubectl (BusyBox pods etc.).
+  command: |-
+    kubectl auth can-i --list 2>/dev/null || (TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null); curl -sk -H "Authorization: Bearer $TOKEN" "https://kubernetes.default.svc/apis/authorization.k8s.io/v1/selfsubjectrulesreviews" -H "Content-Type: application/json" -d '{"kind":"SelfSubjectRulesReview","apiVersion":"authorization.k8s.io/v1","spec":{"namespace":"default"}}' | head -50)
+verify:
+  success: "Resources"
+cleanup:
+  command: ""
+report:
+  vector_type: container_escape    # reuse the container-escape KB bucket
+  evidence: "in_container + has_k8s_token → RBAC self-review enumerable"
+  description: >
+    A pod's mounted ServiceAccount token authenticates to the K8s
+    API. `kubectl auth can-i --list` (or the equivalent
+    SelfSubjectRulesReview API call) enumerates exactly which
+    verbs the SA can perform against which resources. High-value
+    hits: `get secrets`, `create pods`, `impersonate users`,
+    `update roles`, `exec pods`. Any one of these is a lateral
+    or escalation primitive; the enum is quiet and doesn't
+    write to the cluster.
+  remediation: >
+    Audit ClusterRoles + Roles for principals that shouldn't have
+    the high-value verbs above. Drop `impersonate` grants entirely
+    unless legitimately needed. Bind ServiceAccounts to the
+    minimum-viable Role, not the default. Use
+    `automountServiceAccountToken: false` on pods that don't need
+    API access.
+  refs: [T1613, kubernetes-rbac, container-escape]
