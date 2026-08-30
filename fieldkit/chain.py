@@ -336,6 +336,71 @@ def known_profiles():
 
 # ---------------------------------------------------------------- walker
 
+def resume(store, chain_id):
+    """Reconstruct a Chain from a persisted ``in_progress`` chain row,
+    ready for :func:`walk` to continue where the previous walk stopped.
+
+    Rebuilds by calling the profile factory against the stored target
+    (so the fresh Chain has the current step catalog + current
+    signal costs), then seeds ``chain.outcomes`` with the persisted
+    trail so ``chain.current == len(outcomes)`` — walk() then picks
+    up at the next unwalked step.
+
+    Also stamps ``chain._persisted_id`` so mid-walk artifact
+    persistence (chain-id-linked cert rows, etc.) keeps writing
+    against the same chain row rather than a new one.
+
+    Raises :class:`KeyError` when the chain row doesn't exist, or when
+    the profile is no longer registered. Raises :class:`ValueError`
+    when the chain isn't resumable (status != in_progress), or when
+    the persisted step names have drifted from the current profile
+    (rare — profile refactor without a chain-id migration).
+    """
+    row = store.chain_by_id(chain_id)
+    if row is None:
+        raise KeyError(f"no chain #{chain_id} in this engagement")
+    if row["status"] != "in_progress":
+        raise ValueError(
+            f"chain #{chain_id} status is {row['status']!r} — "
+            "only in_progress chains can be resumed")
+    profile_name = row["profile"]
+    target = row["target"]
+    factory = profile(profile_name)                 # raises KeyError on drop
+    chain = factory(target)
+    # Preserve original started_at so the total-elapsed metric stays
+    # coherent across resume boundaries.
+    if row.get("started_at"):
+        chain.started_at = row["started_at"]
+    trail = store.chain_step_trail(chain_id)
+    # Validate step-name alignment before mutating chain state — a
+    # drift here means the profile catalog has changed under our
+    # feet and the old trail is no longer a prefix of the new plan.
+    for t in trail:
+        idx = t["idx"]
+        if idx >= len(chain.steps):
+            raise ValueError(
+                f"chain #{chain_id}: persisted step idx {idx} "
+                f"exceeds current profile length {len(chain.steps)}")
+        if chain.steps[idx].name != t["step_name"]:
+            raise ValueError(
+                f"chain #{chain_id}: persisted step {idx} "
+                f"{t['step_name']!r} != current profile step "
+                f"{chain.steps[idx].name!r} — profile has drifted")
+    # Seed outcomes from persisted trail (idx-ordered by
+    # chain_step_trail). Store the outcomes as they were captured;
+    # data-carrying artifacts are lost on resume (they lived only in
+    # the walker's memory), so a resumed chain can't re-populate
+    # chain.artifacts — steps that need those artifacts will fail
+    # gracefully and the operator can restart the profile.
+    for t in trail:
+        chain.outcomes.append(Outcome(
+            kind=t["outcome_kind"],
+            evidence=t["evidence"] or ""))
+    chain.current = len(chain.outcomes)
+    chain._persisted_id = chain_id                   # noqa: SLF001
+    return chain
+
+
 def walk(chain, ctx, on_step=None, before_step=None):
     """Run every remaining step of ``chain``, in order. Returns the
     chain object mutated in-place (caller reads ``chain.status`` +
