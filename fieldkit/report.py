@@ -114,7 +114,57 @@ def build(store, config, *, proven_only=True):
             "artifacts": arts,
             "reached_via": reached_via,
         })
+
+    # C-arc + D-arc report surfaces — coerce chain walks + BloodHound
+    # owned→high-value paths. Both are read-only reporting slots:
+    # they surface work fieldkit's chain / bloodhound modules already
+    # did; they don't change the finding set.
+    engagement["chain_history"] = _collect_chain_history(store)
+    engagement["bh_paths"] = _collect_bh_paths(store)
     return engagement, findings
+
+
+def _collect_chain_history(store):
+    """Every recorded coerce_chain, newest first, with a compact
+    per-chain summary suitable for the report. Empty when no chains
+    were run in this engagement."""
+    try:
+        rows = store.chains()
+    except Exception:                                             # noqa: BLE001
+        return []
+    out = []
+    for row in rows:
+        trail = []
+        try:
+            trail = store.chain_step_trail(row["id"])
+        except Exception:                                         # noqa: BLE001
+            pass
+        out.append({
+            "id": row["id"],
+            "profile": row["profile"],
+            "target": row["target"],
+            "status": row["status"],
+            "detection_debt": row["total_detection_cost"],
+            "aborted_reason": row["aborted_reason"] or "",
+            "started_at": row["started_at"] or "",
+            "steps": [{"name": t["step_name"], "kind": t["step_kind"],
+                       "outcome": t["outcome_kind"],
+                       "cost": t["detection_cost"],
+                       "evidence": t["evidence"]}
+                      for t in trail],
+        })
+    return out
+
+
+def _collect_bh_paths(store):
+    """Owned → high-value control paths from the BloodHound graph
+    ingested in this engagement. Empty when no graph was ingested or
+    no path exists. Zero-cost when the bh_node table is empty."""
+    try:
+        from . import bloodhound as bh_mod
+        return bh_mod.owned_paths(store)
+    except Exception:                                             # noqa: BLE001
+        return []
 
 
 # ------------------------------------------------------------------- helpers
@@ -372,6 +422,79 @@ def _render_observation(w, i, f):
     w("")
 
 
+def _render_chain_history(w, chains):
+    """The per-chain summary section: profile, target, status, step
+    trail, aggregate detection debt. Empty section (no output) when
+    no chains were run — the report stays clean on engagements
+    that never triggered a coerce chain."""
+    if not chains:
+        return
+    w("# Coerce chain history")
+    w("")
+    w("Each chain below was walked during this engagement by "
+      "`fieldkit chain run`. The **detection debt** is the aggregate "
+      "signal-weighted cost of the steps that actually ran — event "
+      "IDs, DCERPC opcodes, Kerberos ticket requests, and other "
+      "defender-visible artifacts, weighted by their alert value on "
+      "a mature SOC. The per-step trail is the same output "
+      "`fieldkit chain show --signals` renders in the terminal.")
+    w("")
+    w("| # | Profile | Target | Status | Detection debt |")
+    w("|---|---------|--------|--------|---------------:|")
+    for ch in chains:
+        w(f"| {ch['id']} | `{ch['profile']}` | `{ch['target']}` | "
+          f"{ch['status']} | {ch['detection_debt']} |")
+    w("")
+    for ch in chains:
+        w(f"### Chain #{ch['id']} — {ch['profile']} against {ch['target']}")
+        w("")
+        w(f"- Status: **{ch['status']}**")
+        w(f"- Detection debt: {ch['detection_debt']} units")
+        if ch.get("started_at"):
+            w(f"- Started: {ch['started_at']}")
+        if ch.get("aborted_reason"):
+            w(f"- Aborted: {ch['aborted_reason']}")
+        w("")
+        if ch.get("steps"):
+            w("Step trail:")
+            w("")
+            w("| # | Step | Kind | Outcome | Cost | Evidence |")
+            w("|---|------|------|---------|-----:|----------|")
+            for i, s in enumerate(ch["steps"]):
+                evidence = (s.get("evidence") or "").replace("|", "\\|")
+                if len(evidence) > 80:
+                    evidence = evidence[:77] + "..."
+                w(f"| {i} | `{s['name']}` | {s['kind']} | "
+                  f"**{s['outcome']}** | {s['cost']} | {evidence} |")
+            w("")
+
+
+def _render_bh_paths(w, paths):
+    """Owned → high-value control paths from the ingested BloodHound
+    graph. Empty when no path finds or no graph ingested. Highest-
+    value / shortest paths first."""
+    if not paths:
+        return
+    w("# BloodHound — owned → high-value control paths")
+    w("")
+    w("The ingested SharpHound graph exposes the following control "
+      "paths from a recovered credential to a high-value target. "
+      "Each path is the *shortest* control-edge chain from the "
+      "owned principal to the target; presence of a path means "
+      "the target is reachable using existing AD ACLs + delegation. "
+      "See the `fieldkit bloodhound path` output for the per-edge "
+      "walkthrough.")
+    w("")
+    w("| # | Owned principal | High-value target | Hops |")
+    w("|---|-----------------|-------------------|-----:|")
+    for i, p in enumerate(paths, 1):
+        owned = p.get("owned") or "?"
+        target = p.get("target") or "?"
+        hops = p.get("hops", "?")
+        w(f"| {i} | `{owned}` | **{target}** | {hops} |")
+    w("")
+
+
 def render_markdown(engagement, findings):
     """The customer report as Markdown. Proven weaknesses render as **Findings** (with the
     full captured walkthrough + screenshot placeholders); unproven ones render as clearly
@@ -521,6 +644,9 @@ def render_markdown(engagement, findings):
         w("Rotate every credential above; where reuse across systems is suspected, sweep "
           "adjacent hosts and services for the same login.")
         w("")
+
+    _render_chain_history(w, engagement.get("chain_history") or [])
+    _render_bh_paths(w, engagement.get("bh_paths") or [])
 
     w("## Assessment limitations")
     w("")
