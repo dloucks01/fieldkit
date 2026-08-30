@@ -3209,8 +3209,8 @@ the spec is missing that field. `--from-file` reads one credential per line.
                     "anti-fabrication; --cleanup writes the internal artifact manifest.")
     p_report.add_argument("-o", "--out", default="report", metavar="BASENAME",
                           help="output basename (default: report)")
-    p_report.add_argument("--formats", default="md,docx,pdf",
-                          help="which to emit: md,docx,pdf (default: all)")
+    p_report.add_argument("--formats", default="md,docx,pdf,html",
+                          help="which to emit: md,docx,pdf,html (default: all)")
     p_report.add_argument("--check", action="store_true",
                           help="anti-fabrication gate only (exit 2 on errors)")
     p_report.add_argument("--cleanup", action="store_true",
