@@ -2272,6 +2272,119 @@ def cmd_doctor(args):
                 pass
 
 
+def cmd_engagements_list(args):
+    """Walk a directory for engagement DBs (*.db) and emit a
+    per-DB summary: name, created, hosts/creds/findings counts,
+    absolute path.
+
+    Cross-engagement view — fieldkit's core CLI only works on
+    one DB at a time; this surface lets an operator see every
+    engagement across a directory tree without switching between
+    them one at a time. Default dir is CWD; --dir overrides.
+    Read-only: opens each DB read-only, never modifies.
+    """
+    import glob
+    root = args.dir or os.getcwd()
+    if not os.path.isdir(root):
+        _err(f"{root}: not a directory")
+        return 2
+    if args.recursive:
+        db_paths = sorted(glob.glob(os.path.join(root, "**/*.db"),
+                                       recursive=True))
+    else:
+        db_paths = sorted(glob.glob(os.path.join(root, "*.db")))
+    if not db_paths:
+        print(f"no *.db files found under {root}"
+              + (" (recursive)" if args.recursive else ""))
+        return 0
+
+    active = os.environ.get(DB_ENV_VAR, "")
+    rows = []
+    for p in db_paths:
+        # A .db that isn't a fieldkit engagement (some other tool's
+        # sqlite file) is fine — Store.open reads the engagement
+        # row; missing row means "not a fieldkit DB" and we skip
+        # rather than fail the whole listing.
+        try:
+            store = Store.open(p)
+        except Exception:                                   # noqa: BLE001
+            continue
+        try:
+            row = store.engagement()
+            if row is None:
+                continue
+            counts = store.counts()
+            rows.append({
+                "path": p,
+                "name": row["name"],
+                "created": row["created"],
+                "hosts": counts["hosts"],
+                "creds": counts["credentials"],
+                "findings": counts["findings"],
+            })
+        finally:
+            store.close()
+
+    if not rows:
+        print(f"{len(db_paths)} .db files under {root}, "
+              f"none are fieldkit engagements")
+        return 0
+
+    if getattr(args, "json", False):
+        import json as _json
+        payload = [{
+            **r,
+            "active": os.path.abspath(r["path"]) == os.path.abspath(active or "")
+        } for r in rows]
+        print(_json.dumps(payload, indent=2))
+        return 0
+
+    print(f"{len(rows)} engagement(s) under {root}:\n")
+    print(f"  {'name':<28}  {'hosts':>5}  {'creds':>5}  "
+          f"{'find':>5}  path")
+    for r in rows:
+        marker = "▸" if os.path.abspath(r["path"]) == os.path.abspath(active or "") else " "
+        name = r["name"][:28]
+        rel = os.path.relpath(r["path"])
+        print(f"{marker} {name:<28}  {r['hosts']:>5}  {r['creds']:>5}  "
+              f"{r['findings']:>5}  {rel}")
+    if active:
+        print(f"\n▸ = active engagement (via ${DB_ENV_VAR})")
+    else:
+        print(f"\nno active engagement — "
+              f"`fieldkit engagements switch <path>` prints the export line")
+    return 0
+
+
+def cmd_engagements_switch(args):
+    """Print the shell export line to make ``args.path`` the
+    active engagement DB for subsequent invocations. Meant for
+    ``eval $(fieldkit engagements switch eng.db)`` — same
+    pattern as ``session log --enable``."""
+    if not os.path.isfile(args.path):
+        _err(f"{args.path}: no such file")
+        return 2
+    # Verify it's a fieldkit engagement before printing an export.
+    try:
+        store = Store.open(args.path)
+        try:
+            row = store.engagement()
+        finally:
+            store.close()
+    except Exception as exc:                                # noqa: BLE001
+        _err(f"{args.path}: not a valid fieldkit DB: {exc}")
+        return 2
+    if row is None:
+        _err(f"{args.path}: opens but has no engagement row "
+             "(run `fieldkit init <name> --db {args.path}` first)")
+        return 2
+    abspath = os.path.abspath(args.path)
+    print(f"export {DB_ENV_VAR}={abspath}")
+    _err(f"# active engagement: {row['name']!r} — eval the "
+         f"export above")
+    return 0
+
+
 def cmd_changelog(args):
     """Auto-generate a CHANGELOG.md from git commit history.
 
@@ -4266,6 +4379,37 @@ the spec is missing that field. `--from-file` reads one credential per line.
                                    "(tag / commit / HEAD~N; default: "
                                    "whole history)")
     p_changelog.set_defaults(func=cmd_changelog)
+
+    p_eng = sub.add_parser(
+        "engagements",
+        help="cross-engagement view (list / switch active)",
+        description="fieldkit's core CLI works on one DB at a time; "
+                    "this surface lets an operator see every engagement "
+                    "across a directory tree, and switch which DB is "
+                    "active via the FIELDKIT_DB env var.")
+    eng_sub = p_eng.add_subparsers(dest="engagements_command",
+                                       metavar="<action>")
+    e_list = eng_sub.add_parser(
+        "list", help="per-DB summary: name, counts, path")
+    e_list.add_argument("--dir", metavar="PATH",
+                         help="directory to walk (default: CWD)")
+    e_list.add_argument("--recursive", action="store_true",
+                         help="walk subdirectories too")
+    e_list.add_argument("--json", action="store_true",
+                         help="emit machine-readable JSON")
+    e_list.set_defaults(func=cmd_engagements_list)
+
+    e_switch = eng_sub.add_parser(
+        "switch",
+        help="print the export line to make <path> the active DB",
+        description="Prints `export FIELDKIT_DB=<path>` — meant for "
+                    "`eval $(fieldkit engagements switch eng.db)`. "
+                    "Validates the DB first so a bad path never lands "
+                    "as the active engagement.")
+    e_switch.add_argument("path", help="path to the engagement DB")
+    e_switch.set_defaults(func=cmd_engagements_switch)
+
+    p_eng.set_defaults(func=lambda a: _missing(p_eng))
 
     p_refresh = sub.add_parser(
         "refresh",
