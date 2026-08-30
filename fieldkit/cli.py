@@ -16,6 +16,7 @@ import argparse
 import functools
 import json
 import os
+import shutil
 import signal
 import sqlite3
 import sys
@@ -35,6 +36,7 @@ from . import (__version__, adcs as adcs_mod, archive as archive_mod,
                poc as poc_mod,
                postgres as postgres_mod, preflight as preflight_mod, recce as recce_mod,
                recce_transport as recce_transport_mod,
+               runner as runner_mod,
                status_json as status_json_mod,
                watch as watch_mod,
                privesc as privesc_mod, provision as provision_mod,
@@ -2618,7 +2620,51 @@ def cmd_report(args, store):
     if not proven:
         print("note: no proven findings yet — run `fieldkit run`/`escalate` to prove vectors "
               "(the report currently holds only observations).")
+    if getattr(args, "open", False):
+        # Pick the "richest" format that was actually produced:
+        # html > pdf > docx > md. Silent no-op when nothing landed.
+        picked = _pick_open_path(args.out, formats)
+        if picked and os.path.exists(picked):
+            rc = _open_file(picked)
+            if rc == 0:
+                print(f"opened {picked}")
+            else:
+                print(f"open failed — file is at {picked}")
     return 0
+
+
+def _pick_open_path(basename, formats):
+    """Return the "richest" produced output file to open (html > pdf >
+    docx > md). Returns None when only formats are requested that
+    don't correspond to a real file on disk (a pandoc-missing hint)."""
+    for ext in ("html", "pdf", "docx", "md"):
+        if ext in formats:
+            path = f"{basename}.{ext}"
+            if os.path.exists(path):
+                return path
+    return None
+
+
+def _open_file(path):
+    """Hand ``path`` to the OS's default file handler. Uses the
+    injected runner (rule 2 — no bare subprocess). Best-effort:
+    returns 0 on likely-launch, non-zero when no opener is found
+    or the runner errors. Never blocks — the opener detaches."""
+    if sys.platform == "darwin":
+        cmd = ["open", path]
+    elif sys.platform.startswith("linux"):
+        cmd = ["xdg-open", path]
+    elif sys.platform.startswith("win"):
+        cmd = ["cmd", "/c", "start", "", path]
+    else:
+        return 1
+    if not shutil.which(cmd[0]):
+        return 1
+    try:
+        res = runner_mod.run(cmd, timeout=5)
+    except Exception:                                       # noqa: BLE001
+        return 1
+    return res.exit_code if res.exit_code is not None else 1
 
 
 @needs_engagement
@@ -3780,6 +3826,11 @@ the spec is missing that field. `--from-file` reads one credential per line.
     p_report.add_argument("--all", action="store_true", help=argparse.SUPPRESS)
     p_report.add_argument("--force", action="store_true",
                           help="render even if the anti-fabrication check has errors")
+    p_report.add_argument("--open", action="store_true",
+                          help="after export, hand the richest produced file "
+                               "(html > pdf > docx > md) to the OS default handler "
+                               "(xdg-open on Linux, open on macOS, start on Windows). "
+                               "Silent no-op when no opener is on PATH.")
     p_report.set_defaults(func=cmd_report)
 
     p_recce = sub.add_parser(
