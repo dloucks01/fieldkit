@@ -2070,6 +2070,51 @@ def cmd_ttps_list(args):
     return 0
 
 
+def cmd_ttps_validate(args):
+    """Validate one or more YAML TTP files against the shipped
+    loader schema. Accepts a file path or a directory (walks
+    every ``*.yaml`` beneath it). Emits per-file OK / ERR lines;
+    exits 2 if any file fails.
+
+    Useful for pre-flight before landing a new TTP: run
+    ``fieldkit ttps validate fieldkit/ttps/new.yaml`` and every
+    schema error (missing field, bad platform, malformed
+    version-range) surfaces without polluting the shipped
+    catalog."""
+    from .ttps import loader as ttp_loader
+    paths = []
+    if os.path.isdir(args.path):
+        for root, _dirs, files in os.walk(args.path):
+            for f in sorted(files):
+                if f.endswith(".yaml"):
+                    paths.append(os.path.join(root, f))
+    elif os.path.isfile(args.path):
+        paths = [args.path]
+    else:
+        _err(f"{args.path}: no such file or directory")
+        return 2
+    if not paths:
+        _err(f"{args.path}: no .yaml files found")
+        return 2
+
+    ok_count = err_count = 0
+    for p in paths:
+        rel = os.path.relpath(p)
+        try:
+            ttp_loader.load_file(p)
+            print(f"  ok   {rel}")
+            ok_count += 1
+        except ttp_loader.LoaderError as exc:
+            # Strip the source-file prefix from the message since
+            # we're already printing it in the marker.
+            msg = str(exc)
+            print(f"  ERR  {rel}")
+            print(f"       → {msg}")
+            err_count += 1
+    print(f"\n{ok_count}/{ok_count + err_count} valid")
+    return 2 if err_count else 0
+
+
 def cmd_ttps_show(args):
     """Pretty-print one TTP by key. Renders every populated field
     (detect, execute, verify, cleanup, report, playbook) — the
@@ -3538,6 +3583,19 @@ def _build_ttps_parser(sub):
         "show", help="pretty-print one TTP by key")
     tt_show.add_argument("key", help="TTP key from `fieldkit ttps list`")
     tt_show.set_defaults(func=cmd_ttps_show)
+
+    tt_validate = ttps_sub.add_parser(
+        "validate",
+        help="validate a YAML TTP file (or a dir of them) against the loader schema",
+        description="Runs the shipped fieldkit.ttps.loader against a file "
+                    "or every .yaml in a directory. Prints per-file OK/ERR; "
+                    "exit 2 if any file fails. Useful pre-flight before "
+                    "landing a new TTP so a schema error surfaces without "
+                    "polluting the shipped catalog.")
+    tt_validate.add_argument(
+        "path", help="path to a YAML TTP file, or a directory to walk")
+    tt_validate.set_defaults(func=cmd_ttps_validate)
+
     p_ttps.set_defaults(func=lambda a: _missing(p_ttps))
 
 
