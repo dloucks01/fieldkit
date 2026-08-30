@@ -2412,6 +2412,97 @@ def cmd_chain_resume(args, store):
     return 0
 
 
+def _render_chain_html(row, trail):
+    """Render one chain as a standalone HTML fragment — inline-styled
+    so it renders in any browser without external assets, and safe
+    to embed in a report or share as a paste. Auto-escapes user-
+    supplied strings (profile / target / evidence).
+
+    Same visual shape as the ASCII visual: profile header, per-step
+    boxes with outcome markers + costs + evidence, running-total
+    line. Colors match the fieldkit brand palette.
+    """
+    import html as _html
+
+    def esc(s):
+        return _html.escape(str(s or ""))
+
+    STATUS_COLORS = {
+        "proven":      ("#3d9970", "chain complete"),
+        "in_progress": ("#ff9b1f", "chain still in progress"),
+        "aborted":     ("#e74c3c", "chain aborted"),
+    }
+    OUTCOME_COLORS = {
+        "ok":     "#3d9970",
+        "manual": "#ff9b1f",
+        "skip":   "#7a7a7a",
+        "fail":   "#e74c3c",
+    }
+    status_color, status_label = STATUS_COLORS.get(
+        row["status"], ("#7a7a7a", row["status"]))
+
+    steps_html = []
+    running = 0
+    for i, t in enumerate(trail):
+        running += t["detection_cost"]
+        outcome_color = OUTCOME_COLORS.get(t["outcome_kind"], "#7a7a7a")
+        evidence = esc((t["evidence"] or "").strip())
+        if len(evidence) > 200:
+            evidence = evidence[:197] + "…"
+        arrow = ("<div style='color:#7a7a7a;font-family:monospace;"
+                 "text-align:center;line-height:1'>↓</div>") if i > 0 else ""
+        steps_html.append(f"""
+    {arrow}
+    <div style="border-left:4px solid {outcome_color};
+                background:#1a1a1a;color:#ddd;padding:8px 12px;
+                margin:2px 0;font-family:'SF Mono',Menlo,Consolas,monospace;
+                font-size:13px;">
+      <div>
+        <span style="color:{outcome_color};font-weight:bold;">
+          [{esc(t["outcome_kind"])}]
+        </span>
+        <span style="margin-left:8px;font-weight:bold;">
+          {esc(t["step_name"])}
+        </span>
+        <span style="float:right;color:#7a7a7a;">
+          cost={t["detection_cost"]} · running={running}
+        </span>
+      </div>
+      {f'<div style="color:#999;font-size:12px;margin-top:4px;">'
+       f'{evidence}</div>' if evidence else ''}
+    </div>""")
+
+    aborted_line = ""
+    if row["aborted_reason"]:
+        aborted_line = (f'<div style="color:#e74c3c;font-size:13px;'
+                        f'margin-top:6px;">aborted: '
+                        f'{esc(row["aborted_reason"])}</div>')
+
+    return f"""<div style="max-width:800px;margin:16px 0;
+              padding:16px;background:#0f0f0f;border-radius:6px;
+              color:#ddd;font-family:sans-serif;">
+  <div style="border-bottom:1px solid #333;padding-bottom:8px;
+              margin-bottom:12px;">
+    <div style="font-size:16px;font-weight:bold;">
+      chain #{row["id"]}:
+      <span style="color:#ff9b1f;">{esc(row["profile"])}</span>
+      →
+      <span style="color:#4a9eff;">{esc(row["target"])}</span>
+    </div>
+    <div style="color:#999;font-size:13px;margin-top:4px;">
+      status =
+      <span style="color:{status_color};font-weight:bold;">
+        {esc(status_label)}
+      </span>
+      · detection debt = {row["total_detection_cost"]}
+    </div>
+    {aborted_line}
+  </div>
+  {"".join(steps_html)}
+</div>
+"""
+
+
 @needs_engagement
 def cmd_chain_export(args, store):
     """Dump one recorded chain as JSON. Shape matches what
@@ -2468,6 +2559,9 @@ def cmd_chain_visual(args, store):
     ASCII flow arrows between steps. Verbose text version of what
     a full Textual kill-chain widget would render — same information,
     no dependency on Textual scope.
+
+    ``--html`` emits an inline-styled HTML block instead of ASCII —
+    embeddable in a report or shareable as a standalone page.
     """
     row = store.chain_by_id(args.chain_id)
     if not row:
@@ -2476,6 +2570,17 @@ def cmd_chain_visual(args, store):
     trail = store.chain_step_trail(args.chain_id)
     if not trail:
         print(f"chain #{args.chain_id} recorded but no steps walked yet")
+        return 0
+
+    if getattr(args, "html", False):
+        html = _render_chain_html(row, trail)
+        if args.out:
+            with open(args.out, "w") as fh:
+                fh.write(html)
+            print(f"wrote {args.out}  (chain #{row['id']}, "
+                  f"{len(trail)} step(s))")
+        else:
+            print(html)
         return 0
 
     # Outcome-to-marker mapping — keeps the box characters ASCII so
@@ -3346,6 +3451,13 @@ def _build_chain_parser(sub):
         "visual", help="render a compact kill-chain visualization of one chain")
     c_visual.add_argument("chain_id", type=int,
                           help="chain id from `fieldkit chain list`")
+    c_visual.add_argument("--html", action="store_true",
+                           help="emit an inline-styled HTML block instead "
+                                "of ASCII — embeddable in a report, "
+                                "shareable as a standalone page")
+    c_visual.add_argument("--out", metavar="PATH",
+                           help="write to file instead of stdout "
+                                "(useful with --html)")
     c_visual.set_defaults(func=cmd_chain_visual)
 
     c_export = chain_sub.add_parser(
