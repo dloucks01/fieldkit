@@ -221,31 +221,52 @@ def run_enum(store, host, cred, *, run=None, on_event=None, allow="read-only"):
 #: Pure vendor tokens — skipped when canonicalizing a service product name.
 #: Apache is NOT here — "Apache" IS the product name for httpd, so
 #: `_canon_product("Apache httpd")` should return `"apache"`, not `"httpd"`.
-_PRODUCT_VENDORS = frozenset({"microsoft", "openbsd", "gnu", "the"})
+_PRODUCT_VENDORS = frozenset({
+    "microsoft", "openbsd", "gnu", "the",
+    # Composite-vendor names — nmap outputs "Atlassian Confluence" /
+    # "Palo Alto Networks PAN-OS" / "Networks"; canon should pick the
+    # trailing product, not the vendor prefix.
+    "atlassian", "palo", "alto", "networks",
+})
 #: Words that don't identify a product (they describe the shape of one).
 _PRODUCT_GENERIC = frozenset({"httpd", "server", "service", "daemon"})
 
 
 def _canon_product(name):
     """Turn a service product string into a lowercase single-word key for
-    facts.services. Examples:
+    facts.services. Prefers the LAST non-vendor non-generic token when
+    there are multiple candidates — a compound name like "Apache Tomcat"
+    or "Apache ActiveMQ" maps to the specific product (tomcat / activemq),
+    not the shared "apache" prefix. This matters for CVE matching:
+    Tomcat CVEs, ActiveMQ CVEs, and Struts CVEs are all distinct from
+    Apache httpd's. Where the first token IS the product (bare "Apache",
+    httpd generic-filtered out), the candidate list collapses to one and
+    the rule degenerates to "return the only candidate."
 
-      "Apache httpd"        → "apache"
-      "OpenSSH"             → "openssh"
-      "Microsoft IIS httpd" → "iis"      (skip "microsoft" vendor)
-      "nginx"               → "nginx"
-      "Microsoft SQL Server"→ "sql"      (best-effort; TTP can match "sql")
+    Examples:
+
+      "Apache httpd"          → "apache"      (httpd is generic → skipped)
+      "Apache Tomcat"         → "tomcat"      (last candidate wins over "apache")
+      "Apache ActiveMQ"       → "activemq"
+      "Apache Struts"         → "struts"
+      "Atlassian Confluence"  → "confluence"
+      "Palo Alto PAN-OS"      → "pan-os"
+      "OpenSSH"               → "openssh"
+      "Microsoft IIS httpd"   → "iis"         (microsoft vendor + httpd generic)
+      "Microsoft SQL Server"  → "sql"         (best-effort; TTP matches "sql")
+      "nginx"                 → "nginx"
 
     Returns "" for anything unrecognizable so callers can skip.
     """
     if not name:
         return ""
+    candidates = []
     for token in name.lower().split():
         token = token.strip("()[]{}")
         if token and token not in _PRODUCT_VENDORS \
                 and token not in _PRODUCT_GENERIC:
-            return token
-    return ""
+            candidates.append(token)
+    return candidates[-1] if candidates else ""
 
 
 def facts_for(store, host_id):
