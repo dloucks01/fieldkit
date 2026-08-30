@@ -22,6 +22,7 @@ from textual.widgets import Footer, Static
 from ..state import Store, default_db_path
 from . import theme
 from .analyze import AnalyzeScreen, ANALYZE_TCSS
+from .chain_detail import CHAIN_DETAIL_TCSS
 from .chain_launch import ChainLaunchScreen, CHAIN_LAUNCH_TCSS
 from .chain_plan import ChainPlanScreen, CHAIN_PLAN_TCSS
 from .chain_run import CHAIN_RUN_TCSS
@@ -127,7 +128,7 @@ class FieldkitTUI(App):
 
     CSS = (theme.APP_TCSS + DASHBOARD_TCSS + WATCH_TCSS + ANALYZE_TCSS
            + ESCALATE_TCSS + CHAIN_PLAN_TCSS + CHAIN_RUN_TCSS
-           + CHAIN_LAUNCH_TCSS)
+           + CHAIN_LAUNCH_TCSS + CHAIN_DETAIL_TCSS)
     TITLE = "fieldkit"
 
     SCREENS = {
