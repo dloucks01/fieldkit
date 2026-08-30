@@ -2413,6 +2413,53 @@ def cmd_chain_resume(args, store):
 
 
 @needs_engagement
+def cmd_chain_export(args, store):
+    """Dump one recorded chain as JSON. Shape matches what
+    report.py's chain-history collector produces: id / profile /
+    target / status / detection_debt / aborted_reason /
+    started_at / finished_at / total step count + per-step
+    trail (name / kind / outcome / cost / evidence / ran_at).
+
+    Output goes to stdout by default; --out writes to a file.
+    Read-only.
+    """
+    row = store.chain_by_id(args.chain_id)
+    if row is None:
+        _err(f"no chain #{args.chain_id} in this engagement")
+        return 2
+    trail = store.chain_step_trail(args.chain_id)
+    payload = {
+        "id": row["id"],
+        "profile": row["profile"],
+        "target": row["target"],
+        "status": row["status"],
+        "detection_debt": row["total_detection_cost"],
+        "aborted_reason": row["aborted_reason"] or "",
+        "started_at": row["started_at"] or "",
+        "finished_at": row["finished_at"] or "",
+        "steps": [{
+            "idx": t["idx"],
+            "name": t["step_name"],
+            "kind": t["step_kind"],
+            "outcome": t["outcome_kind"],
+            "cost": t["detection_cost"],
+            "evidence": t["evidence"] or "",
+            "ran_at": t["ran_at"] or "",
+        } for t in trail],
+    }
+    import json as _json
+    text = _json.dumps(payload, indent=2)
+    if args.out:
+        with open(args.out, "w") as fh:
+            fh.write(text + "\n")
+        print(f"wrote {args.out}  (chain #{row['id']}, "
+              f"{len(trail)} step(s))")
+    else:
+        print(text)
+    return 0
+
+
+@needs_engagement
 def cmd_chain_visual(args, store):
     """Render a text kill-chain visualization of one walked chain.
 
@@ -3300,6 +3347,21 @@ def _build_chain_parser(sub):
     c_visual.add_argument("chain_id", type=int,
                           help="chain id from `fieldkit chain list`")
     c_visual.set_defaults(func=cmd_chain_visual)
+
+    c_export = chain_sub.add_parser(
+        "export",
+        help="dump one chain as JSON (id/profile/target/status/steps)",
+        description="Read-only: emits the chain row + step trail as "
+                    "a structured JSON object. Shape matches the "
+                    "chain_history collector the report renderer uses, "
+                    "so a `chain export N > chain-N.json` doubles as a "
+                    "portable snapshot for post-engagement analysis or "
+                    "hand-off to another tool.")
+    c_export.add_argument("chain_id", type=int,
+                           help="chain id from `fieldkit chain list`")
+    c_export.add_argument("--out", metavar="PATH",
+                           help="write to file instead of stdout")
+    c_export.set_defaults(func=cmd_chain_export)
 
     c_walk = chain_sub.add_parser(
         "walk",
