@@ -2498,6 +2498,89 @@ def cmd_engagements_switch(args):
     return 0
 
 
+@needs_engagement
+def cmd_retest(args, store):
+    """Re-execute every proven finding's step trail against the
+    current target state — post-remediation audit cycle. For
+    each finding: re-run the captured `cmd` string via runner.run,
+    compare output to the finding's stored evidence, classify as
+    ``still-exploitable`` / ``no-longer`` / ``needs-check``.
+
+    Read-only over state — never edits findings. Emits a summary
+    + per-finding line. ``--json`` for CI-parseable output.
+    """
+    findings = list(store.findings(proven_only=True))
+    if not findings:
+        print("no proven findings to retest")
+        return 0
+    results = []
+    for f in findings:
+        steps = list(store.steps(finding_id=f["id"]))
+        if not steps:
+            results.append({"id": f["id"], "title": f["title"],
+                            "verdict": "needs-check",
+                            "reason": "no captured steps"})
+            continue
+        # Retest the LAST step — usually the proof-of-exploitation
+        # step; earlier steps may be enumeration that runs cleanly
+        # even post-remediation.
+        step = steps[-1]
+        cmd = (step["cmd"] or "").strip()
+        if not cmd:
+            results.append({"id": f["id"], "title": f["title"],
+                            "verdict": "needs-check",
+                            "reason": "step has empty cmd"})
+            continue
+        # Re-run via bash -lc to preserve shell semantics of the
+        # original capture.
+        result = runner_mod.run(["bash", "-lc", cmd],
+                                  timeout=args.timeout)
+        if result.error or result.timed_out:
+            results.append({"id": f["id"], "title": f["title"],
+                            "verdict": "needs-check",
+                            "reason": (result.error or "timed out")})
+            continue
+        current = (result.stdout or "") + (result.stderr or "")
+        original = (step["output"] or "").strip()
+        # Heuristic: if the original's key marker (first
+        # non-blank line) appears in the current output, the
+        # exploit still fires.
+        marker = ""
+        for line in original.splitlines():
+            if line.strip():
+                marker = line.strip()
+                break
+        if marker and marker[:80] in current:
+            results.append({"id": f["id"], "title": f["title"],
+                            "verdict": "still-exploitable",
+                            "reason": f"marker '{marker[:60]}' present"})
+        else:
+            results.append({"id": f["id"], "title": f["title"],
+                            "verdict": "no-longer",
+                            "reason": ("output changed — verify remediation "
+                                        "is the reason before closing")})
+
+    if args.json:
+        import json as _json
+        print(_json.dumps(results, indent=2))
+        return 0
+    counts = {"still-exploitable": 0, "no-longer": 0, "needs-check": 0}
+    for r in results:
+        counts[r["verdict"]] += 1
+    print(f"retest: {len(results)} proven finding(s)\n")
+    print(f"  still-exploitable: {counts['still-exploitable']}")
+    print(f"  no-longer:         {counts['no-longer']}")
+    print(f"  needs-check:       {counts['needs-check']}")
+    print()
+    marker = {"still-exploitable": "!!  ",
+              "no-longer":         "OK  ",
+              "needs-check":       "??  "}
+    for r in results:
+        print(f"  {marker[r['verdict']]}#{r['id']:<3} {r['title'][:50]}")
+        print(f"        {r['reason']}")
+    return 0
+
+
 def cmd_kerberos_forge(args):
     """Forge a Golden or Silver ticket via impacket-ticketer.
     Manual-hint when impacket isn't on PATH; ``args.kind`` picks
@@ -4697,6 +4780,22 @@ the spec is missing that field. `--from-file` reads one credential per line.
                           help="where to write the .ccache (default: CWD)")
     k_forge.set_defaults(func=cmd_kerberos_forge)
     p_kerb.set_defaults(func=lambda a: _missing(p_kerb))
+
+    p_retest = sub.add_parser(
+        "retest",
+        help="re-execute every proven finding's step trail — post-remediation audit",
+        description="Reads every proven finding + its captured step "
+                    "trail, re-runs the last step (usually the proof-of-"
+                    "exploitation) against current target state, and "
+                    "classifies each finding as still-exploitable / "
+                    "no-longer / needs-check. Doesn't edit findings — "
+                    "the operator decides whether to close them based "
+                    "on the retest output.")
+    p_retest.add_argument("--timeout", type=int, default=30,
+                           help="per-step timeout (default: 30s)")
+    p_retest.add_argument("--json", action="store_true",
+                           help="emit machine-readable JSON")
+    p_retest.set_defaults(func=cmd_retest)
 
     p_refresh = sub.add_parser(
         "refresh",
