@@ -237,6 +237,11 @@ _PRODUCT_VENDORS = frozenset({
     # "Palo Alto Networks PAN-OS" / "Networks"; canon should pick the
     # trailing product, not the vendor prefix.
     "atlassian", "palo", "alto", "networks",
+    # Vendor-only prefixes on edge-network products. "Cisco IOS XE"
+    # → xe / ios (latter is used for CVE-2023-20198). "Ivanti Connect
+    # Secure" and "Pulse Secure" both → secure (shared codebase, same
+    # CVE-2023-46805 + CVE-2024-21887 applicability).
+    "cisco", "ivanti", "pulse",
 })
 #: Words that don't identify a product (they describe the shape of one).
 _PRODUCT_GENERIC = frozenset({"httpd", "server", "service", "daemon"})
