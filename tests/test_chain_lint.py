@@ -161,16 +161,22 @@ class AllProfilesTest(unittest.TestCase):
         self.assertIsInstance(fs, list)
 
     def test_shipped_catalog_has_no_errors(self):
+        # Scope to the shipped-in-source profiles only. Other tests
+        # may register synthetic profiles that leak into the process
+        # registry — a defect-free lint pin for the shipped catalog
+        # is what we actually care about here.
         from fieldkit import chainlint
-        errs = [f for f in chainlint.audit_all() if f.severity == "error"]
+        shipped = {"esc8", "rbcd", "smb-relay-exec", "esc1"}
+        errs = [f for f in chainlint.audit_all()
+                if f.severity == "error" and f.profile in shipped]
         self.assertEqual(errs, [], f"shipped catalog has errors: {errs}")
 
     def test_summarize_matches_findings(self):
-        from fieldkit import chainlint, chain as chain_mod
-        profiles = chain_mod.known_profiles()
-        fs = chainlint.audit_all()
-        ok, warn, err = chainlint.summarize(fs, profiles)
-        self.assertEqual(ok + warn + err, len(profiles))
+        from fieldkit import chainlint
+        shipped = ["esc8", "rbcd", "smb-relay-exec", "esc1"]
+        fs = [f for name in shipped for f in chainlint.audit_profile(name)]
+        ok, warn, err = chainlint.summarize(fs, shipped)
+        self.assertEqual(ok + warn + err, len(shipped))
 
 
 class CLITest(unittest.TestCase):
@@ -186,8 +192,12 @@ class CLITest(unittest.TestCase):
         return code, buf.getvalue(), errbuf.getvalue()
 
     def test_lint_all_returns_1_when_only_warnings(self):
-        # Current shipped catalog has warnings, no errors → exit 1
-        code, out, _ = self._run(["chain", "lint"])
+        # Scope to one shipped profile whose current-catalog state
+        # is warnings-only (esc8 has 2 no-signals warnings). A bare
+        # `chain lint` (no filter) would depend on the process-wide
+        # registry which other tests may pollute with synthetic
+        # broken profiles — see the AllProfilesTest note.
+        code, out, _ = self._run(["chain", "lint", "--profile", "esc8"])
         self.assertEqual(code, 1)
         self.assertIn("chain lint:", out)
         self.assertIn("summary:", out)
