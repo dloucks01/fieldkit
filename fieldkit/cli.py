@@ -1908,6 +1908,72 @@ def cmd_chain_walk(args, store):
     return 0
 
 
+@needs_engagement
+def cmd_refresh(args, store):
+    """Returning-operator one-liner: re-ingest a recce bridge, then
+    run analyze so the latest moves surface without three separate
+    commands.
+
+    Prints the counts delta (hosts / creds / findings before vs
+    after) so a returning operator sees at a glance what changed.
+    Analyze output follows verbatim — same ranking, same
+    `escalate <host>` hints — so the operator can copy-paste a
+    next move directly.
+
+    Exit codes:
+      * 0 — refresh + analyze completed cleanly;
+      * 1 — bridge ingest failed but analyze still ran on
+        previously-ingested state;
+      * 2 — bad invocation.
+    """
+    before = store.counts()
+    ingest_ok = True
+    if args.bridge:
+        rc = _refresh_from_recce(args.bridge, store)
+        ingest_ok = (rc == 0)
+        if ingest_ok:
+            print(f"[refresh] re-ingested {args.bridge}")
+        else:
+            print(f"[refresh] ingest failed — continuing with "
+                  f"previously-ingested state")
+    else:
+        cfg = config_mod.load(store)
+        bridge = cfg.get("recce_bridge") or ""
+        if bridge:
+            rc = _refresh_from_recce(bridge, store)
+            ingest_ok = (rc == 0)
+            if ingest_ok:
+                print(f"[refresh] re-ingested {bridge}  (from "
+                      f"config recce_bridge)")
+        else:
+            print("[refresh] no bridge path — analyze only "
+                  "(pass a path or `config set recce_bridge=...`)")
+
+    after = store.counts()
+    deltas = []
+    for k in ("hosts", "services", "credentials", "findings",
+              "proven_findings", "access"):
+        if after[k] != before[k]:
+            deltas.append(f"{k}: {before[k]}→{after[k]}")
+    if deltas:
+        print(f"[refresh] state changed — {', '.join(deltas)}")
+    else:
+        print(f"[refresh] no state change")
+    print()
+
+    # Now delegate to cmd_analyze — same output as `fieldkit analyze`
+    # so the ranked moves + escalate hints surface uniformly. We
+    # pass args.proof through so `refresh --proof` behaves like
+    # `analyze --proof`.
+    class _AnalyzeArgs:
+        proof = getattr(args, "proof", False)
+        refresh = None                    # already re-ingested
+    rc = cmd_analyze.__wrapped__(_AnalyzeArgs(), store)
+    if rc != 0:
+        return rc
+    return 0 if ingest_ok else 1
+
+
 def cmd_ttps_list(args):
     """Browse the shipped TTP catalog. Optional --grep filter runs
     against key + name + technique + tactic (case-insensitive).
@@ -3328,6 +3394,24 @@ the spec is missing that field. `--from-file` reads one credential per line.
     tt_show.add_argument("key", help="TTP key from `fieldkit ttps list`")
     tt_show.set_defaults(func=cmd_ttps_show)
     p_ttps.set_defaults(func=lambda a: _missing(p_ttps))
+
+    p_refresh = sub.add_parser(
+        "refresh",
+        help="one-liner: re-ingest recce bridge + run analyze",
+        description="Returning-operator convenience: re-ingests a "
+                    "recce-bridge.json, prints the counts delta of "
+                    "what changed in state, then runs analyze verbatim "
+                    "so the latest ranked moves + escalate hints "
+                    "surface without three separate commands. "
+                    "Bridge path optional: without one, uses the "
+                    "engagement config's `recce_bridge` key.")
+    p_refresh.add_argument("bridge", nargs="?",
+                            help="path to recce-bridge.json (optional; "
+                                 "defaults to config recce_bridge)")
+    p_refresh.add_argument("--proof", action="store_true",
+                            help="include safe-proof lines in the ranked "
+                                 "output (passes through to analyze)")
+    p_refresh.set_defaults(func=cmd_refresh)
 
     p_prep = sub.add_parser(
         "prep", help="build a manual route's artifact + print where to place it and the steps",

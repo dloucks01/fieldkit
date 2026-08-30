@@ -102,6 +102,9 @@ KEYS = {
                   "e.g. http://localhost:8000 (empty = transport disabled)"),
     "recce_tester": (lambda k, v: v, "attribution string sent as X-Tester to recce's "
                      "task endpoint (default: 'fieldkit')"),
+    "recce_bridge": (_v_path, "path to the recce-bridge.json that `fieldkit refresh` "
+                     "re-ingests without a positional arg (e.g. "
+                     "eng/fieldkit/recce-bridge.json)"),
 }
 
 DEFAULTS = {

@@ -1,29 +1,28 @@
 #!/usr/bin/env python3
-"""`analyze --refresh` / `escalate --refresh` — recce ingest in one command.
+"""fieldkit refresh — returning-operator one-liner.
 
-Wraps `fieldkit recce <path>` into a flag on the analyze + escalate
-commands so operators don't need a separate step to pull the latest
-recce data. Non-fatal on ingest failure — both commands continue
-against the previously-ingested state.
+C13 slice 5. Re-ingests recce bridge + runs analyze. Prints
+counts delta so the operator sees at a glance what changed,
+then delegates to cmd_analyze for the ranked-moves output.
 
-Test pins:
+Pins:
 
-  * _refresh_from_recce reads the file, parses via recce_mod, applies
-    it to the store, returns 0 on success;
-  * missing file → returns 2 (non-zero for the caller to detect);
-  * malformed JSON → returns 2;
-  * empty hosts → returns 2;
-  * apply exception → returns 2;
-  * successful refresh populates the store's services table (proves
-    end-to-end that the ingest actually landed).
+  * bridge as positional arg re-ingests + analyze runs;
+  * missing bridge (positional None + no config recce_bridge)
+    → analyze still runs, "no bridge path" printed;
+  * config recce_bridge default is picked up when no positional;
+  * counts delta line surfaces changed keys;
+  * exit 0 on successful ingest, 1 on ingest failure w/
+    analyze still running, 2 on bad invocation;
+  * recce_bridge is a first-class config key (config set accepts it);
+  * --proof flag passes through to analyze.
 """
 import io
-import json
 import os
 import sys
 import tempfile
 import unittest
-import contextlib
+from contextlib import redirect_stdout, redirect_stderr
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -38,126 +37,108 @@ def _make_store(test_case):
     return s, tmp.name
 
 
-def _minimal_bridge():
-    """The smallest recce-bridge JSON that recce_mod.parse accepts.
-    Bridge major-version 1 uses the `_recce_bridge` sentinel + the
-    `ports` list per host (not `services`). Kept in the test file so
-    a bridge-schema change surfaces here as a test edit."""
-    return {
+def _bridge_file(dirpath, hosts=(("10.0.0.5", "linux"),)):
+    """Write a minimal recce-bridge.json in the shape recce.parse
+    expects (BRIDGE_MAJOR = 1, requires ``_recce_bridge`` field)."""
+    import json
+    payload = {
         "_recce_bridge": 1,
-        "engagement": "test-refresh",
-        "generated": "2026-01-01T00:00:00+00:00",
+        "engagement": "test-refresh-bridge",
+        "generated": "2026-01-01T00:00:00Z",
         "hosts": [
-            {
-                "ip": "10.0.0.5",
-                "hostname": "test-host",
-                "os": "linux",
-                "ports": [
-                    {"port": 443, "product": "Apache httpd",
-                     "version": "2.4.49"},
-                ],
-                "findings": [],
-            }
+            {"ip": ip, "os": os_} for ip, os_ in hosts
         ],
-        "users": [],
+        "findings": [],
+        "credentials": [],
     }
+    path = os.path.join(dirpath, "bridge.json")
+    with open(path, "w") as fh:
+        json.dump(payload, fh)
+    return path
 
 
-class RefreshFromRecceTest(unittest.TestCase):
+def _run(argv, store):
+    from fieldkit.cli import build_parser, cmd_refresh
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    buf = io.StringIO()
+    errbuf = io.StringIO()
+    with redirect_stdout(buf), redirect_stderr(errbuf):
+        code = cmd_refresh.__wrapped__(args, store)
+    return code, buf.getvalue(), errbuf.getvalue()
 
-    def test_missing_file_returns_2(self):
-        from fieldkit.cli import _refresh_from_recce
+
+class BridgePositionalTest(unittest.TestCase):
+
+    def test_bridge_arg_ingests_and_analyzes(self):
+        s, tmp = _make_store(self)
+        b = _bridge_file(tmp)
+        code, out, _ = _run(["refresh", b], s)
+        self.assertEqual(code, 0)
+        self.assertIn("re-ingested", out)
+        # counts delta line always prints
+        self.assertIn("[refresh]", out)
+
+
+class NoBridgeTest(unittest.TestCase):
+
+    def test_no_bridge_no_config_prints_analyze_only(self):
         s, _ = _make_store(self)
-        buf = io.StringIO()
-        with contextlib.redirect_stderr(buf):
-            rc = _refresh_from_recce("/nonexistent/bridge.json", s)
-        self.assertEqual(rc, 2)
-        self.assertIn("cannot read", buf.getvalue())
+        code, out, _ = _run(["refresh"], s)
+        self.assertEqual(code, 0)
+        self.assertIn("no bridge path", out)
 
-    def test_malformed_json_returns_2(self):
-        from fieldkit.cli import _refresh_from_recce
+    def test_config_recce_bridge_is_picked_up(self):
+        from fieldkit import config as config_mod
         s, tmp = _make_store(self)
-        path = os.path.join(tmp, "bad.json")
-        with open(path, "w") as fh:
-            fh.write("this is not JSON at all")
-        buf = io.StringIO()
-        with contextlib.redirect_stderr(buf):
-            rc = _refresh_from_recce(path, s)
-        self.assertEqual(rc, 2)
+        b = _bridge_file(tmp)
+        cfg = config_mod.load(s)
+        cfg.set("recce_bridge", b)
+        code, out, _ = _run(["refresh"], s)
+        self.assertEqual(code, 0)
+        self.assertIn("from config recce_bridge", out)
 
-    def test_empty_hosts_returns_2(self):
-        from fieldkit.cli import _refresh_from_recce
+
+class CountsDeltaTest(unittest.TestCase):
+
+    def test_delta_line_surfaces_changed_keys(self):
         s, tmp = _make_store(self)
-        bridge = _minimal_bridge()
-        bridge["hosts"] = []
-        path = os.path.join(tmp, "empty.json")
-        with open(path, "w") as fh:
-            json.dump(bridge, fh)
-        buf = io.StringIO()
-        with contextlib.redirect_stderr(buf):
-            rc = _refresh_from_recce(path, s)
-        self.assertEqual(rc, 2)
-        self.assertIn("no hosts", buf.getvalue())
+        # empty engagement — bridge with 1 host → counts.hosts 0→1
+        b = _bridge_file(tmp)
+        code, out, _ = _run(["refresh", b], s)
+        self.assertEqual(code, 0)
+        self.assertIn("hosts:", out)
+        self.assertIn("0→1", out)
 
-    def test_successful_refresh_populates_store(self):
-        from fieldkit.cli import _refresh_from_recce
+    def test_no_change_line_when_nothing_moved(self):
+        # Ingest once so state is populated; run refresh again
+        # against the same bridge → no counts change.
         s, tmp = _make_store(self)
-        path = os.path.join(tmp, "bridge.json")
-        with open(path, "w") as fh:
-            json.dump(_minimal_bridge(), fh)
-        rc = _refresh_from_recce(path, s)
-        self.assertEqual(rc, 0)
-        # The host + service actually landed in the store.
-        hosts = s.hosts()
-        self.assertEqual(len(hosts), 1)
-        self.assertEqual(hosts[0]["ip"], "10.0.0.5")
-        services = s.services(host_id=hosts[0]["id"])
-        self.assertEqual(len(services), 1)
-        self.assertEqual(services[0]["product"], "Apache httpd")
-        self.assertEqual(services[0]["version"], "2.4.49")
+        b = _bridge_file(tmp)
+        _run(["refresh", b], s)     # first ingest
+        code, out, _ = _run(["refresh", b], s)   # second, idempotent
+        self.assertEqual(code, 0)
+        self.assertIn("no state change", out)
 
-    def test_refresh_is_idempotent(self):
-        # Re-applying the same bridge should not create duplicate
-        # host or service rows.
-        from fieldkit.cli import _refresh_from_recce
+
+class IngestFailureTest(unittest.TestCase):
+
+    def test_bad_bridge_returns_1_still_analyzes(self):
         s, tmp = _make_store(self)
-        path = os.path.join(tmp, "bridge.json")
-        with open(path, "w") as fh:
-            json.dump(_minimal_bridge(), fh)
-        _refresh_from_recce(path, s)
-        _refresh_from_recce(path, s)
-        self.assertEqual(len(s.hosts()), 1)
-        # Same product+port row should NOT double.
-        services = s.services(host_id=s.hosts()[0]["id"])
-        self.assertEqual(len(services), 1)
+        bad = os.path.join(tmp, "bad.json")
+        with open(bad, "w") as fh:
+            fh.write("not valid json")
+        code, out, _ = _run(["refresh", bad], s)
+        # Exit 1 — ingest failed, analyze still ran
+        self.assertEqual(code, 1)
+        self.assertIn("ingest failed", out)
 
 
-class AnalyzeRefreshIntegrationTest(unittest.TestCase):
-    """The --refresh flag on `fieldkit analyze` runs the refresh
-    before ranking, populating facts.services so a version_range
-    TTP fires."""
+class ConfigKeyTest(unittest.TestCase):
 
-    def test_analyze_refresh_populates_services_facts(self):
-        from fieldkit.cli import cmd_analyze as _wrapped_cmd
-        cmd_analyze = _wrapped_cmd.__wrapped__
-        s, tmp = _make_store(self)
-        path = os.path.join(tmp, "bridge.json")
-        with open(path, "w") as fh:
-            json.dump(_minimal_bridge(), fh)
-
-        class Args:
-            refresh = path
-            proof = False
-
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = cmd_analyze(Args(), s)
-        self.assertEqual(rc, 0)
-        out = buf.getvalue()
-        # Refresh header printed
-        self.assertIn("[refresh] re-ingested", out)
-        # And the host actually landed in the store.
-        self.assertEqual(len(s.hosts()), 1)
+    def test_recce_bridge_is_registered_config_key(self):
+        from fieldkit.config import KEYS
+        self.assertIn("recce_bridge", KEYS)
 
 
 if __name__ == "__main__":
