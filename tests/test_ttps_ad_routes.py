@@ -60,11 +60,14 @@ class ADRouteCoverageTest(unittest.TestCase):
                 self.assertEqual(t.platform, ("windows",))
 
     def test_all_gate_on_domain_users(self):
-        # Every AD-route TTP uses group_member: Domain Users as the
-        # "we're on a domain" proxy. If a future slice adds
-        # `has_win_group_prefix` or a HostFacts is_domain_joined
-        # field, this test wants an update.
+        # Every C4-shipped AD-visibility TTP uses group_member:
+        # Domain Users as the "we're on a domain" proxy. Later
+        # slices (C7 slice 4) add adroute:* TTPs gated on
+        # different facts (bh_owned_reaches_hv) — that's fine, the
+        # invariant here is scoped to the C4-shipped set.
         for t in self._load_ad():
+            if t.key not in AD_ROUTE_KEYS:
+                continue
             with self.subTest(key=t.key):
                 self.assertEqual(t.detect.kind, "group_member")
                 self.assertEqual(t.detect.value, "Domain Users")

@@ -1,0 +1,68 @@
+# BloodHound-derived owned → high-value path → walk the graph
+#
+# fieldkit's bloodhound module already ingests SharpHound data +
+# path-finds shortest control paths from every owned credential to
+# any high-value target. This TTP surfaces those findings as a
+# ranked next-move — an operator running `fieldkit escalate`
+# against any domain-joined host doesn't need to open the
+# BloodHound UI to know an escalation path exists; the analyze /
+# escalate view tells them.
+#
+# Gates on facts.bh_owned_reaches_hv = True — set by facts_for
+# when a call to bloodhound.owned_paths(store) yields at least
+# one path. Zero-cost when no BloodHound data is ingested (the
+# check returns False fast on empty bh_node).
+technique: T1078
+name: BloodHound — owned → high-value control path available
+tactic: [privilege-escalation, lateral-movement]
+platform: [windows]
+key: adroute:bh-owned-to-hv-path
+ranking:
+  exploitability: high             # deterministic when the path exists
+  safety: read-only                # this TTP is the enum only; walk is operator-driven
+  detection: quiet                  # `bloodhound path` is local; no network signal
+detect:
+  facts_match:
+    bh_owned_reaches_hv: true
+execute:
+  # Local run of `fieldkit bloodhound path` renders the top paths
+  # from the ingested graph. Zero side effects.
+  command: |-
+    fieldkit bloodhound path 2>/dev/null | head -30 || echo "run `fieldkit bloodhound path` to see the full path list"
+verify:
+  success: "path"
+cleanup:
+  command: ""
+report:
+  vector_type: kerberoast          # reuse the AD-recon bucket
+  evidence: "BloodHound: owned principal reaches a high-value target"
+  description: >
+    fieldkit's `fieldkit bloodhound path` command finds every
+    shortest control path from an owned credential (via the
+    `credential` table) to a high-value target (Domain Admins,
+    Enterprise Admins, DCs, etc.) using the ingested SharpHound
+    graph. This TTP surfaces the finding so an operator running
+    `fieldkit escalate` doesn't have to remember to check the
+    graph separately.
+  remediation: >
+    Audit and prune the specific edge types BloodHound identifies
+    (GenericAll / WriteOwner / AddSelf / ForceChangePassword /
+    ReadLAPSPassword / etc.) on high-value objects. Each
+    ranked-first path in `fieldkit bloodhound path` names the
+    intermediate objects the fix would need to constrain.
+    Re-run SharpHound + re-ingest after each remediation to
+    verify the path is closed.
+  refs: [T1078, bloodhound, control-paths]
+playbook:
+  summary: >
+    An owned credential reaches a high-value target through the
+    BloodHound graph. Walk the ranked path with the fieldkit CLI
+    + the per-edge exploit tool (bloodyAD / certipy / powerview /
+    nxc, whichever matches the edge type).
+  place: 'attacker-side (fieldkit + bloodyAD / certipy)'
+  steps:
+    - "list the ranked paths: `fieldkit bloodhound path` — shows owned → target with hop count + intermediate edges"
+    - "pick the highest-value + shortest path; note the edge types along it (GenericAll, WriteOwner, ForceChangePassword, ...)"
+    - "for each edge, execute the per-edge primitive — the C6 adroute:generic-all-user / writeowner-group / shadow-credentials / readlaps-password TTPs render the specific commands per edge type"
+    - "advance principal-by-principal until you're the target; the walk is manual because per-edge cleanup differs"
+  restore: "walk the reverse path — undo the edges the operator wrote (member removals, ACL restores) with the same tool used to make them"
