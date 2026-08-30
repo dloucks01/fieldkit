@@ -2272,6 +2272,119 @@ def cmd_doctor(args):
                 pass
 
 
+@needs_engagement
+def cmd_diff(args, store):
+    """Compare findings between the current engagement and a
+    baseline DB. Emits three sections: new (in current, absent
+    in baseline), gone (in baseline, absent in current),
+    unchanged.
+
+    Identity for a finding is the tuple (vector_type,
+    affected_host, title) — same key report.build() renders by.
+    Same identity landing in both engagements = "unchanged"
+    (severity / evidence content aren't compared here — a diff
+    of proof content is a subsequent surface).
+
+    Read-only over both DBs. Exit 0 always (empty diff is a
+    valid result); use ``--json`` for a CI-parseable summary.
+    """
+    baseline_path = args.baseline
+    if not os.path.isfile(baseline_path):
+        _err(f"{baseline_path}: no such file")
+        return 2
+    try:
+        baseline_store = Store.open(baseline_path)
+    except Exception as exc:                                # noqa: BLE001
+        _err(f"{baseline_path}: cannot open: {exc}")
+        return 2
+    try:
+        baseline_row = baseline_store.engagement()
+        if baseline_row is None:
+            _err(f"{baseline_path}: no engagement in this DB")
+            return 2
+        baseline_findings = list(baseline_store.findings(
+            proven_only=not args.include_observations))
+    finally:
+        baseline_store.close()
+
+    current_findings = list(store.findings(
+        proven_only=not args.include_observations))
+
+    def _key(f):
+        return (f["vector_type"] or "",
+                f["title"] or "",
+                # affected_host via host_id lookup at render time is
+                # heavy; use host_id itself as the identity for now
+                f["host_id"] or 0)
+
+    def _label(f, store_obj):
+        host = store_obj.host_by_id(f["host_id"]) if f["host_id"] else None
+        host_label = (host["ip"] if host else "?")
+        return f"{f['title'] or f['vector_type']} on {host_label}"
+
+    current_by_key = {_key(f): f for f in current_findings}
+    baseline_by_key = {_key(f): f for f in baseline_findings}
+
+    new_keys = set(current_by_key) - set(baseline_by_key)
+    gone_keys = set(baseline_by_key) - set(current_by_key)
+    both_keys = set(current_by_key) & set(baseline_by_key)
+
+    current_row = store.engagement()
+
+    if args.json:
+        import json as _json
+        # Re-open baseline briefly to resolve host labels for gone
+        # findings.
+        baseline_store2 = Store.open(baseline_path)
+        try:
+            payload = {
+                "current": current_row["name"],
+                "baseline": baseline_row["name"],
+                "new": [_label(current_by_key[k], store) for k in sorted(new_keys)],
+                "gone": [_label(baseline_by_key[k], baseline_store2)
+                         for k in sorted(gone_keys)],
+                "unchanged": [_label(current_by_key[k], store)
+                               for k in sorted(both_keys)],
+                "counts": {
+                    "new": len(new_keys),
+                    "gone": len(gone_keys),
+                    "unchanged": len(both_keys),
+                },
+            }
+        finally:
+            baseline_store2.close()
+        print(_json.dumps(payload, indent=2))
+        return 0
+
+    print(f"finding diff: [current] {current_row['name']!r} "
+          f"vs [baseline] {baseline_row['name']!r}\n")
+    print(f"  new:       {len(new_keys):>3}")
+    print(f"  gone:      {len(gone_keys):>3}")
+    print(f"  unchanged: {len(both_keys):>3}")
+    print()
+
+    if new_keys:
+        print("NEW (present in current, absent in baseline):")
+        for k in sorted(new_keys):
+            print(f"  + {_label(current_by_key[k], store)}")
+        print()
+    if gone_keys:
+        print("GONE (present in baseline, absent in current):")
+        baseline_store2 = Store.open(baseline_path)
+        try:
+            for k in sorted(gone_keys):
+                print(f"  - {_label(baseline_by_key[k], baseline_store2)}")
+        finally:
+            baseline_store2.close()
+        print()
+    if both_keys and args.verbose:
+        print("UNCHANGED:")
+        for k in sorted(both_keys):
+            print(f"  = {_label(current_by_key[k], store)}")
+        print()
+    return 0
+
+
 def cmd_engagements_list(args):
     """Walk a directory for engagement DBs (*.db) and emit a
     per-DB summary: name, created, hosts/creds/findings counts,
@@ -4410,6 +4523,27 @@ the spec is missing that field. `--from-file` reads one credential per line.
     e_switch.set_defaults(func=cmd_engagements_switch)
 
     p_eng.set_defaults(func=lambda a: _missing(p_eng))
+
+    p_diff = sub.add_parser(
+        "diff",
+        help="compare findings between the current engagement and a baseline DB",
+        description="Identity for a finding is (vector_type, title, "
+                    "host_id) — same key report.build() renders by. "
+                    "Emits new / gone / unchanged sections. Read-only "
+                    "over both DBs; exit 0 always (empty diff is a "
+                    "valid result). --json for CI.")
+    p_diff.add_argument("baseline",
+                         help="baseline DB path (usually a prior engagement's "
+                              "engagement.db)")
+    p_diff.add_argument("--include-observations", action="store_true",
+                         help="include unproven observations in the diff "
+                              "(default: proven findings only)")
+    p_diff.add_argument("--verbose", action="store_true",
+                         help="also list unchanged findings (default: "
+                              "only new + gone shown)")
+    p_diff.add_argument("--json", action="store_true",
+                         help="emit machine-readable JSON")
+    p_diff.set_defaults(func=cmd_diff)
 
     p_refresh = sub.add_parser(
         "refresh",
