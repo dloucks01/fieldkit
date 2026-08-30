@@ -2474,6 +2474,16 @@ def cmd_bloodhound_suggest(args, store):
             print(f"    ↳ suggested: `fieldkit chain run "
                   f"{s['profile']} {s['target']}`")
             print(f"      why: {s['rationale']}")
+            matches = p.get("matching_ttps") or []
+            if matches:
+                print(f"      also check: {len(matches)} TTP(s) "
+                      f"match services on this target:")
+                for k in matches[:5]:
+                    print(f"        - `fieldkit ttps show {k}`")
+                if len(matches) > 5:
+                    print(f"        - … + {len(matches) - 5} more "
+                          f"(`fieldkit ttps list --grep "
+                          f"{s['target'].lower().split('.')[0]}`)")
         else:
             print("    ↳ no shipped chain profile fits — walk the "
                   "BH path directly (see `fieldkit bloodhound "
