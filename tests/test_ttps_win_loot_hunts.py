@@ -117,9 +117,16 @@ class WinLootRankingTest(unittest.TestCase):
         # Loot: medium/read-only/quiet = 233
         top_key = vs[0].key
         self.assertTrue(top_key.startswith("seimpersonate:"))
-        # Every loot vector ranks strictly below every real vector.
+        # Every loot vector ranks strictly below every real
+        # (deterministic-escalation) vector. C5's persist:* family
+        # sits at the same 233 as loot — an "operator value" tier,
+        # both below deterministic escalation but visible on hosts
+        # where nothing else applies — so exclude both from
+        # `real_scores`.
         loot_scores = {v.score for v in vs if v.key.startswith("loot:")}
-        real_scores = {v.score for v in vs if not v.key.startswith("loot:")}
+        real_scores = {v.score for v in vs
+                       if not v.key.startswith("loot:")
+                       and not v.key.startswith("persist:")}
         for ls in loot_scores:
             for rs in real_scores:
                 self.assertGreater(rs, ls)

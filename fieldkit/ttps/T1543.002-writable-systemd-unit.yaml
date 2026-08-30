@@ -1,0 +1,46 @@
+# Writable systemd unit → ExecStart as root
+#
+# systemd .service and .timer files under /etc/systemd/system/ (and
+# the drop-in directories /etc/systemd/system/*.service.d/) get
+# executed as the User= they name — root by default. A user with
+# write access to any such file can point ExecStart at a payload
+# that runs on the next start / boot.
+#
+# Discovery-first. Genuinely new coverage.
+technique: T1543.002
+name: writable systemd unit → ExecStart as root
+tactic: [persistence, privilege-escalation]
+platform: [linux]
+key: persist:writable-systemd
+ranking:
+  exploitability: medium
+  safety: read-only
+  detection: quiet
+detect:
+  always: true
+execute:
+  # Walk system-wide + admin-drop-in unit dirs, plus user unit dirs
+  # (still relevant on a foothold that owns a service account). The
+  # .d drop-in directories are the sneaky bit — a writable
+  # <service>.service.d/override.conf trumps the base unit's
+  # ExecStart even when the base is root-owned.
+  command: |-
+    find /etc/systemd/system /usr/local/lib/systemd/system /run/systemd/system /var/lib/systemd/system -type f \( -name '*.service' -o -name '*.timer' -o -name '*.conf' \) -writable 2>/dev/null | head -30
+verify:
+  success: "/"
+cleanup:
+  command: ""
+report:
+  vector_type: writable_systemd
+  evidence: "systemd unit file(s) writable by the foothold user"
+  description: >
+    A systemd .service, .timer, or drop-in .conf is writable by
+    the current user. Modifying ExecStart (or overriding it via a
+    .d/override.conf) makes systemd run an attacker command as the
+    unit's User= — root by default. Persists across reboots.
+  remediation: >
+    Set unit files + their parent dirs to root:root 0644/0755;
+    audit /etc/systemd/system for user-writable units. Never
+    place a service unit into /var/lib/systemd/system without
+    an explicit ownership review.
+  refs: [T1543.002, systemd, persistence]
