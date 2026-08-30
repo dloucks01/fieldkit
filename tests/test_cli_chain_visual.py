@@ -100,12 +100,15 @@ class ChainVisualTest(unittest.TestCase):
         self.assertIn("relay:listen", out)
 
     def test_running_cost_accumulator_matches_step_costs(self):
-        # esc8's chain_step.detection_cost per step (legacy field,
-        # 0/3/1/2/1/0/3) → running total finishes at 10.
+        # esc8's chain_step.detection_cost per step (legacy field).
+        # C12 slice 1 dropped post:cert-request from 1 → 0
+        # (honest zero: local-only cert-material validation with
+        # no target-visible signals), so running total finishes
+        # at 9 rather than 10.
         s = _make_store(self)
         cid = _persist_chain(s, "10.0.0.1", ["ok"] * 7)
         _, out = _run_visual(cid, s)
-        self.assertIn("(running  10)", out)
+        self.assertIn("(running   9)", out)
 
 
 if __name__ == "__main__":
