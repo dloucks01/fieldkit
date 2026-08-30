@@ -318,10 +318,28 @@ _V7 = [
     """,
 ]
 
+#: v8 lands finding suppression: mark a finding by
+#: (vector_type, host_id, title_pattern) as "known-accepted risk;
+#: don't surface again during analyze / report". The suppression
+#: is opt-in per engagement; the operator uses `fieldkit suppress
+#: add ...` after triaging.
+_V8 = [
+    """
+    CREATE TABLE suppression (
+        id             INTEGER PRIMARY KEY,
+        vector_type    TEXT NOT NULL,
+        host_id        INTEGER REFERENCES host(id) ON DELETE CASCADE,
+        title_pattern  TEXT NOT NULL DEFAULT '',
+        reason         TEXT NOT NULL DEFAULT '',
+        added          TEXT NOT NULL
+    )
+    """,
+]
+
 #: (version, [statements]) applied in order; a database records the last applied
 #: version in PRAGMA user_version. Append to migrate; never edit a shipped entry.
 MIGRATIONS = [(1, _V1), (2, _V2), (3, _V3), (4, _V4), (5, _V5),
-              (6, _V6), (7, _V7)]
+              (6, _V6), (7, _V7), (8, _V8)]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -1064,6 +1082,55 @@ class Store:
         return [dict(r) for r in rows]
 
     # -- certificates (chain artifacts) -------------------------------------
+
+    # -- suppressions (known-accepted risk) --------------------------
+
+    def add_suppression(self, vector_type, host_id=None,
+                          title_pattern="", reason=""):
+        """Record a suppression — findings matching
+        (vector_type, host_id, title_pattern) skip analyze /
+        report until removed. Returns the new row id."""
+        with self._write():
+            cur = self.conn.execute(
+                "INSERT INTO suppression (vector_type, host_id, "
+                "title_pattern, reason, added) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (vector_type, host_id, title_pattern or "",
+                 reason or "", utcnow()))
+            return cur.lastrowid
+
+    def remove_suppression(self, sup_id):
+        """Delete a suppression by id. Returns True if a row was
+        deleted, False if no such id."""
+        with self._write():
+            cur = self.conn.execute(
+                "DELETE FROM suppression WHERE id = ?", (sup_id,))
+            return cur.rowcount > 0
+
+    def suppressions(self):
+        """Every suppression, oldest first."""
+        return self.conn.execute(
+            "SELECT * FROM suppression ORDER BY id").fetchall()
+
+    def is_suppressed(self, vector_type, host_id=None, title=""):
+        """True when any suppression row matches. Match rules:
+          * vector_type must match exactly, OR the suppression's
+            vector_type is '*' (wildcard)
+          * host_id matches exactly OR the suppression's host_id
+            is NULL (any host)
+          * title_pattern is a substring test against title
+            (empty pattern = match any title)
+        """
+        for row in self.suppressions():
+            vt_ok = (row["vector_type"] == "*"
+                     or row["vector_type"] == vector_type)
+            host_ok = (row["host_id"] is None
+                       or row["host_id"] == host_id)
+            pat = row["title_pattern"] or ""
+            title_ok = (not pat) or (pat in (title or ""))
+            if vt_ok and host_ok and title_ok:
+                return True
+        return False
 
     def add_certificate(self, principal, cert_b64, source="relay-adcs",
                           template="", chain_id=None):
