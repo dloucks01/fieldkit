@@ -511,21 +511,45 @@ def _render_per_host_summary(w, engagement, proven, observations):
     # appears in the source string; unmatched creds fall through
     # to the global "Credentials recovered" table unchanged.
     recovered = engagement.get("recovered_credentials") or []
+    chains = engagement.get("chain_history") or []
+
+    def _host_tokens(host_label):
+        """Extract IP/hostname/os tokens from a host label of the
+        shape ``ip (hostname, os)`` for substring matching."""
+        hl = host_label.lower()
+        return [t.strip("(), ") for t in hl.replace("(", " ")
+                    .replace(")", " ").replace(",", " ").split()
+                    if len(t.strip("(), ")) >= 3]
 
     def _creds_on(host_label):
         """Best-effort: pick recovered creds whose source references
         this host's IP or hostname substring."""
         out = []
+        tokens = _host_tokens(host_label)
         for c in recovered:
             src = (c.get("source") or "").lower()
-            hl = host_label.lower()
-            # host_label is "ip (hostname, os)"; pull each token.
-            tokens = [t.strip("(), ") for t in hl.replace("(", " ")
-                        .replace(")", " ").replace(",", " ").split()
-                        if t.strip("(), ")]
             for tok in tokens:
-                if len(tok) >= 3 and tok in src:
+                if tok in src:
                     out.append(c)
+                    break
+        return out
+
+    def _chains_on(host_label):
+        """Pick chain-history entries whose target references this
+        host's IP or hostname. A single chain can appear on multiple
+        hosts (e.g. smb-relay-exec targets the coerced host but the
+        RELAY target is a different host recorded in chain.target).
+        We cite by target-string match; the chain's evidence-trail
+        is one source of truth, this is a cross-reference."""
+        out = []
+        tokens = _host_tokens(host_label)
+        for ch in chains:
+            tgt = (ch.get("target") or "").lower()
+            if not tgt:
+                continue
+            for tok in tokens:
+                if tok in tgt or tgt in tok:
+                    out.append(ch)
                     break
         return out
 
@@ -599,6 +623,18 @@ def _render_per_host_summary(w, engagement, proven, observations):
             for c in host_creds:
                 w(f"- `{c['principal']}` — {c['kind']} "
                   f"(from `{c['source']}`)")
+            w("")
+        host_chains = _chains_on(host)
+        if host_chains:
+            w("Chains targeting this host:")
+            w("")
+            for ch in host_chains:
+                extra = ""
+                if ch.get("aborted_reason"):
+                    extra = f" — aborted: {ch['aborted_reason']}"
+                w(f"- Chain #{ch['id']} `{ch['profile']}` → "
+                  f"`{ch['target']}` — **{ch['status']}** "
+                  f"(detection debt {ch['detection_debt']}){extra}")
             w("")
     w("---")
     w("")
