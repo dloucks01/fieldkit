@@ -261,11 +261,11 @@ def suggest_chain(path_entry, nodes_by_sid=None):
 
 def suggest_chains(store, *, max_depth=8):
     """Enumerate every :func:`owned_paths` entry and attach a
-    ``suggestion`` dict where a shipped chain profile fits.
-
-    Returns the same list :func:`owned_paths` returns, with an
-    additional ``suggestion`` key on each entry (or ``None`` when
-    no chain fits). Empty when no graph is loaded.
+    ``suggestion`` dict where a shipped chain profile fits. Also
+    attaches ``matching_ttps`` — a list of shipped CVE-TTP keys
+    whose ``services.<product>`` detect predicate names a service
+    the suggested chain target actually runs. Empty when no
+    graph is loaded.
     """
     paths = owned_paths(store, max_depth=max_depth)
     if not paths:
@@ -273,7 +273,72 @@ def suggest_chains(store, *, max_depth=8):
     nodes_by_sid = {n["sid"]: n for n in store.bh_nodes()}
     for p in paths:
         p["suggestion"] = suggest_chain(p, nodes_by_sid)
+        s = p["suggestion"]
+        if s is not None:
+            p["matching_ttps"] = _matching_ttps(s["target"], store)
+        else:
+            p["matching_ttps"] = []
     return paths
+
+
+def _matching_ttps(target_name, store):
+    """Cross-reference: for the fieldkit host whose IP or hostname
+    matches ``target_name``, return every shipped TTP key whose
+    ``detect.version_range`` predicate names a service the host
+    actually exposes.
+
+    Product-name match only — no version comparison — so this
+    surfaces "check this TTP" hints, not "confirmed exploitable"
+    claims. A shipped TTP whose version_range is
+    ``services.fortigate`` matched to a host running FortiGate
+    (any version) hints the operator should check whether the
+    specific version window applies via
+    ``fieldkit ttps show <key>``.
+    """
+    from .hostenum import _canon_product
+    from .ttps import load_all
+    hostname = (target_name or "").lower()
+    if not hostname:
+        return []
+    # Find the fieldkit host — first by exact IP match, then by
+    # hostname substring (BH names are typically FQDNs like
+    # "DC01.CORP.LOCAL"; the fieldkit hostname is often just
+    # "dc01").
+    host_id = None
+    for h in store.hosts():
+        hn = (h["hostname"] or "").lower()
+        ip = (h["ip"] or "").lower()
+        if ip == hostname:
+            host_id = h["id"]; break
+        if hn and (hn in hostname or hostname.startswith(hn + ".")):
+            host_id = h["id"]; break
+    if host_id is None:
+        return []
+    products = set()
+    for svc in store.services(host_id=host_id):
+        prod = (svc["product"] or "").strip()
+        if prod:
+            products.add(_canon_product(prod))
+    if not products:
+        return []
+    matches = []
+    try:
+        for t in load_all():
+            if not t.detect or t.detect.kind != "version_range":
+                continue
+            val = t.detect.value
+            if not isinstance(val, dict):
+                continue
+            for key in val:
+                if not key.startswith("services."):
+                    continue
+                svc_name = key.split(".", 1)[1]
+                if svc_name in products:
+                    matches.append(t.key)
+                    break
+    except Exception:                                       # noqa: BLE001
+        return []
+    return sorted(matches)
 
 
 def _bfs(start, adj, nodes, max_depth):
