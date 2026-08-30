@@ -2499,6 +2499,63 @@ def cmd_engagements_switch(args):
 
 
 @needs_engagement
+def cmd_suppress_add(args, store):
+    """Add a suppression — findings matching (vector_type,
+    host_id, title-substring) don't surface as new. Doesn't
+    delete existing findings; the operator can still see
+    suppressed items in the report via --include-suppressed."""
+    host_id = None
+    if args.host:
+        host = store.host_by_ip(args.host)
+        if host is None:
+            _err(f"{args.host!r} is not in the engagement")
+            return 2
+        host_id = host["id"]
+    sid = store.add_suppression(
+        vector_type=args.vector_type,
+        host_id=host_id,
+        title_pattern=args.title or "",
+        reason=args.reason or "")
+    print(f"added suppression #{sid} — "
+          f"vector={args.vector_type!r}"
+          + (f", host={args.host!r}" if args.host else "")
+          + (f", title~{args.title!r}" if args.title else ""))
+    return 0
+
+
+@needs_engagement
+def cmd_suppress_list(args, store):
+    """List every suppression in the engagement."""
+    _ = args
+    rows = list(store.suppressions())
+    if not rows:
+        print("no suppressions in this engagement")
+        return 0
+    print(f"{len(rows)} suppression(s):\n")
+    print(f"  {'id':>3}  {'vector_type':<28}  {'host':<15}  title-pattern")
+    for r in rows:
+        host_ip = ""
+        if r["host_id"]:
+            h = store.host_by_id(r["host_id"])
+            host_ip = h["ip"] if h else f"<host#{r['host_id']}>"
+        print(f"  {r['id']:>3}  {r['vector_type']:<28}  "
+              f"{host_ip:<15}  {r['title_pattern'] or '(any)'}")
+        if r["reason"]:
+            print(f"       reason: {r['reason']}")
+    return 0
+
+
+@needs_engagement
+def cmd_suppress_remove(args, store):
+    """Remove a suppression by id."""
+    if store.remove_suppression(args.id):
+        print(f"removed suppression #{args.id}")
+        return 0
+    _err(f"no suppression #{args.id}")
+    return 2
+
+
+@needs_engagement
 def cmd_retest(args, store):
     """Re-execute every proven finding's step trail against the
     current target state — post-remediation audit cycle. For
@@ -4796,6 +4853,37 @@ the spec is missing that field. `--from-file` reads one credential per line.
     p_retest.add_argument("--json", action="store_true",
                            help="emit machine-readable JSON")
     p_retest.set_defaults(func=cmd_retest)
+
+    p_sup = sub.add_parser(
+        "suppress",
+        help="finding suppression (known-accepted risk; don't flag again)",
+        description="Suppression matches by (vector_type, host, "
+                    "title-substring). Add via `suppress add`; list "
+                    "via `suppress list`; remove via `suppress remove "
+                    "<id>`. Suppressions live in the engagement DB, "
+                    "so they persist across sessions.")
+    sup_sub = p_sup.add_subparsers(dest="suppress_command",
+                                       metavar="<action>")
+    s_add = sup_sub.add_parser("add", help="add a suppression")
+    s_add.add_argument("--vector-type", required=True,
+                        help="finding vector_type to suppress "
+                             "(exact match; '*' = wildcard)")
+    s_add.add_argument("--host", metavar="IP",
+                        help="scope to one host (default: all hosts)")
+    s_add.add_argument("--title", metavar="STR",
+                        help="title-substring filter (default: match any title)")
+    s_add.add_argument("--reason", metavar="STR",
+                        help="operator note (why we accepted this)")
+    s_add.set_defaults(func=cmd_suppress_add)
+
+    s_list = sup_sub.add_parser("list", help="list every suppression")
+    s_list.set_defaults(func=cmd_suppress_list)
+
+    s_rm = sup_sub.add_parser("remove", help="remove a suppression by id")
+    s_rm.add_argument("id", type=int, help="suppression id from `suppress list`")
+    s_rm.set_defaults(func=cmd_suppress_remove)
+
+    p_sup.set_defaults(func=lambda a: _missing(p_sup))
 
     p_refresh = sub.add_parser(
         "refresh",
