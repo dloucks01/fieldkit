@@ -306,19 +306,27 @@ class ChainsBlock(Static):
                 f"      [{theme.C.WARN}]▶ resumable:[/] "
                 f"[{theme.C.INK}]{ids}[/]   "
                 f"[{theme.C.INK_DIM2}]— `fieldkit chain resume <id>`[/]")
-        for r in recent:
+        for n, r in enumerate(recent, 1):
             status = r["status"]
             colour = {
                 "proven":       theme.C.GOOD,
                 "in_progress":  theme.C.WARN,
                 "aborted":      theme.C.CRIT,
             }.get(status, theme.C.INK_DIM)
+            # Number prefix mirrors the DashboardScreen's 1..5
+            # number-key bindings that open ChainDetailScreen for
+            # this row (C14 slice 1).
             lines.append(
-                f"      #{r['id']:<3} "
+                f"      [{theme.C.INK_DIM}][{n}][/] "
+                f"#{r['id']:<3} "
                 f"[{theme.C.ACCENT}]{r['profile']:<16}[/] "
                 f"[{theme.C.INK}]{r['target']:<18}[/] "
                 f"[{colour}]{status:<12}[/] "
                 f"[{theme.C.INK_DIM}]debt {r['detection_debt']:>3}[/]")
+        if recent:
+            lines.append(
+                f"      [{theme.C.INK_DIM2}]"
+                f"press 1-{min(len(recent), 5)} for chain detail[/]")
         self.update("\n".join(lines))
 
 
@@ -340,7 +348,14 @@ class PreflightBlock(Static):
 # --- the screen ------------------------------------------------------------
 
 class DashboardScreen(Screen):
-    """The returning-operator view. Ship 2 of Phase A3d."""
+    """The returning-operator view. Ship 2 of Phase A3d.
+
+    C14 slice 1 adds number-key push to the chain-detail screen:
+    ``1``..``5`` open the corresponding row from the CHAINS block
+    (mirroring the on-screen order — newest-first, capped at 5 by
+    :func:`fieldkit.tui.data.dashboard`). ``_recent_chain_ids`` is
+    refreshed in :meth:`refresh_data` so the mapping stays live.
+    """
 
     BINDINGS = [
         Binding("a", "app.switch_screen('analyze')",  "analyze"),
@@ -349,7 +364,18 @@ class DashboardScreen(Screen):
         Binding("r", "refresh",                        "refresh"),
         Binding("?", "app.push_screen('help')",       "help"),
         Binding("q", "app.quit",                      "quit"),
+        Binding("1", "open_chain(1)", "chain #1", show=False),
+        Binding("2", "open_chain(2)", "chain #2", show=False),
+        Binding("3", "open_chain(3)", "chain #3", show=False),
+        Binding("4", "open_chain(4)", "chain #4", show=False),
+        Binding("5", "open_chain(5)", "chain #5", show=False),
     ]
+
+    def __init__(self):
+        super().__init__()
+        #: Index → chain_id for the CHAINS-block rows, 1-based to
+        #: match the number keys the operator presses.
+        self._recent_chain_ids = []
 
     def compose(self) -> ComposeResult:
         with Vertical(id="frame"):
@@ -386,6 +412,20 @@ class DashboardScreen(Screen):
         self.query_one(ChainsBlock).render_from(d)
         self.query_one(DetectionBlock).render_from(d)
         self.query_one(PreflightBlock).render_from(d)
+        self._recent_chain_ids = [r["id"] for r in d.chains_recent]
+
+    def action_open_chain(self, one_based):
+        """Push a ChainDetailScreen for the N-th recent chain row.
+        No-op when the operator presses a number past the available
+        rows — a dashboard with 2 chains ignores keys 3-5."""
+        idx = int(one_based) - 1
+        if idx < 0 or idx >= len(self._recent_chain_ids):
+            return
+        from .chain_detail import ChainDetailScreen
+        db = getattr(self.app, "_db_path", None)
+        self.app.push_screen(
+            ChainDetailScreen(chain_id=self._recent_chain_ids[idx],
+                                db_path=db))
 
 
 #: CSS additions for the Dashboard — merged into APP_TCSS at import so the
