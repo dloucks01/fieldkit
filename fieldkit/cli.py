@@ -3069,6 +3069,78 @@ def cmd_status(args, store):
 
 # -------------------------------------------------------------------------- parser
 
+def _add_chain_ctx_args(parser):
+    """The full set of ctx-collection args shared by ``chain run``,
+    ``chain walk``, and ``chain resume``. Extracted so all three
+    subcommands surface identical --help text — an operator
+    reading ``chain resume --help`` sees the same flag docs they
+    saw on ``chain run --help`` rather than a bare list of names."""
+    parser.add_argument(
+        "--probe-port", type=int, default=445,
+        help="reachability probe TCP port (default: 445 for SMB)")
+    parser.add_argument(
+        "--probe-timeout", type=float, default=3.0,
+        help="reachability probe timeout in seconds (default: 3.0)")
+    parser.add_argument(
+        "--listener", metavar="SMB_URI",
+        help="SMB URI the coerce points at (e.g. "
+             r"\\10.0.0.5\share). Skip when passing "
+             "--listener-ip + --ca — fieldkit builds the URI "
+             "from the bound listener automatically.")
+    parser.add_argument(
+        "--listener-ip", metavar="IP",
+        help="fieldkit host IP the target can reach (for "
+             "spawning the ntlmrelayx listener).")
+    parser.add_argument(
+        "--ca", metavar="HOST",
+        help="ADCS CA host for esc8's relay target (e.g. "
+             "ca01.corp.local).")
+    parser.add_argument(
+        "--template", metavar="NAME", default="DomainController",
+        help="ADCS certificate template (default: "
+             "DomainController; the esc8 canonical).")
+    parser.add_argument(
+        "--relay-port-smb", type=int, default=445, metavar="PORT",
+        help="SMB bind port for the relay listener "
+             "(default 445 needs root; try 4445 as non-root).")
+    parser.add_argument(
+        "--relay-port-http", type=int, default=80, metavar="PORT",
+        help="HTTP bind port for the relay listener (default 80).")
+    parser.add_argument(
+        "--relay-capture-timeout", type=float, default=60.0,
+        metavar="S",
+        help="how long to wait for the caught auth after the "
+             "coerce fired (default 60s).")
+    parser.add_argument(
+        "--domain", metavar="AD_DOMAIN",
+        help="AD domain for post-relay steps (PKINIT + DCSync); "
+             "e.g. CORP.LOCAL.")
+    parser.add_argument(
+        "--relay-mode", metavar="MODE",
+        choices=("adcs-cert", "ldap-rbcd", "smb-exec", "socks"),
+        help="ntlmrelayx relay flavor: adcs-cert (esc8), "
+             "ldap-rbcd (rbcd), smb-exec (smb-relay-exec), "
+             "socks. Inferred from --ca for esc8.")
+    parser.add_argument(
+        "--relay-target", metavar="HOST",
+        help="host to relay caught auth to. DC for rbcd, "
+             "workstation for smb-relay-exec. --ca implies "
+             "this for esc8.")
+    parser.add_argument(
+        "--impersonate", metavar="USER", default="Administrator",
+        help="account to impersonate via S4U2Self (rbcd "
+             "profile; default Administrator).")
+    parser.add_argument(
+        "--dc-ip", metavar="IP",
+        help="DC IP for post:s4u2self KDC round-trip "
+             "(rbcd profile); defaults to chain target.")
+    parser.add_argument(
+        "--cred-id", type=int, metavar="ID",
+        help="credential id to use for auth to the target's "
+             "MS-EFSR endpoint (see `fieldkit list creds`); "
+             "modern DCs require it.")
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog=PROG,
@@ -3554,55 +3626,7 @@ the spec is missing that field. `--from-file` reads one credential per line.
         "run", help="walk every step of a chain profile against a target")
     c_run.add_argument("profile", choices=_chain_choices, help="chain profile to run")
     c_run.add_argument("target", help="chain target (DC IP for esc8, etc.)")
-    c_run.add_argument("--probe-port", type=int, default=445,
-                       help="reachability probe TCP port (default: 445 for SMB)")
-    c_run.add_argument("--probe-timeout", type=float, default=3.0,
-                       help="reachability probe timeout in seconds (default: 3.0)")
-    c_run.add_argument("--listener", metavar="SMB_URI",
-                       help="SMB URI the coerce points at (e.g. "
-                            r"\\10.0.0.5\share). Skip when passing "
-                            "--listener-ip + --ca — fieldkit builds the URI "
-                            "from the bound listener automatically.")
-    c_run.add_argument("--listener-ip", metavar="IP",
-                       help="fieldkit host IP the target can reach (for "
-                            "spawning the ntlmrelayx listener; D3+).")
-    c_run.add_argument("--ca", metavar="HOST",
-                       help="ADCS CA host for esc8's relay target (e.g. "
-                            "ca01.corp.local).")
-    c_run.add_argument("--template", metavar="NAME", default="DomainController",
-                       help="ADCS certificate template (default: "
-                            "DomainController; the esc8 canonical).")
-    c_run.add_argument("--relay-port-smb", type=int, default=445, metavar="PORT",
-                       help="SMB bind port for the relay listener "
-                            "(default 445 needs root; try 4445 as non-root).")
-    c_run.add_argument("--relay-port-http", type=int, default=80, metavar="PORT",
-                       help="HTTP bind port for the relay listener (default 80).")
-    c_run.add_argument("--relay-capture-timeout", type=float, default=60.0,
-                       metavar="S",
-                       help="how long to wait for the caught auth after the "
-                            "coerce fired (default 60s).")
-    c_run.add_argument("--domain", metavar="AD_DOMAIN",
-                       help="AD domain for post-relay steps (PKINIT + DCSync); "
-                            "e.g. CORP.LOCAL.")
-    c_run.add_argument("--relay-mode", metavar="MODE",
-                       choices=("adcs-cert", "ldap-rbcd", "smb-exec", "socks"),
-                       help="ntlmrelayx relay flavor: adcs-cert (esc8), "
-                            "ldap-rbcd (rbcd), smb-exec (smb-relay-exec), "
-                            "socks. Inferred from --ca for esc8.")
-    c_run.add_argument("--relay-target", metavar="HOST",
-                       help="host to relay caught auth to. DC for rbcd, "
-                            "workstation for smb-relay-exec. --ca implies "
-                            "this for esc8.")
-    c_run.add_argument("--impersonate", metavar="USER", default="Administrator",
-                       help="account to impersonate via S4U2Self (rbcd "
-                            "profile; default Administrator).")
-    c_run.add_argument("--dc-ip", metavar="IP",
-                       help="DC IP for post:s4u2self KDC round-trip "
-                            "(rbcd profile); defaults to chain target.")
-    c_run.add_argument("--cred-id", type=int, metavar="ID",
-                       help="credential id to use for auth to the target's "
-                            "MS-EFSR endpoint (see `fieldkit list creds`); "
-                            "modern DCs require it.")
+    _add_chain_ctx_args(c_run)
     c_run.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
     c_run.set_defaults(func=cmd_chain_run)
 
@@ -3632,22 +3656,7 @@ the spec is missing that field. `--from-file` reads one credential per line.
              "confirm (go/skip/quit)")
     c_walk.add_argument("profile", choices=_chain_choices, help="chain profile")
     c_walk.add_argument("target", help="chain target")
-    c_walk.add_argument("--probe-port", type=int, default=445)
-    c_walk.add_argument("--probe-timeout", type=float, default=3.0)
-    c_walk.add_argument("--listener", metavar="SMB_URI")
-    c_walk.add_argument("--listener-ip", metavar="IP")
-    c_walk.add_argument("--ca", metavar="HOST")
-    c_walk.add_argument("--template", metavar="NAME", default="DomainController")
-    c_walk.add_argument("--relay-port-smb", type=int, default=445)
-    c_walk.add_argument("--relay-port-http", type=int, default=80)
-    c_walk.add_argument("--relay-capture-timeout", type=float, default=60.0)
-    c_walk.add_argument("--domain", metavar="AD_DOMAIN")
-    c_walk.add_argument("--relay-mode", metavar="MODE",
-                        choices=("adcs-cert", "ldap-rbcd", "smb-exec", "socks"))
-    c_walk.add_argument("--relay-target", metavar="HOST")
-    c_walk.add_argument("--impersonate", metavar="USER", default="Administrator")
-    c_walk.add_argument("--dc-ip", metavar="IP")
-    c_walk.add_argument("--cred-id", type=int, metavar="ID")
+    _add_chain_ctx_args(c_walk)
     c_walk.set_defaults(func=cmd_chain_walk)
 
     c_resume = chain_sub.add_parser(
@@ -3659,22 +3668,7 @@ the spec is missing that field. `--from-file` reads one credential per line.
                     "surface a hard error rather than a silent re-walk.")
     c_resume.add_argument("chain_id", type=int,
                            help="chain id from `fieldkit chain list` (must be in_progress)")
-    c_resume.add_argument("--probe-port", type=int, default=445)
-    c_resume.add_argument("--probe-timeout", type=float, default=3.0)
-    c_resume.add_argument("--listener", metavar="SMB_URI")
-    c_resume.add_argument("--listener-ip", metavar="IP")
-    c_resume.add_argument("--ca", metavar="HOST")
-    c_resume.add_argument("--template", metavar="NAME", default="DomainController")
-    c_resume.add_argument("--relay-port-smb", type=int, default=445)
-    c_resume.add_argument("--relay-port-http", type=int, default=80)
-    c_resume.add_argument("--relay-capture-timeout", type=float, default=60.0)
-    c_resume.add_argument("--domain", metavar="AD_DOMAIN")
-    c_resume.add_argument("--relay-mode", metavar="MODE",
-                           choices=("adcs-cert", "ldap-rbcd", "smb-exec", "socks"))
-    c_resume.add_argument("--relay-target", metavar="HOST")
-    c_resume.add_argument("--impersonate", metavar="USER", default="Administrator")
-    c_resume.add_argument("--dc-ip", metavar="IP")
-    c_resume.add_argument("--cred-id", type=int, metavar="ID")
+    _add_chain_ctx_args(c_resume)
     c_resume.add_argument("-y", "--yes", action="store_true",
                            help="skip the confirm-back")
     c_resume.set_defaults(func=cmd_chain_resume)
