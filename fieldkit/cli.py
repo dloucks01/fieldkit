@@ -695,6 +695,40 @@ def _stage_dirs(cfg):
                 stage_lin=_first_dir(cfg.get("stage_lin")))
 
 
+def _refresh_from_recce(bridge_path, store):
+    """Read a recce-bridge.json and apply it against ``store``. Returns
+    0 on success, non-zero on any parse/read failure. Failures are
+    non-fatal for the caller — ``analyze`` and ``escalate`` continue
+    against the previously-ingested state so the operator still gets
+    ranked output.
+
+    Extracted so ``analyze --refresh`` and ``escalate --refresh``
+    share one implementation. The stand-alone ``fieldkit recce``
+    command has its own error-messaging wrapper (`cmd_recce`);
+    this helper is the internal one-shot.
+    """
+    try:
+        with open(bridge_path, "r", errors="replace") as fh:
+            text = fh.read()
+    except OSError as exc:
+        _err(f"--refresh: cannot read {bridge_path}: {exc}")
+        return 2
+    try:
+        intent = recce_mod.parse(text)
+    except recce_mod.RecceBridgeError as exc:
+        _err(f"--refresh: {exc}")
+        return 2
+    if not intent.hosts:
+        _err(f"--refresh: {bridge_path} has no hosts to ingest")
+        return 2
+    try:
+        recce_mod.apply(store, intent)
+    except Exception as exc:                                  # noqa: BLE001
+        _err(f"--refresh: apply failed: {exc}")
+        return 2
+    return 0
+
+
 def _stage_dir_list(cfg, key):
     v = cfg.get(key)
     return [d.strip() for d in v.split(",") if d.strip()] if v else []
@@ -804,6 +838,18 @@ def cmd_scrub(args, store, host, cred):
 @needs_engagement
 def cmd_analyze(args, store):
     cfg = config_mod.load(store)
+    # --refresh path: re-ingest a recce-bridge.json before ranking,
+    # so `fieldkit analyze --refresh <path>` is the one-command
+    # "pull the latest recce data + evaluate TTPs" workflow. Failures
+    # in the ingest are surfaced but not fatal — the analyze still
+    # runs against the previously-ingested state so the operator
+    # gets SOMETHING out of the command.
+    if getattr(args, "refresh", None):
+        rc = _refresh_from_recce(args.refresh, store)
+        if rc == 0:
+            print(f"[refresh] re-ingested {args.refresh}\n")
+        else:
+            print(f"[refresh] ingest failed (continuing with existing state)\n")
     items = list(kb_mod.analyze(store))
     items += privesc_mod.vectors_from_state(store, **_stage_dirs(cfg))
     counts = store.counts()
@@ -1025,6 +1071,16 @@ def cmd_escalate(args):
     with _open_store(args) as store:
         store.require_engagement()
         cfg = config_mod.load(store)
+        # --refresh path (see cmd_analyze for the same pattern): pull
+        # the latest recce data before evaluating vectors. Non-fatal
+        # on ingest failure — escalate still runs against the
+        # previously-ingested state.
+        if getattr(args, "refresh", None):
+            rc = _refresh_from_recce(args.refresh, store)
+            if rc == 0:
+                print(f"[refresh] re-ingested {args.refresh}\n")
+            else:
+                print(f"[refresh] ingest failed (continuing with existing state)\n")
         host, cred, err = _resolve_target(store, args.host)
         # --dry-run is plan-only: proceed even when no credential is yet proven
         # on this host, as long as the host itself is resolvable. The plan is
@@ -2779,6 +2835,11 @@ the spec is missing that field. `--from-file` reads one credential per line.
                     "next move, it does not run it.")
     p_analyze.add_argument("--proof", action="store_true",
                            help="show each opportunity's safe-proof (report evidence)")
+    p_analyze.add_argument("--refresh", metavar="BRIDGE_PATH",
+                           help="re-ingest a recce-bridge.json before ranking. "
+                                "Same effect as `fieldkit recce <path>` immediately "
+                                "before `analyze` — but wrapped so the operator "
+                                "workflow stays one command.")
     p_analyze.set_defaults(func=cmd_analyze)
 
     p_enum = sub.add_parser(
@@ -2823,6 +2884,10 @@ the spec is missing that field. `--from-file` reads one credential per line.
     p_esc.add_argument("--rules", action="store_true",
                        help="print the axis→action policy table and exit")
     p_esc.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
+    p_esc.add_argument("--refresh", metavar="BRIDGE_PATH",
+                       help="re-ingest a recce-bridge.json before ranking. "
+                            "Same effect as `fieldkit recce <path>` immediately "
+                            "before `escalate`.")
     p_esc.set_defaults(func=cmd_escalate)
 
     p_poc = sub.add_parser(
