@@ -63,6 +63,25 @@ class SuggestChainHeuristicsTest(unittest.TestCase):
         self.assertEqual(s["target"], "DC01.CORP.LOCAL")
         self.assertIn("ADCS", s["rationale"])
 
+    def test_high_value_computer_also_suggests_nopac_alternative(self):
+        # C15: same high-value-Computer target should carry nopac as
+        # an alternative, so the operator picks the profile whose
+        # precondition (ADCS vs MAQ+unpatched-KDC) their environment
+        # actually meets.
+        from fieldkit.bloodhound import suggest_chain
+        nodes = self._nodes(
+            ("S-1-1", "USER01@CORP.LOCAL", "User", 0),
+            ("S-1-2", "DC01.CORP.LOCAL", "Computer", 1),
+        )
+        p = {"owned": "USER01@CORP.LOCAL", "target": "DC01.CORP.LOCAL",
+             "hops": 1, "path": "USER01@CORP.LOCAL -AdminTo-> DC01.CORP.LOCAL"}
+        s = suggest_chain(p, nodes)
+        alts = s.get("alternatives") or []
+        self.assertEqual(len(alts), 1)
+        self.assertEqual(alts[0]["profile"], "nopac")
+        self.assertIn("MachineAccountQuota", alts[0]["rationale"])
+        self.assertIn("DC01.CORP.LOCAL", alts[0]["rationale"])
+
     def test_rbcd_edge_suggests_rbcd(self):
         from fieldkit.bloodhound import suggest_chain
         nodes = self._nodes(

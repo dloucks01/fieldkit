@@ -2578,6 +2578,8 @@ def cmd_bloodhound_suggest(args, store):
             print(f"    ↳ suggested: `fieldkit chain run "
                   f"{s['profile']} {s['target']}`")
             print(f"      why: {s['rationale']}")
+            for alt in (s.get("alternatives") or []):
+                print(f"      ↳ {alt['rationale']}")
             matches = p.get("matching_ttps") or []
             if matches:
                 print(f"      also check: {len(matches)} TTP(s) "
