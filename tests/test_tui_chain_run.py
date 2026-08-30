@@ -44,8 +44,6 @@ def _fresh_screen(profile_name="esc8", target="10.0.0.1", ctx=None):
     # callback methods to call rendering helpers inline (bypass the
     # app.call_from_thread hop entirely). Rendering itself gets
     # short-circuited per test where needed.
-    _orig_before = screen._before_step
-    _orig_on = screen._on_step
 
     def _before(chain, step):
         # Same logic as the real _before_step but without

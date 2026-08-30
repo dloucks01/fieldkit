@@ -49,7 +49,7 @@ class BuildChainHistoryTest(unittest.TestCase):
             tmp.cleanup()
 
     def test_walked_chain_appears_in_history_with_trail(self):
-        from fieldkit.chain import esc8_chain, walk, Outcome
+        from fieldkit.chain import esc8_chain, Outcome
         from fieldkit.report import build
         s, tmp = _make_store()
         try:
@@ -78,7 +78,7 @@ class BuildChainHistoryTest(unittest.TestCase):
             tmp.cleanup()
 
     def test_multiple_chains_appear_newest_first(self):
-        from fieldkit.chain import esc8_chain, walk, Outcome
+        from fieldkit.chain import esc8_chain, Outcome
         from fieldkit.report import build
         s, tmp = _make_store()
         try:

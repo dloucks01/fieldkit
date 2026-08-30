@@ -209,7 +209,7 @@ class BuildsAdapterSubstitutionTest(unittest.TestCase):
         # applied to both the remote path and the run command.
         import tempfile
         from fieldkit.hostenum import HostFacts, WINDOWS
-        from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
+        from fieldkit.privesc import _reset_ttp_cache_for_tests
         y = """
 technique: T1548.002
 name: test-run-subst

@@ -746,7 +746,6 @@ class OneShotSprayTest(CliTestCase):
 
     def test_tmp_creates_a_fresh_engagement_in_a_temp_dir(self):
         # no `init` in setUp — this is the "no engagement anywhere" scenario
-        import tempfile
         # keep the tmp DB out of self.db so we can inspect the auto-created path
         out = self.run_cli("spray", "--tmp", "--hosts", "10.0.0.5",
                             "--yes", expect=2)  # nxc missing → aborts, but --tmp printed

@@ -286,7 +286,7 @@ class ChainPkinitStepTest(unittest.TestCase):
         s = Store.create(os.path.join(tmp.name, "e.db"))
         s.init_engagement("test")
         self.addCleanup(s.close)
-        ch = self._walk_pkinit(
+        self._walk_pkinit(
             ctx_overrides={"store": s},
             pkinit_result=PkinitResult(
                 kind="ok", principal="CORP/DC01$",

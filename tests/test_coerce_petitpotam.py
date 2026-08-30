@@ -201,7 +201,7 @@ class ChainIntegrationTest(unittest.TestCase):
         """Run the esc8 chain, patching PetitPotam.fire() to return
         the caller's coerce_result. Returns the walked chain."""
         from fieldkit.chain import esc8_chain, walk
-        from fieldkit.coerce import CoerceResult, petitpotam
+        from fieldkit.coerce import petitpotam
 
         class Ctx:
             probe_port = 1               # unreachable — but we skip reachability
