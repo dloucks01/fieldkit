@@ -21,6 +21,7 @@ assembles the dicts from state via :func:`build`.
 """
 import os
 import shutil
+import tempfile
 from datetime import datetime, timezone
 
 from . import reportkb as kb
@@ -781,11 +782,58 @@ def _convert(run, md_path, out, extra, label):
     return f"wrote {out}"
 
 
+#: Minimal CSS embedded into the HTML export. Kept intentionally
+#: readable-first: no external font dependencies, no color scheme
+#: assumptions (works in both light + dark browser modes via the
+#: default terminal-adjacent palette). Big enough to make tables +
+#: code blocks + section headers legible; small enough to inline
+#: without dominating the file.
+_HTML_STYLE = """
+<style>
+  body { max-width: 850px; margin: 2em auto; padding: 0 1.5em;
+         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+                      Roboto, Helvetica, Arial, sans-serif;
+         line-height: 1.5; color: #222; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #111; color: #ddd; }
+    a { color: #6cf; }
+    code, pre { background: #222; color: #ddd; }
+    table { border-color: #444; }
+    th, td { border-color: #333; }
+    th { background: #1a1a1a; }
+  }
+  h1, h2, h3 { line-height: 1.2; margin-top: 1.5em; }
+  h1 { border-bottom: 2px solid currentColor; padding-bottom: 0.2em; }
+  h2 { border-bottom: 1px solid #999; padding-bottom: 0.15em; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace;
+              font-size: 0.9em; background: #f4f4f4; }
+  pre { padding: 1em; overflow-x: auto; border-radius: 4px; }
+  code { padding: 0.1em 0.3em; border-radius: 3px; }
+  pre code { padding: 0; background: none; }
+  table { border-collapse: collapse; margin: 1em 0; }
+  th, td { border: 1px solid #ccc; padding: 0.4em 0.8em; text-align: left; }
+  th { background: #f4f4f4; }
+  blockquote { border-left: 4px solid #999; padding-left: 1em;
+               margin: 1em 0; color: #666; }
+</style>
+""".strip()
+
+
 def export(md_path, basename, formats, *, run=None, have=None):
-    """Convert the Markdown to docx/pdf via pandoc. Returns operator-facing lines.
+    """Convert the Markdown to docx/pdf/html via pandoc. Returns
+    operator-facing lines.
 
     ``run``/``have`` are injected for testing (rule 2 — the real spawn is
     :func:`fieldkit.runner.run`, never a bare ``subprocess`` call).
+
+    Format support:
+      * ``docx`` — pandoc default writer, no extra flags.
+      * ``pdf`` — pandoc + weasyprint. Falls back to a hint line
+        when either is missing.
+      * ``html`` — pandoc's HTML writer with ``-s`` (standalone —
+        wraps in <html><head><body>) + inline stylesheet via a
+        temp CSS file. Renders offline in any browser with no
+        external asset requests.
     """
     run = run or (lambda argv: runner_mod.run(argv, timeout=300))
     have = have or _have
@@ -803,4 +851,23 @@ def export(md_path, basename, formats, *, run=None, have=None):
         else:
             lines.append(f"# pdf: install pandoc + weasyprint, then: "
                          f"pandoc {md_path} -o {basename}.pdf --pdf-engine=weasyprint")
+    if "html" in formats:
+        if pandoc:
+            # Stash the embedded style in a temp file so pandoc's
+            # -H (include-in-header) picks it up. Cleaned up
+            # regardless of pandoc's exit — the file only holds our
+            # own bytes.
+            fd, css_path = tempfile.mkstemp(prefix="fk-html-",
+                                              suffix=".css")
+            try:
+                os.write(fd, _HTML_STYLE.encode("utf-8"))
+                os.close(fd)
+                lines.append(_convert(run, md_path, f"{basename}.html",
+                                       ("-s", "-H", css_path), "html"))
+            finally:
+                try: os.unlink(css_path)
+                except OSError: pass
+        else:
+            lines.append(f"# html: install pandoc, then: "
+                         f"pandoc {md_path} -s -o {basename}.html")
     return lines
