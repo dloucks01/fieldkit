@@ -47,6 +47,12 @@ class ProfileShapeTest(unittest.TestCase):
 
 
 class ActionEvidenceTest(unittest.TestCase):
+    """Test the manual-fallback path — force tools off PATH so each
+    action emits its manual-outcome hint text. When the tools ARE
+    on PATH (impacket-addcomputer / bloodyAD / impacket-getST),
+    the actions shell out via runner.run for real; those live
+    calls are covered by the LiveWiringTest class below via
+    monkey-patched runner."""
 
     def _walk_step(self, step_name, ctx):
         from fieldkit.chain import profile, walk, Chain
@@ -62,12 +68,27 @@ class ActionEvidenceTest(unittest.TestCase):
         class C: pass
         base = {"domain": "CORP.LOCAL", "cred": {"username": "jdoe",
                                                     "password": "Winter2025!"},
-                "dc_name": "DC01", "impersonate": "Administrator"}
+                "dc_name": "DC01", "impersonate": "Administrator",
+                # Force the tool-not-found branch for hint tests
+                "nopac_addcomputer_bin": None,
+                "nopac_bloodyad_bin": None,
+                "nopac_getst_bin": None}
         base.update(kw)
         c = C()
         for k, v in base.items():
             setattr(c, k, v)
         return c
+
+    def setUp(self):
+        # Neutralize shutil.which for the duration of this test —
+        # so the "tool on PATH" branch doesn't fire and shell out
+        # for real, which would give live impacket errors that
+        # don't match the manual-hint assertions.
+        import shutil as _shutil
+        self._orig_which = _shutil.which
+        _shutil.which = lambda _x: None
+        self.addCleanup(lambda: setattr(_shutil, "which",
+                                          self._orig_which))
 
     def test_quota_action_names_maq(self):
         out = self._walk_step("discover:maq", self._ctx())
@@ -105,6 +126,90 @@ class ActionEvidenceTest(unittest.TestCase):
     def test_restore_reverts_sam(self):
         out = self._walk_step("cleanup:restore-sam", self._ctx())
         self.assertIn("FKPWN$", out.evidence)
+
+
+class LiveWiringTest(unittest.TestCase):
+    """Test the live-wiring branch — tool IS on PATH, runner.run
+    fires. Monkey-patches runner.run to feed canned output back
+    so the action's parse-and-classify logic exercises."""
+
+    def _ctx(self, **kw):
+        class C: pass
+        base = {"domain": "CORP.LOCAL", "cred": {"username": "jdoe",
+                                                    "password": "Winter2025!"},
+                "dc_name": "DC01", "impersonate": "Administrator",
+                # Force tool on PATH via override
+                "nopac_addcomputer_bin": "/fake/impacket-addcomputer",
+                "nopac_bloodyad_bin": "/fake/bloodyAD",
+                "nopac_getst_bin": "/fake/impacket-getST"}
+        base.update(kw)
+        c = C()
+        for k, v in base.items():
+            setattr(c, k, v)
+        return c
+
+    def _fake_runner(self, stdout="", stderr="", exit_code=0, timed_out=False, error=None):
+        class _R:
+            pass
+        r = _R()
+        r.stdout = stdout
+        r.stderr = stderr
+        r.exit_code = exit_code
+        r.timed_out = timed_out
+        r.error = error
+        return r
+
+    def _run_step(self, step_name, ctx, canned_result):
+        from fieldkit import chain as chain_mod
+        from fieldkit.chain import profile, walk, Chain
+        orig_run = chain_mod.runner.run if hasattr(chain_mod, "runner") \
+            else None
+        # runner is imported lazily inside each action; monkey-patch
+        # via runner module itself
+        from fieldkit import runner as runner_mod
+        orig = runner_mod.run
+        runner_mod.run = lambda argv, timeout=None: canned_result
+        try:
+            ch = profile("nopac")("10.0.0.10")
+            by_name = {s.name: s for s in ch.steps}
+            step = by_name[step_name]
+            one = Chain(profile=ch.profile, target=ch.target,
+                         steps=(step,))
+            walk(one, ctx)
+        finally:
+            runner_mod.run = orig
+        return one.outcomes[0]
+
+    def test_addcomputer_success_lands_ok_with_data(self):
+        result = self._fake_runner(
+            stdout="Impacket v0.11...\n[*] Successfully added machine account FKPWN$")
+        out = self._run_step("create:computer-account",
+                               self._ctx(), result)
+        self.assertEqual(out.kind, "ok")
+        self.assertEqual(out.data.get("nopac_computer"), "FKPWN")
+
+    def test_addcomputer_already_exists_reuses(self):
+        result = self._fake_runner(
+            stdout="", stderr="[!] STATUS_USER_EXISTS")
+        out = self._run_step("create:computer-account",
+                               self._ctx(), result)
+        self.assertEqual(out.kind, "manual")
+        self.assertIn("already exists", out.evidence)
+
+    def test_addcomputer_failure_lands_fail(self):
+        result = self._fake_runner(
+            stdout="", stderr="[-] Something else went wrong")
+        out = self._run_step("create:computer-account",
+                               self._ctx(), result)
+        self.assertEqual(out.kind, "fail")
+
+    def test_s4u2self_kdc_refuse_lands_fail(self):
+        result = self._fake_runner(
+            stdout="", stderr="KDC_ERR_S_PRINCIPAL_UNKNOWN")
+        out = self._run_step("request:s4u2self-tgt",
+                               self._ctx(), result)
+        self.assertEqual(out.kind, "fail")
+        self.assertIn("patched", out.evidence)
 
 
 class DnHelperTest(unittest.TestCase):
