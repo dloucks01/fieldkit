@@ -2498,6 +2498,40 @@ def cmd_engagements_switch(args):
     return 0
 
 
+def cmd_dpapi_masterkey(args):
+    """Decrypt a DPAPI master key file. Wraps impacket-dpapi;
+    manual-hint when the tool isn't on PATH."""
+    from . import dpapi as dpapi_mod
+    result = dpapi_mod.decrypt_masterkey(
+        args.file, args.sid,
+        password=args.password, nt_hash=args.nt_hash)
+    if result.kind == "no-tool":
+        _err(result.output)
+        return 2
+    if result.kind == "fail":
+        _err(result.output[:400])
+        return 2
+    print(result.output)
+    if result.artifact:
+        print(f"\ndecrypted master key: {result.artifact}")
+    return 0
+
+
+def cmd_dpapi_credential(args):
+    """Decrypt a Credential Manager blob with an unlocked master
+    key (from ``fieldkit dpapi masterkey`` first)."""
+    from . import dpapi as dpapi_mod
+    result = dpapi_mod.decrypt_credential(args.file, args.masterkey)
+    if result.kind == "no-tool":
+        _err(result.output)
+        return 2
+    if result.kind == "fail":
+        _err(result.output[:400])
+        return 2
+    print(result.output)
+    return 0
+
+
 def cmd_changelog(args):
     """Auto-generate a CHANGELOG.md from git commit history.
 
@@ -4544,6 +4578,54 @@ the spec is missing that field. `--from-file` reads one credential per line.
     p_diff.add_argument("--json", action="store_true",
                          help="emit machine-readable JSON")
     p_diff.set_defaults(func=cmd_diff)
+
+    p_dpapi = sub.add_parser(
+        "dpapi",
+        help="DPAPI secret decryption (masterkey / credential)",
+        description="Windows DPAPI is used to encrypt saved RDP creds, "
+                    "Chrome/Edge cookies, WiFi passwords, Credential Manager "
+                    "entries. After landing SYSTEM on a Windows foothold, "
+                    "loot the DPAPI master key files + credential blobs, "
+                    "then decrypt locally with these commands. Wraps "
+                    "impacket-dpapi.")
+    dpapi_sub = p_dpapi.add_subparsers(dest="dpapi_command",
+                                          metavar="<action>")
+
+    dp_mk = dpapi_sub.add_parser(
+        "masterkey",
+        help="decrypt a DPAPI master key file with the user's password/hash + SID",
+        description="Point at C:\\Users\\<u>\\AppData\\Roaming\\"
+                    "Microsoft\\Protect\\<sid>\\<mkey-guid> "
+                    "(one file per master key rotation). Returns the "
+                    "decrypted key hex; feed that to `dpapi credential` "
+                    "to unlock Credential Manager entries.")
+    dp_mk.add_argument("--file", required=True, metavar="PATH",
+                        help="path to the DPAPI master key file")
+    dp_mk.add_argument("--sid", required=True, metavar="S-1-5-...",
+                        help="the user's SID (from `whoami /user`)")
+    dp_mk_creds = dp_mk.add_mutually_exclusive_group(required=True)
+    dp_mk_creds.add_argument("--password", metavar="PASS",
+                              help="the user's cleartext password")
+    dp_mk_creds.add_argument("--nt-hash", metavar="HEX",
+                              help="the user's NT hash (32 hex chars)")
+    dp_mk.set_defaults(func=cmd_dpapi_masterkey)
+
+    dp_cred = dpapi_sub.add_parser(
+        "credential",
+        help="decrypt a Credential Manager blob with an unlocked master key",
+        description="After `dpapi masterkey` returns the decrypted key, "
+                    "use it here to unlock C:\\Users\\<u>\\AppData\\Local\\"
+                    "Microsoft\\Credentials\\<blob-guid> — surfaces "
+                    "saved RDP creds, browser cookies, Windows Vault "
+                    "entries.")
+    dp_cred.add_argument("--file", required=True, metavar="PATH",
+                          help="path to the credential blob")
+    dp_cred.add_argument("--masterkey", required=True, metavar="HEX",
+                          help="the decrypted master key hex from "
+                               "`dpapi masterkey`")
+    dp_cred.set_defaults(func=cmd_dpapi_credential)
+
+    p_dpapi.set_defaults(func=lambda a: _missing(p_dpapi))
 
     p_refresh = sub.add_parser(
         "refresh",
