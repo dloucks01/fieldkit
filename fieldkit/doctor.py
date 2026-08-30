@@ -22,7 +22,7 @@ the group's severity from the worst rung + reports the exit code
 the CLI should use.
 """
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List
 
 
 @dataclass

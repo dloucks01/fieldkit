@@ -271,9 +271,23 @@ class ArchitectureTest(unittest.TestCase):
     """The load-bearing invariants from ARCHITECTURE.md, checked mechanically so they can't rot."""
 
     def _package_files(self):
+        """Every .py file under fieldkit/, recursively, EXCLUDING the
+        vendor tree (we don't own vendored code and can't dictate its
+        subprocess use). Previously walked only the top-level dir,
+        which silently exempted tui/, coerce/, ttps/ — a subpackage
+        could bypass rule 2 without tripping the invariant test."""
         pkg = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            "fieldkit")
-        return [os.path.join(pkg, f) for f in sorted(os.listdir(pkg)) if f.endswith(".py")]
+        out = []
+        for root, dirs, files in os.walk(pkg):
+            # In-place filter: skip vendor/ and __pycache__ so
+            # os.walk doesn't descend into them at all.
+            dirs[:] = sorted(d for d in dirs
+                              if d not in ("vendor", "__pycache__"))
+            for f in sorted(files):
+                if f.endswith(".py"):
+                    out.append(os.path.join(root, f))
+        return out
 
     def test_runner_is_the_only_child_process_spawn(self):
         """Rule 2 — every tool goes through `runner.run`, so tests can inject a fake."""

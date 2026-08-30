@@ -15,8 +15,7 @@ tool_bin=None, tool_timeout=…) -> CoerceResult`` API. The common
 :class:`CoerceResult` shape lets chain-time code branch on outcome
 without needing per-primitive knowledge.
 """
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 
 #: Ordered by preference for chain-time branching:

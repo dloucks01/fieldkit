@@ -13,7 +13,6 @@ SQLite DB where Watch picks them up on its next poll.
 """
 import os
 import shlex
-import subprocess
 import sys
 
 from textual.app import ComposeResult
@@ -22,6 +21,7 @@ from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import Footer, Static
 
+from .. import runner as runner_mod
 from ..state import Store, default_db_path
 from . import theme
 
@@ -211,16 +211,11 @@ class EscalateScreen(Screen):
             return
         # Spawn detached so the TUI's asyncio loop stays responsive. We don't
         # need the exit code — Watch tails the DB and shows every step as it
-        # lands, which is the honest ground-truth signal anyway.
+        # lands, which is the honest ground-truth signal anyway. Routed
+        # through runner.spawn_detached so the "only runner spawns
+        # subprocesses" invariant holds (rule 2).
         try:
-            subprocess.Popen(
-                argv,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-                cwd=os.getcwd(),
-            )
+            runner_mod.spawn_detached(argv, cwd=os.getcwd())
         except OSError as exc:
             self.app.notify(str(exc), title="failed to spawn escalate",
                              severity="error", timeout=8)

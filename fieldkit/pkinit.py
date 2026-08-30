@@ -18,7 +18,6 @@ gets them the same result in one paste.
 """
 import os
 import shutil
-import tempfile
 from dataclasses import dataclass
 
 from . import runner
