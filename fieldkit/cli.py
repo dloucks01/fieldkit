@@ -1665,6 +1665,8 @@ def cmd_chain_run(args, store):
         relay_port_smb = args.relay_port_smb
         relay_port_http = args.relay_port_http
         relay_wait_capture = args.relay_capture_timeout
+        # D4 post-relay
+        domain = args.domain
         # Store passed through so relay:capture can persist the cert
         # against the chain id — see _persisted_id below.
         store = None
@@ -2768,6 +2770,9 @@ the spec is missing that field. `--from-file` reads one credential per line.
                        metavar="S",
                        help="how long to wait for the caught auth after the "
                             "coerce fired (default 60s).")
+    c_run.add_argument("--domain", metavar="AD_DOMAIN",
+                       help="AD domain for post-relay steps (PKINIT + DCSync); "
+                            "e.g. CORP.LOCAL.")
     c_run.add_argument("--cred-id", type=int, metavar="ID",
                        help="credential id to use for auth to the target's "
                             "MS-EFSR endpoint (see `fieldkit list creds`); "

