@@ -67,6 +67,82 @@ OUTCOME_KINDS = frozenset({"ok", "skip", "fail", "manual"})
 STEP_KINDS = frozenset({"preflight", "target-side", "attacker-side"})
 
 
+#: Detection signal kinds. Each names a concrete artifact the target's
+#: SOC/EDR would see when the step runs. The kind categorizes the
+#: signal so the debt aggregator can weight it (a Windows event ID
+#: alerts differently from an RPC endpoint call).
+SIGNAL_KINDS = frozenset({
+    "win-event",     # Windows Security event log entry (e.g. 4624/4769)
+    "rpc-call",      # DCERPC endpoint interaction (MS-EFSR, MS-DRSR)
+    "smb-conn",      # SMB session an EDR-side sensor might correlate
+    "ldap-write",    # LDAP write (msDS-*, ACL edit)
+    "kerb-ticket",   # Kerberos ticket request pattern (TGS-REQ, PKINIT AS-REQ)
+    "http-req",      # HTTP endpoint interaction (ADCS enroll)
+    "process-exec",  # child process spawn on the target host
+    "auth-attempt",  # authentication attempt visible to auth logs
+})
+
+
+#: Numeric weights per signal kind. Represents the relative cost of
+#: ONE occurrence to a mature SOC — an RPC call from a workstation
+#: to a DC is a stronger signal than an SMB connection from that same
+#: workstation (SMB is background noise; RPC to DRSUAPI isn't). D6
+#: pins these; D5+ profiles may extend the catalog.
+#:
+#: Aggregated cost = sum(weight[kind] * occurrences) across every
+#: signal a walked step emits. Kept multiplicative so a step that
+#: emits 50 auth-attempts (a spray) costs 50 * 1 = 50 units, while a
+#: step that emits 1 rpc-call to MS-DRSR costs 8 — the report renders
+#: both honestly.
+SIGNAL_WEIGHTS = {
+    "win-event":     3,
+    "rpc-call":      8,   # DRSUAPI / MS-EFSR calls are high-signal
+    "smb-conn":      1,
+    "ldap-write":    5,
+    "kerb-ticket":   2,
+    "http-req":      1,
+    "process-exec":  4,
+    "auth-attempt":  1,
+}
+
+
+@dataclass(frozen=True)
+class DetectionSignal:
+    """One concrete artifact a step generates that a defender's
+    tooling can see.
+
+    :attr:`kind` — one of :data:`SIGNAL_KINDS`.
+    :attr:`identifier` — the specific signal within the kind. For
+        win-event it's the event ID as a string (``"4769"``); for
+        rpc-call it's ``<interface>/<opcode>`` (``"MS-EFSR/9"``); for
+        smb-conn it's the pipe/share (``"IPC$"``); etc.
+    :attr:`count` — how many occurrences the step emits per firing.
+        Defaults to 1; a spray step overrides.
+    :attr:`note` — one-line human context: what the SOC would
+        actually SEE — "sshd auth failure ×10 from same IP" — so a
+        defender reading the chain report knows what to hunt for.
+    """
+    kind: str
+    identifier: str
+    count: int = 1
+    note: str = ""
+
+    def __post_init__(self):
+        if self.kind not in SIGNAL_KINDS:
+            raise ValueError(
+                f"DetectionSignal.kind must be one of {sorted(SIGNAL_KINDS)}, "
+                f"got {self.kind!r}")
+        if self.count < 0:
+            raise ValueError(f"count must be non-negative, got {self.count}")
+
+    @property
+    def cost(self):
+        """Weight × count. Zero-count signals surface for
+        documentation ("this step COULD emit X") without adding
+        debt."""
+        return SIGNAL_WEIGHTS.get(self.kind, 1) * self.count
+
+
 @dataclass(frozen=True)
 class Step:
     """One atomic move in a coerce chain.
@@ -76,15 +152,24 @@ class Step:
     (Store, target IP, credential, arsenal paths). The chain module never
     inspects ``ctx`` — it just threads it through.
 
-    ``detection_cost`` is a 0-10 integer estimating the noise this step
-    generates on a mature SOC's timeline. D6 aggregates these into a
-    chain-total score surfaced in the report; D1 stores them without
-    doing anything with them yet.
+    ``detection_cost`` is a numeric estimate of the noise this step
+    generates on a mature SOC's timeline. D1 shipped it as a
+    hand-picked 0-10 integer; D6 gives it a concrete grounding:
+    :attr:`signals` names the specific event IDs / RPC calls /
+    ticket requests the step emits, and their SIGNAL_WEIGHTS-based
+    sum is what feeds the chain-level debt aggregate. The literal
+    ``detection_cost`` stays available as a coarse fallback when a
+    step has no signal catalog yet.
+
+    :attr:`signals` — tuple of :class:`DetectionSignal`. Empty for
+        preflight steps (a TCP probe emits no defender-visible
+        signal). Populated for coerce / relay / post-relay actions.
     """
     name: str
     kind: str
     action: Callable
     detection_cost: int = 0
+    signals: tuple = ()
 
     def __post_init__(self):
         if self.kind not in STEP_KINDS:
@@ -92,6 +177,13 @@ class Step:
         if not (0 <= self.detection_cost <= 10):
             raise ValueError(
                 f"Step.detection_cost must be 0-10, got {self.detection_cost}")
+
+    @property
+    def signal_cost(self):
+        """Total cost from :attr:`signals`; 0 when the step has no
+        signal catalog (falls back to :attr:`detection_cost` for the
+        aggregate)."""
+        return sum(s.cost for s in self.signals)
 
 
 @dataclass(frozen=True)
@@ -171,11 +263,37 @@ class Chain:
 
     @property
     def total_detection_cost(self):
-        """Sum of detection_cost across every step actually walked
+        """Chain-total debt across every step actually walked
         (skipped/failed steps count once — the cost lands as soon as
-        the step runs). D6 uses this as the primary chain score."""
+        the step runs).
+
+        D6 landing: prefers :attr:`Step.signal_cost` when the step
+        carries a signals catalog; falls back to the coarse
+        :attr:`Step.detection_cost` when signals is empty. This lets
+        legacy steps and D6-refined steps coexist without a big-bang
+        renumbering — a profile can add signals to one step at a time
+        and its total_detection_cost stays coherent throughout the
+        transition.
+        """
         walked = self.steps[:len(self.outcomes)]
-        return sum(s.detection_cost for s in walked)
+        total = 0
+        for s in walked:
+            total += s.signal_cost if s.signals else s.detection_cost
+        return total
+
+    @property
+    def debt_breakdown(self):
+        """Per-step debt breakdown for `chain show`: returns a list of
+        ``{step, cost, signals}`` dicts, one per walked step. `signals`
+        is the tuple of :class:`DetectionSignal` for the step (empty
+        when the step hasn't been priced yet). Used by the CLI's
+        `chain show` rendering and by the D6 tests to pin the
+        aggregate numbers."""
+        out = []
+        for i, s in enumerate(self.steps[:len(self.outcomes)]):
+            cost = s.signal_cost if s.signals else s.detection_cost
+            out.append({"step": s.name, "cost": cost, "signals": s.signals})
+        return out
 
 
 # ---------------------------------------------------------------- profile registry
@@ -291,7 +409,83 @@ REACHABILITY_STEP = Step(
     name="preflight:reachability",
     kind="preflight",
     action=_reach_probe,
-    detection_cost=0)
+    detection_cost=0,
+    signals=(
+        DetectionSignal(kind="smb-conn", identifier="tcp-syn/445",
+                        note="single TCP SYN to SMB — noise-level"),
+    ))
+
+
+# ---------------------------------------------------------------- signal catalog
+#
+# Per-chain-step detection signal packs. Each entry is the tuple of
+# :class:`DetectionSignal` a profile's step passes to :class:`Step`
+# via ``signals=``. Numbers reflect what one firing costs (a spray
+# would override count). Sources: MS-EFSR/MS-DRSR/MS-RPRN docs +
+# Microsoft's "Audit Kerberos Authentication Service" event catalog +
+# public detection guides (SpecterOps, Nathan McNulty, Elastic).
+
+SIGNALS_PETITPOTAM_COERCE = (
+    DetectionSignal(kind="rpc-call", identifier="MS-EFSR/EfsRpcOpenFileRaw",
+                    note="single DCERPC call to lsarpc/efsrpc pipe"),
+    DetectionSignal(kind="win-event", identifier="5145",
+                    note="detailed file share access (auditing default off)"),
+    DetectionSignal(kind="auth-attempt", identifier="outbound-ntlm-cb",
+                    note="the coerced auth attempt itself"),
+)
+SIGNALS_RELAY_LISTEN = (
+    # Listener is attacker-side; no target-visible signals until the
+    # coerced host actually authenticates against it. Zero-cost by
+    # design — a listener with no traffic emits nothing on the DC.
+)
+SIGNALS_RELAY_CAPTURE_ADCS = (
+    DetectionSignal(kind="win-event", identifier="4624",
+                    note="successful logon on the ADCS host (relayed auth)"),
+    DetectionSignal(kind="http-req", identifier="certsrv/certfnsh.asp",
+                    note="cert enrollment POST from the fieldkit IP"),
+    DetectionSignal(kind="win-event", identifier="4886",
+                    note="Certificate Services: request received"),
+    DetectionSignal(kind="win-event", identifier="4887",
+                    note="Certificate Services: request approved"),
+)
+SIGNALS_RELAY_CAPTURE_RBCD = (
+    DetectionSignal(kind="win-event", identifier="4624",
+                    note="successful logon on the DC (relayed auth)"),
+    DetectionSignal(kind="ldap-write", identifier="msDS-AllowedToActOnBehalfOfOtherIdentity",
+                    note="single LDAPS write on the target computer object"),
+    DetectionSignal(kind="win-event", identifier="5136",
+                    note="directory-service object modification"),
+)
+SIGNALS_RELAY_CAPTURE_SMBEXEC = (
+    DetectionSignal(kind="win-event", identifier="4624",
+                    note="successful logon on the SMB target (relayed auth)"),
+    DetectionSignal(kind="process-exec", identifier="services.exe/cmd.exe",
+                    note="the exec ntlmrelayx spawns on the SMB target"),
+    DetectionSignal(kind="win-event", identifier="7045",
+                    note="new service installed (ntlmrelayx default attack)"),
+)
+SIGNALS_CERT_REQUEST_VALIDATE = (
+    # Local-only validation — nothing crosses the wire.
+)
+SIGNALS_PKINIT_TGT = (
+    DetectionSignal(kind="kerb-ticket", identifier="AS-REQ/PKINIT",
+                    note="single PKINIT AS-REQ to the KDC"),
+    DetectionSignal(kind="win-event", identifier="4768",
+                    note="Kerberos TGT request (with cert-based pre-auth flag)"),
+)
+SIGNALS_DCSYNC = (
+    DetectionSignal(kind="rpc-call", identifier="MS-DRSR/DRSGetNCChanges",
+                    note="DRSUAPI replication call — the definitive DCSync signal"),
+    DetectionSignal(kind="win-event", identifier="4662",
+                    note="directory-service object access (auditing usually on for DCs)",
+                    count=3),
+)
+SIGNALS_S4U2SELF = (
+    DetectionSignal(kind="kerb-ticket", identifier="TGS-REQ/S4U2Self",
+                    note="single S4U2Self TGS-REQ"),
+    DetectionSignal(kind="win-event", identifier="4769",
+                    note="Kerberos service ticket request"),
+)
 
 
 def _stub_action(msg):
@@ -939,27 +1133,33 @@ def esc8_chain(target_dc, ca_endpoint=None, cred=None):
             Step("coerce:petitpotam",
                  "target-side",
                  _petitpotam_action,
-                 detection_cost=3),
+                 detection_cost=3,
+                 signals=SIGNALS_PETITPOTAM_COERCE),
             Step("relay:listen",
                  "attacker-side",
                  _relay_listen_action,
-                 detection_cost=1),
+                 detection_cost=1,
+                 signals=SIGNALS_RELAY_LISTEN),
             Step("relay:capture",
                  "attacker-side",
                  _relay_capture_action,
-                 detection_cost=2),
+                 detection_cost=2,
+                 signals=SIGNALS_RELAY_CAPTURE_ADCS),
             Step("post:cert-request",
                  "attacker-side",
                  _cert_request_action,
-                 detection_cost=1),
+                 detection_cost=1,
+                 signals=SIGNALS_CERT_REQUEST_VALIDATE),
             Step("post:pkinit-tgt",
                  "attacker-side",
                  _pkinit_action,
-                 detection_cost=0),
+                 detection_cost=0,
+                 signals=SIGNALS_PKINIT_TGT),
             Step("post:dcsync",
                  "attacker-side",
                  _dcsync_action,
-                 detection_cost=3),
+                 detection_cost=3,
+                 signals=SIGNALS_DCSYNC),
         ))
 
 
@@ -987,19 +1187,23 @@ def rbcd_chain(target_ws, dc_ip=None, cred=None):
             Step("coerce:petitpotam",
                  "target-side",
                  _petitpotam_action,
-                 detection_cost=3),
+                 detection_cost=3,
+                 signals=SIGNALS_PETITPOTAM_COERCE),
             Step("relay:listen",
                  "attacker-side",
                  _relay_listen_action,
-                 detection_cost=1),
+                 detection_cost=1,
+                 signals=SIGNALS_RELAY_LISTEN),
             Step("relay:capture",
                  "attacker-side",
                  _rbcd_capture_action,
-                 detection_cost=3),
+                 detection_cost=3,
+                 signals=SIGNALS_RELAY_CAPTURE_RBCD),
             Step("post:s4u2self",
                  "attacker-side",
                  _s4u2self_action,
-                 detection_cost=1),
+                 detection_cost=1,
+                 signals=SIGNALS_S4U2SELF),
         ))
 
 
@@ -1029,13 +1233,16 @@ def smb_relay_exec_chain(target_smb, secondary_target=None, cred=None):
             Step("coerce:petitpotam",
                  "target-side",
                  _petitpotam_action,
-                 detection_cost=3),
+                 detection_cost=3,
+                 signals=SIGNALS_PETITPOTAM_COERCE),
             Step("relay:listen",
                  "attacker-side",
                  _relay_listen_action,
-                 detection_cost=1),
+                 detection_cost=1,
+                 signals=SIGNALS_RELAY_LISTEN),
             Step("relay:capture",
                  "attacker-side",
                  _smb_relay_capture_action,
-                 detection_cost=3),
+                 detection_cost=3,
+                 signals=SIGNALS_RELAY_CAPTURE_SMBEXEC),
         ))

@@ -1609,12 +1609,19 @@ def cmd_chain_plan(args, store):
         _err(str(exc))
         return 2
     ch = factory(args.target)
+    def _step_cost(s):
+        return s.signal_cost if s.signals else s.detection_cost
+    total = sum(_step_cost(s) for s in ch.steps)
     print(f"chain plan: {ch.profile} → {ch.target}")
-    print(f"  {len(ch.steps)} steps, aggregate detection cost = "
-          f"{sum(s.detection_cost for s in ch.steps)}")
+    print(f"  {len(ch.steps)} steps, aggregate detection debt = {total}")
     for i, s in enumerate(ch.steps):
         marker = "*" if i == 0 else " "
-        print(f"  {marker} {i}. {s.name:30s}  [{s.kind:14s}]  cost={s.detection_cost}")
+        cost = _step_cost(s)
+        print(f"  {marker} {i}. {s.name:30s}  [{s.kind:14s}]  cost={cost}")
+        for sig in s.signals:
+            note = f"  # {sig.note}" if sig.note else ""
+            count = f" ×{sig.count}" if sig.count != 1 else ""
+            print(f"          {sig.kind:14s} {sig.identifier}{count}{note}")
     print()
     print("plan only — nothing fired. `fieldkit chain run` walks it.")
     return 0
@@ -1717,13 +1724,15 @@ def cmd_chain_list(args, store):
 
 @needs_engagement
 def cmd_chain_show(args, store):
-    """The per-step trail of one recorded chain."""
+    """The per-step trail of one recorded chain, with signal breakdown
+    when --signals is passed."""
+    from . import chain as chain_mod
     row = store.chain_by_id(args.chain_id)
     if not row:
         _err(f"no chain #{args.chain_id} in this engagement")
         return 2
     print(f"chain #{row['id']}: {row['profile']} → {row['target']}")
-    print(f"  status={row['status']}  detection cost={row['total_detection_cost']}")
+    print(f"  status={row['status']}  detection debt={row['total_detection_cost']}")
     print(f"  started {row['started_at'] or '-'}  finished {row['finished_at'] or '-'}")
     if row["aborted_reason"]:
         print(f"  aborted: {row['aborted_reason']}")
@@ -1732,6 +1741,29 @@ def cmd_chain_show(args, store):
     for t in trail:
         print(f"  {t['idx']:>2}. {t['step_name']:30s}  [{t['step_kind']:14s}]  "
               f"{t['outcome_kind']:6s}  cost={t['detection_cost']}  {t['evidence']}")
+
+    # --signals renders the per-step signal breakdown, sourced from
+    # the live profile registry (not the DB — signal catalogs live in
+    # code and evolve slice-to-slice, so a re-render always reflects
+    # the current catalog).
+    if getattr(args, "signals", False):
+        try:
+            live = chain_mod.profile(row["profile"])(row["target"])
+        except KeyError:
+            print(f"\nprofile {row['profile']!r} no longer registered — "
+                  "signal breakdown unavailable")
+            return 0
+        by_name = {s.name: s for s in live.steps}
+        print("\ndetection signals:")
+        for t in trail:
+            step = by_name.get(t["step_name"])
+            if step is None or not step.signals:
+                continue
+            print(f"  {t['step_name']}:")
+            for sig in step.signals:
+                count = f" ×{sig.count}" if sig.count != 1 else ""
+                note = f"  # {sig.note}" if sig.note else ""
+                print(f"    {sig.kind:14s} {sig.identifier}{count}{note}")
     return 0
 
 
@@ -2809,6 +2841,9 @@ the spec is missing that field. `--from-file` reads one credential per line.
     c_show = chain_sub.add_parser(
         "show", help="the per-step trail of one recorded chain")
     c_show.add_argument("chain_id", type=int, help="chain id from `fieldkit chain list`")
+    c_show.add_argument("--signals", action="store_true",
+                        help="show the per-step detection-signal breakdown "
+                             "(event IDs, RPC opcodes, ticket requests)")
     c_show.set_defaults(func=cmd_chain_show)
 
     p_bh = sub.add_parser("bloodhound", help="ingest SharpHound data + find owned→DA paths")
