@@ -1930,11 +1930,45 @@ def cmd_chain_lint(args):
     else:
         profiles = chain_mod.known_profiles()
     if not profiles:
-        print("no chain profiles registered — nothing to audit")
+        if getattr(args, "json", False):
+            import json as _json
+            print(_json.dumps({
+                "profiles": [], "findings": [],
+                "summary": {"ok": 0, "warn": 0, "err": 0},
+            }))
+        else:
+            print("no chain profiles registered — nothing to audit")
         return 0
     findings = []
     for p in profiles:
         findings.extend(chainlint.audit_profile(p))
+    ok, warn, err = chainlint.summarize(findings, profiles)
+
+    if getattr(args, "json", False):
+        # Machine-readable output for CI. One flat JSON object;
+        # nothing on stderr (parseable by `chain lint --json | jq`).
+        # Exit code carries the pass/warn/fail signal so the CI job
+        # can gate on it directly.
+        import json as _json
+        payload = {
+            "profiles": profiles,
+            "findings": [{
+                "profile": f.profile,
+                "code": f.code,
+                "severity": f.severity,
+                "step_index": f.step_index,
+                "step_name": f.step_name,
+                "message": f.message,
+            } for f in findings],
+            "summary": {"ok": ok, "warn": warn, "err": err},
+        }
+        print(_json.dumps(payload, indent=2))
+        if err:
+            return 2
+        if warn:
+            return 1
+        return 0
+
     by_profile = {}
     for f in findings:
         by_profile.setdefault(f.profile, []).append(f)
@@ -1959,7 +1993,6 @@ def cmd_chain_lint(args):
                        if f.step_index is not None else "")
                 print(f"  {marker}{loc}  [{f.code}]  {f.message}")
         print()
-    ok, warn, err = chainlint.summarize(findings, profiles)
     print(f"summary: {ok} ok, {warn} with warnings, {err} with errors")
     if err:
         return 2
@@ -3295,6 +3328,11 @@ the spec is missing that field. `--from-file` reads one credential per line.
                     "0 clean, 1 warnings, 2 errors.")
     c_lint.add_argument("--profile",
                          help="audit a single profile (default: every profile)")
+    c_lint.add_argument("--json", action="store_true",
+                         help="emit machine-readable JSON (findings + summary); "
+                              "nothing else on stdout. Exit codes match the "
+                              "text mode (0 clean, 1 warnings, 2 errors), so "
+                              "CI can gate on the exit code directly.")
     c_lint.set_defaults(func=cmd_chain_lint)
 
     p_bh = sub.add_parser("bloodhound", help="ingest SharpHound data + find owned→DA paths")

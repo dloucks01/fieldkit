@@ -252,6 +252,63 @@ class CLITest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("unknown", err)
 
+    def test_lint_json_output_parses(self):
+        # --json emits a single parseable JSON object with profiles,
+        # findings, summary. Scope to a clean shipped profile so
+        # the assertions don't depend on registry pollution.
+        import json as _json
+        code, out, _ = self._run(["chain", "lint",
+                                    "--profile", "esc1", "--json"])
+        self.assertEqual(code, 0)
+        doc = _json.loads(out)
+        self.assertEqual(doc["profiles"], ["esc1"])
+        self.assertEqual(doc["findings"], [])
+        self.assertEqual(doc["summary"], {"ok": 1, "warn": 0, "err": 0})
+
+    def test_lint_json_output_carries_findings(self):
+        # Register a synthetic profile with a warning; --json output
+        # should include the finding with all its structured fields.
+        import json as _json
+        from fieldkit.chain import Chain, Step, Outcome, DetectionSignal
+        rpc = DetectionSignal(kind="rpc-call", identifier="fake", count=1)
+        def _act(*_):
+            return Outcome(kind="ok", evidence="fake")
+        def _warn(target):
+            return Chain(profile="lint-json-warn", target=target, steps=(
+                Step(name="preflight:reachability", kind="preflight",
+                     action=_act, detection_cost=0, signals=(rpc,)),
+                Step(name="silent", kind="attacker-side",
+                     action=_act, detection_cost=2),
+            ))
+        _register_synthetic(self, "lint-json-warn", _warn)
+        code, out, _ = self._run(["chain", "lint",
+                                    "--profile", "lint-json-warn",
+                                    "--json"])
+        self.assertEqual(code, 1)
+        doc = _json.loads(out)
+        self.assertEqual(len(doc["findings"]), 1)
+        f = doc["findings"][0]
+        self.assertEqual(f["code"], "no-signals")
+        self.assertEqual(f["severity"], "warning")
+        self.assertEqual(f["step_index"], 1)
+        self.assertEqual(f["step_name"], "silent")
+        self.assertIn("detection_cost", f["message"])
+        self.assertEqual(doc["summary"], {"ok": 0, "warn": 1, "err": 0})
+
+    def test_lint_json_error_returns_2(self):
+        import json as _json
+        from fieldkit.chain import Chain
+        def _empty(target):
+            return Chain(profile="lint-json-err", target=target, steps=())
+        _register_synthetic(self, "lint-json-err", _empty)
+        code, out, _ = self._run(["chain", "lint",
+                                    "--profile", "lint-json-err",
+                                    "--json"])
+        self.assertEqual(code, 2)
+        doc = _json.loads(out)
+        self.assertEqual(doc["summary"]["err"], 1)
+        self.assertEqual(doc["findings"][0]["code"], "empty-catalog")
+
     def test_lint_with_synthetic_error_returns_2(self):
         # Register a profile that will trip an error, run scoped
         # lint against it → exit 2.
