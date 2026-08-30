@@ -134,6 +134,11 @@ def owned_paths(store, *, max_depth=8):
 
     Returns a list of dicts: ``{owned, target, hops, path, cred_id}``. Empty if no
     graph is loaded or nothing owned reaches a high-value node.
+
+    See :func:`owned_paths_all` for the multi-path variant that
+    surfaces every reachable high-value target per owned principal
+    (this function returns one path per owned; a principal that
+    reaches multiple high-value targets is under-represented).
     """
     nodes = {n["sid"]: n for n in store.bh_nodes()}
     if not nodes:
@@ -161,6 +166,83 @@ def owned_paths(store, *, max_depth=8):
                         "cred_id": cred["id"]})
     results.sort(key=lambda r: r["hops"])
     return results
+
+
+def owned_paths_all(store, *, max_depth=8, max_paths_per_start=5):
+    """Every distinct owned→high-value path reachable from each
+    owned principal, capped at ``max_paths_per_start`` per source.
+
+    Same dict shape as :func:`owned_paths`. Sorted globally by
+    (hops asc, owned name). A principal with 3 reachable
+    high-value targets produces 3 rows here (owned_paths would
+    have surfaced only the shortest).
+
+    Cap exists because a densely-connected AD graph could produce
+    hundreds of paths per source; 5 is enough to see the material
+    alternatives without drowning the operator.
+    """
+    nodes = {n["sid"]: n for n in store.bh_nodes()}
+    if not nodes:
+        return []
+    by_name = {}
+    for sid, n in nodes.items():
+        if n["name"]:
+            by_name.setdefault(n["name"].upper(), sid)
+    adj = {}
+    for src, dst, kind in store.bh_edges():
+        adj.setdefault(src, []).append((dst, kind))
+
+    def name(sid):
+        n = nodes.get(sid)
+        return n["name"] if n and n["name"] else sid
+
+    results = []
+    for start, cred in _owned_sids(store, by_name).items():
+        reached = _bfs_all_targets(start, adj, nodes, max_depth,
+                                     limit=max_paths_per_start)
+        for target_sid, hops in reached:
+            steps = [name(start)] + \
+                [f"-{kind}-> {name(dst)}" for kind, dst in hops]
+            results.append({
+                "owned": name(start),
+                "target": name(target_sid),
+                "hops": len(hops),
+                "path": " ".join(steps),
+                "cred_id": cred["id"],
+            })
+    results.sort(key=lambda r: (r["hops"], r["owned"], r["target"]))
+    return results
+
+
+def _bfs_all_targets(start, adj, nodes, max_depth, *, limit):
+    """BFS from ``start``; return every first-visit to a high-value
+    node, capped at ``limit`` distinct targets. Same visited-set
+    optimization as :func:`_bfs` — a shortest-path enumeration for
+    every reachable high-value target rather than just the first.
+
+    Returns list of ``(target_sid, hops)`` tuples where hops is the
+    ``[(kind, dst), ...]`` path from start to target (same shape
+    _bfs uses)."""
+    from collections import deque as _deque
+    q = _deque([(start, [])])
+    seen = {start}
+    hits = []
+    while q and len(hits) < limit:
+        sid, path = q.popleft()
+        node = nodes.get(sid)
+        if node and node["high_value"] and path:
+            hits.append((sid, path))
+            # Don't traverse past a high-value target — reaching
+            # DA-via-CS-admin is more informative than DA-via-CS-
+            # admin-via-DA-again.
+            continue
+        if len(path) >= max_depth:
+            continue
+        for dst, kind in adj.get(sid, []):
+            if dst not in seen:
+                seen.add(dst)
+                q.append((dst, path + [(kind, dst)]))
+    return hits
 
 
 #: Edge-kind → best-fit chain-profile mapping. Kept as tuples of
@@ -271,15 +353,25 @@ def suggest_chain(path_entry, nodes_by_sid=None):
     return None
 
 
-def suggest_chains(store, *, max_depth=8):
-    """Enumerate every :func:`owned_paths` entry and attach a
+def suggest_chains(store, *, max_depth=8, all_paths=False,
+                    max_paths_per_start=5):
+    """Enumerate every owned→high-value path and attach a
     ``suggestion`` dict where a shipped chain profile fits. Also
-    attaches ``matching_ttps`` — a list of shipped CVE-TTP keys
-    whose ``services.<product>`` detect predicate names a service
-    the suggested chain target actually runs. Empty when no
-    graph is loaded.
+    attaches ``matching_ttps`` — shipped CVE-TTP keys whose
+    ``services.<product>`` predicate names a service the
+    suggested chain target actually runs. Empty when no graph
+    is loaded.
+
+    ``all_paths=False`` (default) uses :func:`owned_paths` —
+    shortest path per owned principal. ``all_paths=True`` uses
+    :func:`owned_paths_all` — every distinct high-value target
+    reachable, capped at ``max_paths_per_start`` per source.
     """
-    paths = owned_paths(store, max_depth=max_depth)
+    if all_paths:
+        paths = owned_paths_all(store, max_depth=max_depth,
+                                  max_paths_per_start=max_paths_per_start)
+    else:
+        paths = owned_paths(store, max_depth=max_depth)
     if not paths:
         return []
     nodes_by_sid = {n["sid"]: n for n in store.bh_nodes()}
