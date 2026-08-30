@@ -160,12 +160,13 @@ class TUIImportTest(unittest.TestCase):
         # Escalate is push-only (needs a highlighted move from Analyze),
         # not a named SCREENS entry — so the registered set is 4, not 5.
         # C9 slice 4 added `chain-plan`; C11 slice 2 added
-        # `chain-launch` (profile-picker → chain-run). Escalate
-        # remains push-only (needs a highlighted move from
-        # Analyze), not a named SCREENS entry.
+        # `chain-launch` (profile-picker → chain-run);
+        # C14 slice 2 added `ttps` (browsable catalog).
+        # Escalate remains push-only (needs a highlighted move
+        # from Analyze), not a named SCREENS entry.
         self.assertEqual(sorted(app.SCREENS.keys()),
                          ["analyze", "chain-launch", "chain-plan",
-                          "dashboard", "help", "watch"])
+                          "dashboard", "help", "ttps", "watch"])
 
 
 if __name__ == "__main__":
