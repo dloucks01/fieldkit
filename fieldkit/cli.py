@@ -1908,6 +1908,63 @@ def cmd_chain_walk(args, store):
     return 0
 
 
+def cmd_doctor(args):
+    """One health-check for the whole install + current engagement.
+
+    Runs tools/chains/ttps probes always; engagement probe when a
+    store can be opened (a fresh box with no DB still gets useful
+    output — tools + lint fire even without state).
+
+    Exit codes:
+      * 0 — every probe ``ok``;
+      * 1 — one or more warnings, no errors;
+      * 2 — one or more errors, or bad invocation.
+    """
+    from . import doctor
+    store = None
+    try:
+        # _open_store returns a context manager; drop the with-block
+        # so probe_engagement can read the store, then close in
+        # finally. Missing DB / bad path → store stays None and
+        # engagement probe is skipped.
+        cm = _open_store(args)
+        store = cm.__enter__()
+    except Exception:                                       # noqa: BLE001
+        cm = None
+    try:
+        if getattr(args, "json", False):
+            import json as _json
+            reports, code = doctor.run(store=store)
+            print(_json.dumps({
+                "exit_code": code,
+                "reports": [{
+                    "name": r.name, "rung": r.rung,
+                    "message": r.message, "details": r.details,
+                } for r in reports],
+            }, indent=2))
+            return code
+        reports, code = doctor.run(store=store)
+        rung_marker = {"ok": "ok  ", "warning": "warn",
+                        "error": "ERR "}
+        print("fieldkit doctor\n")
+        for r in reports:
+            print(f"  {rung_marker[r.rung]}  {r.name:<12}  {r.message}")
+            for d in r.details:
+                print(f"           - {d}")
+        print()
+        n_ok = sum(1 for r in reports if r.rung == "ok")
+        n_warn = sum(1 for r in reports if r.rung == "warning")
+        n_err = sum(1 for r in reports if r.rung == "error")
+        print(f"summary: {n_ok} ok, {n_warn} warning(s), {n_err} error(s)")
+        return code
+    finally:
+        if cm is not None:
+            try:
+                cm.__exit__(None, None, None)
+            except Exception:                               # noqa: BLE001
+                pass
+
+
 def cmd_chain_lint(args):
     """Coverage audit for every registered chain profile — surfaces
     plan gaps (missing signals, duplicate step names, preflight
@@ -3145,6 +3202,20 @@ the spec is missing that field. `--from-file` reads one credential per line.
                     "per-feature) and whether each is on PATH. Exits non-zero if a required "
                     "tool is missing.")
     p_preflight.set_defaults(func=cmd_preflight)
+
+    p_doctor = sub.add_parser(
+        "doctor",
+        help="one health-check for tools + chain lint + engagement + TTPs",
+        description="Runs every fieldkit self-probe (preflight, chain lint "
+                    "over the shipped catalog, engagement sanity — staging "
+                    "dirs writable, creds present when hosts are — and TTP "
+                    "catalog load) and reports a single pass/warn/fail exit "
+                    "code CI can gate on. Works without an engagement — a "
+                    "fresh box gets useful tools+lint output before any DB "
+                    "exists.")
+    p_doctor.add_argument("--json", action="store_true",
+                           help="emit machine-readable JSON; exit code unchanged")
+    p_doctor.set_defaults(func=cmd_doctor)
 
     p_prep = sub.add_parser(
         "prep", help="build a manual route's artifact + print where to place it and the steps",
