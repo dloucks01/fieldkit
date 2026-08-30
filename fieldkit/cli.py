@@ -3141,6 +3141,150 @@ def _add_chain_ctx_args(parser):
              "modern DCs require it.")
 
 
+def _build_chain_parser(sub):
+    """Wire the ``chain`` subcommand tree (plan / run / walk /
+    resume / list / show / visual / lint). Extracted from
+    ``build_parser`` so growth of the chain family doesn't
+    inflate the top-level parser function."""
+    p_chain = sub.add_parser(
+        "chain",
+        help="orchestrate multi-step coerce chains (ESC8, RBCD, SMB-relay-exec, ESC1)",
+        description="fieldkit's charter piece: coerce a target to authenticate to a "
+                    "fieldkit-hosted relay, then walk the outcome (cert, TGT, RBCD ACL) "
+                    "into DA. Actions: plan (preview), run (walk unattended), walk "
+                    "(interactive), resume (pick up an in_progress chain), show / "
+                    "visual (inspect a recorded chain), list (browse), lint (audit "
+                    "the profile catalog).")
+    chain_sub = p_chain.add_subparsers(dest="chain_command", metavar="<action>")
+
+    from . import chain as _chain_mod
+    _chain_choices = _chain_mod.known_profiles() or ["esc8"]
+
+    c_plan = chain_sub.add_parser(
+        "plan", help="show the ordered steps of a chain profile without firing")
+    c_plan.add_argument("profile", choices=_chain_choices,
+                        help="chain profile to plan")
+    c_plan.add_argument("target", help="chain target (DC IP for esc8, etc.)")
+    c_plan.set_defaults(func=cmd_chain_plan)
+
+    c_run = chain_sub.add_parser(
+        "run", help="walk every step of a chain profile against a target")
+    c_run.add_argument("profile", choices=_chain_choices, help="chain profile to run")
+    c_run.add_argument("target", help="chain target (DC IP for esc8, etc.)")
+    _add_chain_ctx_args(c_run)
+    c_run.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
+    c_run.set_defaults(func=cmd_chain_run)
+
+    c_list = chain_sub.add_parser(
+        "list", help="every recorded chain in this engagement, newest first")
+    c_list.add_argument("--profile", choices=_chain_choices,
+                        help="filter to one profile (default: all)")
+    c_list.set_defaults(func=cmd_chain_list)
+
+    c_show = chain_sub.add_parser(
+        "show", help="the per-step trail of one recorded chain")
+    c_show.add_argument("chain_id", type=int, help="chain id from `fieldkit chain list`")
+    c_show.add_argument("--signals", action="store_true",
+                        help="show the per-step detection-signal breakdown "
+                             "(event IDs, RPC opcodes, ticket requests)")
+    c_show.set_defaults(func=cmd_chain_show)
+
+    c_visual = chain_sub.add_parser(
+        "visual", help="render a compact kill-chain visualization of one chain")
+    c_visual.add_argument("chain_id", type=int,
+                          help="chain id from `fieldkit chain list`")
+    c_visual.set_defaults(func=cmd_chain_visual)
+
+    c_walk = chain_sub.add_parser(
+        "walk",
+        help="interactive walker — pauses before each step for operator "
+             "confirm (go/skip/quit)")
+    c_walk.add_argument("profile", choices=_chain_choices, help="chain profile")
+    c_walk.add_argument("target", help="chain target")
+    _add_chain_ctx_args(c_walk)
+    c_walk.set_defaults(func=cmd_chain_walk)
+
+    c_resume = chain_sub.add_parser(
+        "resume",
+        help="pick up an in_progress chain from where the previous walk stopped",
+        description="Reconstructs a Chain from the persisted trail and hands "
+                    "it to the same interactive walker as `chain walk`. Only "
+                    "in_progress chains are resumable; proven/aborted chains "
+                    "surface a hard error rather than a silent re-walk.")
+    c_resume.add_argument("chain_id", type=int,
+                           help="chain id from `fieldkit chain list` (must be in_progress)")
+    _add_chain_ctx_args(c_resume)
+    c_resume.add_argument("-y", "--yes", action="store_true",
+                           help="skip the confirm-back")
+    c_resume.set_defaults(func=cmd_chain_resume)
+
+    c_lint = chain_sub.add_parser(
+        "lint",
+        help="coverage audit of every registered chain profile "
+             "(missing signals, duplicate step names, preflight order)",
+        description="Read-only audit of the shipped chain-profile catalog. "
+                    "Surfaces gaps that would understate detection debt or "
+                    "break the walker's semantic contract. Exit codes: "
+                    "0 clean, 1 warnings, 2 errors.")
+    c_lint.add_argument("--profile",
+                         help="audit a single profile (default: every profile)")
+    c_lint.add_argument("--json", action="store_true",
+                         help="emit machine-readable JSON (findings + summary); "
+                              "nothing else on stdout. Exit codes match the "
+                              "text mode (0 clean, 1 warnings, 2 errors), so "
+                              "CI can gate on the exit code directly.")
+    c_lint.set_defaults(func=cmd_chain_lint)
+
+
+def _build_ttps_parser(sub):
+    """Wire the ``ttps`` subcommand tree (list / show). Extracted
+    from ``build_parser`` for parity with the other subcommand-group
+    helpers."""
+    p_ttps = sub.add_parser(
+        "ttps", help="browse the shipped TTP catalog (list / show)",
+        description="fieldkit ships a YAML catalog of TTPs (technique + "
+                    "detect + execute + verify + report + playbook). This "
+                    "command surfaces the catalog without hunting through "
+                    "the source tree.")
+    ttps_sub = p_ttps.add_subparsers(dest="ttps_command", metavar="<action>")
+    tt_list = ttps_sub.add_parser(
+        "list", help="one row per TTP (technique, key, platform, ranking)")
+    tt_list.add_argument("--grep", metavar="STR",
+                          help="case-insensitive substring filter over "
+                               "key / name / technique / tactic / "
+                               "vector_type")
+    tt_list.set_defaults(func=cmd_ttps_list)
+    tt_show = ttps_sub.add_parser(
+        "show", help="pretty-print one TTP by key")
+    tt_show.add_argument("key", help="TTP key from `fieldkit ttps list`")
+    tt_show.set_defaults(func=cmd_ttps_show)
+    p_ttps.set_defaults(func=lambda a: _missing(p_ttps))
+
+
+def _build_bloodhound_parser(sub):
+    """Wire the ``bloodhound`` subcommand tree (import / suggest)."""
+    p_bh = sub.add_parser("bloodhound", help="ingest SharpHound data + find owned→DA paths")
+    bh_sub = p_bh.add_subparsers(dest="bloodhound_command", metavar="<action>")
+    b_import = bh_sub.add_parser(
+        "import", help="load SharpHound JSON (zip/dir) and path-find from owned creds",
+        description="Stores the AD control graph (MemberOf/AdminTo/dangerous ACEs) and "
+                    "reports which owned principals reach a high-value target.")
+    b_import.add_argument("path", help="SharpHound .zip, a directory of JSON, or a .json")
+    b_import.set_defaults(func=cmd_bloodhound_import)
+
+    b_suggest = bh_sub.add_parser(
+        "suggest",
+        help="for each owned→high-value path, suggest a chain profile that lands it",
+        description="Reads the ingested BH graph, enumerates the shortest "
+                    "path from each owned principal to a high-value target, "
+                    "and where a shipped chain profile fits the path shape, "
+                    "prints the exact `chain run` command to walk it. "
+                    "Read-only.")
+    b_suggest.set_defaults(func=cmd_bloodhound_suggest)
+
+    p_bh.set_defaults(func=lambda a: _missing(p_bh))
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog=PROG,
@@ -3501,25 +3645,7 @@ the spec is missing that field. `--from-file` reads one credential per line.
                            help="emit machine-readable JSON; exit code unchanged")
     p_doctor.set_defaults(func=cmd_doctor)
 
-    p_ttps = sub.add_parser(
-        "ttps", help="browse the shipped TTP catalog (list / show)",
-        description="fieldkit ships a YAML catalog of TTPs (technique + "
-                    "detect + execute + verify + report + playbook). This "
-                    "command surfaces the catalog without hunting through "
-                    "the source tree.")
-    ttps_sub = p_ttps.add_subparsers(dest="ttps_command", metavar="<action>")
-    tt_list = ttps_sub.add_parser(
-        "list", help="one row per TTP (technique, key, platform, ranking)")
-    tt_list.add_argument("--grep", metavar="STR",
-                          help="case-insensitive substring filter over "
-                               "key / name / technique / tactic / "
-                               "vector_type")
-    tt_list.set_defaults(func=cmd_ttps_list)
-    tt_show = ttps_sub.add_parser(
-        "show", help="pretty-print one TTP by key")
-    tt_show.add_argument("key", help="TTP key from `fieldkit ttps list`")
-    tt_show.set_defaults(func=cmd_ttps_show)
-    p_ttps.set_defaults(func=lambda a: _missing(p_ttps))
+    _build_ttps_parser(sub)
 
     p_refresh = sub.add_parser(
         "refresh",
@@ -3601,115 +3727,8 @@ the spec is missing that field. `--from-file` reads one credential per line.
     p_roast.set_defaults(func=cmd_roast)
 
     # ------------------------------------------------------- coerce chains
-    p_chain = sub.add_parser(
-        "chain",
-        help="orchestrate multi-step coerce chains (ESC8, RBCD, SMB-relay-exec, ESC1)",
-        description="fieldkit's charter piece: coerce a target to authenticate to a "
-                    "fieldkit-hosted relay, then walk the outcome (cert, TGT, RBCD ACL) "
-                    "into DA. Actions: plan (preview), run (walk unattended), walk "
-                    "(interactive), resume (pick up an in_progress chain), show / "
-                    "visual (inspect a recorded chain), list (browse), lint (audit "
-                    "the profile catalog).")
-    chain_sub = p_chain.add_subparsers(dest="chain_command", metavar="<action>")
-
-    from . import chain as _chain_mod
-    _chain_choices = _chain_mod.known_profiles() or ["esc8"]
-
-    c_plan = chain_sub.add_parser(
-        "plan", help="show the ordered steps of a chain profile without firing")
-    c_plan.add_argument("profile", choices=_chain_choices,
-                        help="chain profile to plan")
-    c_plan.add_argument("target", help="chain target (DC IP for esc8, etc.)")
-    c_plan.set_defaults(func=cmd_chain_plan)
-
-    c_run = chain_sub.add_parser(
-        "run", help="walk every step of a chain profile against a target")
-    c_run.add_argument("profile", choices=_chain_choices, help="chain profile to run")
-    c_run.add_argument("target", help="chain target (DC IP for esc8, etc.)")
-    _add_chain_ctx_args(c_run)
-    c_run.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
-    c_run.set_defaults(func=cmd_chain_run)
-
-    c_list = chain_sub.add_parser(
-        "list", help="every recorded chain in this engagement, newest first")
-    c_list.add_argument("--profile", choices=_chain_choices,
-                        help="filter to one profile (default: all)")
-    c_list.set_defaults(func=cmd_chain_list)
-
-    c_show = chain_sub.add_parser(
-        "show", help="the per-step trail of one recorded chain")
-    c_show.add_argument("chain_id", type=int, help="chain id from `fieldkit chain list`")
-    c_show.add_argument("--signals", action="store_true",
-                        help="show the per-step detection-signal breakdown "
-                             "(event IDs, RPC opcodes, ticket requests)")
-    c_show.set_defaults(func=cmd_chain_show)
-
-    c_visual = chain_sub.add_parser(
-        "visual", help="render a compact kill-chain visualization of one chain")
-    c_visual.add_argument("chain_id", type=int,
-                          help="chain id from `fieldkit chain list`")
-    c_visual.set_defaults(func=cmd_chain_visual)
-
-    c_walk = chain_sub.add_parser(
-        "walk",
-        help="interactive walker — pauses before each step for operator "
-             "confirm (go/skip/quit)")
-    c_walk.add_argument("profile", choices=_chain_choices, help="chain profile")
-    c_walk.add_argument("target", help="chain target")
-    _add_chain_ctx_args(c_walk)
-    c_walk.set_defaults(func=cmd_chain_walk)
-
-    c_resume = chain_sub.add_parser(
-        "resume",
-        help="pick up an in_progress chain from where the previous walk stopped",
-        description="Reconstructs a Chain from the persisted trail and hands "
-                    "it to the same interactive walker as `chain walk`. Only "
-                    "in_progress chains are resumable; proven/aborted chains "
-                    "surface a hard error rather than a silent re-walk.")
-    c_resume.add_argument("chain_id", type=int,
-                           help="chain id from `fieldkit chain list` (must be in_progress)")
-    _add_chain_ctx_args(c_resume)
-    c_resume.add_argument("-y", "--yes", action="store_true",
-                           help="skip the confirm-back")
-    c_resume.set_defaults(func=cmd_chain_resume)
-
-    c_lint = chain_sub.add_parser(
-        "lint",
-        help="coverage audit of every registered chain profile "
-             "(missing signals, duplicate step names, preflight order)",
-        description="Read-only audit of the shipped chain-profile catalog. "
-                    "Surfaces gaps that would understate detection debt or "
-                    "break the walker's semantic contract. Exit codes: "
-                    "0 clean, 1 warnings, 2 errors.")
-    c_lint.add_argument("--profile",
-                         help="audit a single profile (default: every profile)")
-    c_lint.add_argument("--json", action="store_true",
-                         help="emit machine-readable JSON (findings + summary); "
-                              "nothing else on stdout. Exit codes match the "
-                              "text mode (0 clean, 1 warnings, 2 errors), so "
-                              "CI can gate on the exit code directly.")
-    c_lint.set_defaults(func=cmd_chain_lint)
-
-    p_bh = sub.add_parser("bloodhound", help="ingest SharpHound data + find owned→DA paths")
-    bh_sub = p_bh.add_subparsers(dest="bloodhound_command", metavar="<action>")
-    b_import = bh_sub.add_parser(
-        "import", help="load SharpHound JSON (zip/dir) and path-find from owned creds",
-        description="Stores the AD control graph (MemberOf/AdminTo/dangerous ACEs) and "
-                    "reports which owned principals reach a high-value target.")
-    b_import.add_argument("path", help="SharpHound .zip, a directory of JSON, or a .json")
-    b_import.set_defaults(func=cmd_bloodhound_import)
-
-    b_suggest = bh_sub.add_parser(
-        "suggest",
-        help="for each owned→high-value path, suggest a chain profile that lands it",
-        description="Reads the ingested BH graph, enumerates the shortest "
-                    "path from each owned principal to a high-value target, "
-                    "and where a shipped chain profile fits the path shape, "
-                    "prints the exact `chain run` command to walk it. "
-                    "Read-only.")
-    b_suggest.set_defaults(func=cmd_bloodhound_suggest)
-
-    p_bh.set_defaults(func=lambda a: _missing(p_bh))
+    _build_chain_parser(sub)
+    _build_bloodhound_parser(sub)
 
     p_deleg = sub.add_parser(
         "delegation", help="find Kerberos delegation (unconstrained/constrained/RBCD)",
