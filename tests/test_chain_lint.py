@@ -109,7 +109,7 @@ class SyntheticProfileTest(unittest.TestCase):
         self.assertEqual(dup.severity, "warning")
         self.assertEqual(dup.step_name, "dupe-name")
 
-    def test_no_signals_surfaces_warning(self):
+    def test_no_signals_with_nonzero_cost_surfaces_warning(self):
         from fieldkit import chainlint
         from fieldkit.chain import Chain, Step, Outcome, DetectionSignal
         def _act(*_):
@@ -120,7 +120,7 @@ class SyntheticProfileTest(unittest.TestCase):
                 Step(name="preflight:reachability", kind="preflight",
                      action=_act, detection_cost=0, signals=(rpc,)),
                 Step(name="silent-step", kind="attacker-side",
-                     action=_act, detection_cost=2),
+                     action=_act, detection_cost=2),   # cost > 0, no signals
             ))
         _register_synthetic(self, "lint-nosig", _mix)
         fs = chainlint.audit_profile("lint-nosig")
@@ -128,6 +128,29 @@ class SyntheticProfileTest(unittest.TestCase):
         self.assertEqual(len(no_sig), 1)
         self.assertEqual(no_sig[0].step_name, "silent-step")
         self.assertEqual(no_sig[0].severity, "warning")
+
+    def test_no_signals_with_zero_cost_is_honest_zero(self):
+        # A step with cost=0 AND empty signals is honest — a local-
+        # only step (like post:cert-request's cert validation) or an
+        # attacker-side action with no target-visible signals. The
+        # lint should NOT flag it.
+        from fieldkit import chainlint
+        from fieldkit.chain import Chain, Step, Outcome, DetectionSignal
+        def _act(*_):
+            return Outcome(kind="ok", evidence="fake")
+        rpc = DetectionSignal(kind="rpc-call", identifier="fake", count=1)
+        def _honest(target):
+            return Chain(profile="lint-honest-zero", target=target, steps=(
+                Step(name="preflight:reachability", kind="preflight",
+                     action=_act, detection_cost=0, signals=(rpc,)),
+                Step(name="local-validation", kind="attacker-side",
+                     action=_act, detection_cost=0),   # cost=0, empty ok
+            ))
+        _register_synthetic(self, "lint-honest-zero", _honest)
+        fs = chainlint.audit_profile("lint-honest-zero")
+        no_sig = [f for f in fs if f.code == "no-signals"]
+        self.assertEqual(no_sig, [],
+                         "cost=0 + empty signals should not warn")
 
     def test_coerce_without_rpc_signal_surfaces_warning(self):
         from fieldkit import chainlint
@@ -160,16 +183,18 @@ class AllProfilesTest(unittest.TestCase):
         fs = chainlint.audit_all()
         self.assertIsInstance(fs, list)
 
-    def test_shipped_catalog_has_no_errors(self):
-        # Scope to the shipped-in-source profiles only. Other tests
+    def test_shipped_catalog_is_clean(self):
+        # Stronger pin than "no errors" — after C12 slice 1, the
+        # shipped catalog has ZERO findings (errors OR warnings).
+        # Regressing this means either a real gap was introduced or
+        # the lint became noisier; either warrants a look.
+        # Scoped to shipped-in-source profiles because other tests
         # may register synthetic profiles that leak into the process
-        # registry — a defect-free lint pin for the shipped catalog
-        # is what we actually care about here.
+        # registry.
         from fieldkit import chainlint
         shipped = {"esc8", "rbcd", "smb-relay-exec", "esc1"}
-        errs = [f for f in chainlint.audit_all()
-                if f.severity == "error" and f.profile in shipped]
-        self.assertEqual(errs, [], f"shipped catalog has errors: {errs}")
+        fs = [f for f in chainlint.audit_all() if f.profile in shipped]
+        self.assertEqual(fs, [], f"shipped catalog has findings: {fs}")
 
     def test_summarize_matches_findings(self):
         from fieldkit import chainlint
@@ -191,16 +216,29 @@ class CLITest(unittest.TestCase):
             code = args.func(args)
         return code, buf.getvalue(), errbuf.getvalue()
 
-    def test_lint_all_returns_1_when_only_warnings(self):
-        # Scope to one shipped profile whose current-catalog state
-        # is warnings-only (esc8 has 2 no-signals warnings). A bare
-        # `chain lint` (no filter) would depend on the process-wide
-        # registry which other tests may pollute with synthetic
-        # broken profiles — see the AllProfilesTest note.
-        code, out, _ = self._run(["chain", "lint", "--profile", "esc8"])
+    def test_lint_returns_1_when_only_warnings(self):
+        # Register a synthetic profile with a warnings-only defect
+        # (no-signals on a cost>0 step) and scope the lint to it.
+        # Not using a shipped profile — after C12 slice 1, all four
+        # shipped profiles are clean.
+        from fieldkit.chain import Chain, Step, Outcome, DetectionSignal
+        rpc = DetectionSignal(kind="rpc-call", identifier="fake", count=1)
+        def _act(*_):
+            return Outcome(kind="ok", evidence="fake")
+        def _warn(target):
+            return Chain(profile="lint-cli-warn", target=target, steps=(
+                Step(name="preflight:reachability", kind="preflight",
+                     action=_act, detection_cost=0, signals=(rpc,)),
+                Step(name="silent", kind="attacker-side",
+                     action=_act, detection_cost=2),
+            ))
+        _register_synthetic(self, "lint-cli-warn", _warn)
+        code, out, _ = self._run(["chain", "lint",
+                                    "--profile", "lint-cli-warn"])
         self.assertEqual(code, 1)
         self.assertIn("chain lint:", out)
         self.assertIn("summary:", out)
+        self.assertIn("no-signals", out)
 
     def test_lint_scoped_to_esc1_returns_0(self):
         # esc1 has full signal coverage → no findings → exit 0

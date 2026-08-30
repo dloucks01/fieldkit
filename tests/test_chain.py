@@ -127,13 +127,17 @@ class ESC8ProfileTest(unittest.TestCase):
                       "post:pkinit-tgt", "post:dcsync"):
             self.assertEqual(by_name[name].kind, "attacker-side")
 
-    def test_esc8_aggregate_detection_cost_is_10(self):
-        # Pin the D1 baseline. When D6 lands and refines the numbers,
-        # this test wants an update — the number itself is a design
-        # decision the operator team should re-review.
+    def test_esc8_aggregate_detection_cost_is_9(self):
+        # Pin the C12-slice-1 baseline. Dropped from 10 to 9 when
+        # post:cert-request went from detection_cost=1 to 0 — that
+        # step's a local cert-material validation with zero target-
+        # visible signals; the empty SIGNALS_CERT_REQUEST_VALIDATE
+        # catalog and cost=0 now match honestly, and `chain lint`
+        # stops flagging it. Update when a future slice refines
+        # further.
         from fieldkit.chain import esc8_chain
         ch = esc8_chain("10.0.0.1")
-        self.assertEqual(sum(s.detection_cost for s in ch.steps), 10)
+        self.assertEqual(sum(s.detection_cost for s in ch.steps), 9)
 
 
 class WalkerTest(unittest.TestCase):
