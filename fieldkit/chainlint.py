@@ -18,10 +18,12 @@ Load-bearing checks (all read-only — no walker runs):
     share a name. The walker + trail-persistence use step names
     as opaque identifiers; duplicates break resume-lookup.
     **warning**.
-  * ``no-signals`` — a step falls back to :attr:`Step.detection_cost`
-    because its ``signals`` catalog is empty. The coarse fallback
-    works but the report's per-step signal breakdown is a
-    "no signals recorded" gap. **warning**.
+  * ``no-signals`` — a step with non-zero ``detection_cost`` has an
+    empty ``signals`` catalog, so the coarse fallback is doing all
+    the accounting and the report's per-step signal breakdown is
+    a "no signals recorded" gap. A step with ``detection_cost=0``
+    AND empty signals is honest zero (a local-only or purely
+    attacker-side step); those are NOT flagged. **warning**.
   * ``coerce-without-rpc-signal`` — a ``coerce:*`` step has no
     ``rpc-call`` signal in its catalog. Every coerce primitive
     fieldkit ships is an EFSRPC / DRSUAPI RPC; missing that
@@ -103,7 +105,11 @@ def audit_profile(name):
                          "uses step names as identifiers")))
 
     for i, s in enumerate(ch.steps):
-        if not s.signals:
+        # Only flag as a gap when the coarse detection_cost is non-
+        # zero — a step with cost=0 AND empty signals is honest
+        # zero (a local-only step, or a preflight that emits nothing
+        # target-visible). Flagging those would be a false positive.
+        if not s.signals and s.detection_cost > 0:
             findings.append(Finding(
                 profile=name, code="no-signals", severity="warning",
                 step_index=i, step_name=s.name,

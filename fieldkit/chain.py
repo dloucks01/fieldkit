@@ -540,9 +540,19 @@ SIGNALS_PETITPOTAM_COERCE = (
                     note="the coerced auth attempt itself"),
 )
 SIGNALS_RELAY_LISTEN = (
-    # Listener is attacker-side; no target-visible signals until the
-    # coerced host actually authenticates against it. Zero-cost by
-    # design — a listener with no traffic emits nothing on the DC.
+    # Listener runs on the fieldkit box, not the target — the coerced
+    # auth arriving at the socket is captured by RELAY_CAPTURE_*, not
+    # here. What relay:listen DOES emit that a defender may see:
+    # ntlmrelayx binds a TCP socket on the attacker's box, which a
+    # network-position sensor (netflow, host-agent on any adjacent
+    # box, cloud VPC flow log) can observe as "0.0.0.0:445 listening
+    # from an unexpected host". Weight-1 * count-1 = detection_cost=1
+    # — matches the coarse fallback so total_detection_cost stays
+    # stable.
+    DetectionSignal(kind="smb-conn", identifier="listener-bind:tcp/445",
+                    note="fieldkit's ntlmrelayx binding a listener "
+                         "socket on the attacker box; visible via "
+                         "adjacent netflow / host-agent telemetry"),
 )
 SIGNALS_RELAY_CAPTURE_ADCS = (
     DetectionSignal(kind="win-event", identifier="4624",
@@ -571,7 +581,11 @@ SIGNALS_RELAY_CAPTURE_SMBEXEC = (
                     note="new service installed (ntlmrelayx default attack)"),
 )
 SIGNALS_CERT_REQUEST_VALIDATE = (
-    # Local-only validation — nothing crosses the wire.
+    # Local-only validation on the fieldkit box — parses the
+    # captured cert/key material into an openssl-friendly form
+    # before pkinit reads it. Zero target-visible signals; step's
+    # detection_cost is 0 to match — honest zero rather than a
+    # coarse-fallback placeholder.
 )
 SIGNALS_PKINIT_TGT = (
     DetectionSignal(kind="kerb-ticket", identifier="AS-REQ/PKINIT",
@@ -1449,7 +1463,7 @@ def esc8_chain(target_dc, ca_endpoint=None, cred=None):
             Step("post:cert-request",
                  "attacker-side",
                  _cert_request_action,
-                 detection_cost=1,
+                 detection_cost=0,
                  signals=SIGNALS_CERT_REQUEST_VALIDATE),
             Step("post:pkinit-tgt",
                  "attacker-side",
