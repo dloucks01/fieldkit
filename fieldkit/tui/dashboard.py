@@ -294,6 +294,18 @@ class ChainsBlock(Static):
             f"{summary['in_progress']} in-progress, "
             f"{summary['aborted']} aborted)[/]"
         ]
+        # Nudge line: when any chain is in_progress, surface the
+        # resumable ids + the CLI to continue them. Ties the C11
+        # `chain resume` command into the primary screen so a
+        # returning operator sees the mid-flight work without
+        # cross-referencing `chain list`.
+        resumable = [r for r in recent if r["status"] == "in_progress"]
+        if resumable:
+            ids = ", ".join(f"#{r['id']}" for r in resumable)
+            lines.append(
+                f"      [{theme.C.WARN}]▶ resumable:[/] "
+                f"[{theme.C.INK}]{ids}[/]   "
+                f"[{theme.C.INK_DIM2}]— `fieldkit chain resume <id>`[/]")
         for r in recent:
             status = r["status"]
             colour = {
