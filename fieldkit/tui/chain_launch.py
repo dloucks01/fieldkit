@@ -1,22 +1,22 @@
-"""Chain-launch screen — pick a profile + target, push ChainRunScreen.
+"""Chain-launch screen — pick a profile + target + ctx, push ChainRunScreen.
 
 The counterpart to chain_plan (which is read-only) and chain_run
-(which is push-only, requiring a pre-populated profile + target).
-This screen collects those interactively:
+(which is push-only, requiring a pre-populated profile + target
++ ctx). This screen collects those interactively.
 
-  * Enumerates every registered chain profile (via
-    :func:`fieldkit.tui.data.chain_profiles`) and lets the
-    operator pick one with j/k + ⏎;
-  * Collects a target string in an Input widget;
-  * Assembles a minimal ctx (db_path + engagement_name) and
-    pushes ChainRunScreen with the three arguments.
+Beyond target, the launcher collects the most commonly-needed
+ctx keys (listener_ip, ca, domain, cred_id) as optional Inputs.
+Empty fields are absent from ctx — a step that needs a missing
+key still surfaces its need via before_step; the operator can
+either supply it out-of-band or answer "skip". So the form is
+additive: filling it out means fewer mid-walk stalls, but
+leaving it blank is fine too.
 
-Ctx-collection stays minimal on purpose. The walker's steps that
-need per-step values (listener_ip, ca_endpoint, cred, domain)
-still surface those via `before_step`, so the operator can either
-supply them out-of-band (env vars, config file) or answer "skip"
-when the walker asks. A richer ctx-collection form (per-key
-prompts) lands in a subsequent slice.
+The set of collected keys is the intersection of "commonly
+needed" and "single-line-input-friendly" — probe ports, relay
+ports, capture timeouts all have sensible defaults; relay_mode
++ impersonate + template are picker-worthy but ship as CLI
+flags for now.
 """
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -29,14 +29,28 @@ from . import theme
 from ..state import default_db_path
 
 
+#: The ctx fields the launcher form collects. Order = render
+#: order + tab order. Each entry: (ctx_key, label, placeholder,
+#: kind — "str" or "int"). Kind "int" empty is None; "int"
+#: unparseable stays as the raw string and the step will
+#: surface the mismatch.
+_CTX_FIELDS = (
+    ("listener_ip", "listener-ip", "e.g. 10.0.0.100 (fieldkit reachable IP)", "str"),
+    ("ca_endpoint", "ca",          "e.g. ca01.corp.local (esc8)",             "str"),
+    ("domain",      "domain",       "e.g. CORP.LOCAL (post-relay steps)",     "str"),
+    ("cred_id",     "cred-id",     "credential id from `fieldkit list creds`", "int"),
+)
+
+
 class ChainLaunchScreen(Screen):
-    """Pick a chain profile + target and hand off to ChainRunScreen.
+    """Pick a chain profile + target + optional ctx and hand off
+    to ChainRunScreen.
 
     Keyboard model:
 
-      * ``j`` / ``k`` (or ↓ / ↑) — move the selection cursor;
-      * ``tab``                  — focus the target Input;
-      * ``⏎`` (Enter) on Input   — launch;
+      * ``j`` / ``k`` (or ↓ / ↑) — move the profile-selection cursor;
+      * ``tab``                  — focus the next Input field;
+      * ``⏎`` (Enter) on the last Input — launch;
       * ``l``                    — launch from anywhere on the screen;
       * ``q`` / ``esc``          — back out.
     """
@@ -55,10 +69,11 @@ class ChainLaunchScreen(Screen):
         Binding("?",      "app.push_screen('help')", "help", show=False),
     ]
 
-    def __init__(self, initial_target=""):
+    def __init__(self, initial_target="", initial_ctx=None):
         super().__init__()
         self._selected = 0
         self._initial_target = initial_target
+        self._initial_ctx = dict(initial_ctx or {})
         self._profiles = []
 
     def compose(self) -> ComposeResult:
@@ -71,18 +86,31 @@ class ChainLaunchScreen(Screen):
                 yield Input(value=self._initial_target,
                              placeholder="e.g. 10.0.0.5",
                              id="chain-launch-target-input")
+                # Optional ctx fields — the walker uses whatever is
+                # populated; empty rows are omitted from ctx.
+                yield Static(f"\n  [{theme.C.INK_DIM}]"
+                              "optional context (steps that need a "
+                              "missing key still prompt via before_step)"
+                              ":[/]",
+                              id="chain-launch-ctx-label")
+                for key, label, placeholder, _kind in _CTX_FIELDS:
+                    yield Static(
+                        f"  [{theme.C.INK_DIM}]{label}:[/]",
+                        id=f"chain-launch-{key}-label")
+                    yield Input(
+                        value=str(self._initial_ctx.get(key, "") or ""),
+                        placeholder=placeholder,
+                        id=f"chain-launch-{key}-input")
                 yield Static("", id="chain-launch-hint")
             yield Footer()
 
     def _header(self):
         return (f"\n  [{theme.C.ACCENT} bold]{theme.G.ACTION} chain launch[/]  "
                 f"[{theme.C.INK_DIM}]— pick a profile, "
-                f"supply a target, launch[/]\n")
+                f"supply target + ctx, launch[/]\n")
 
     def on_mount(self):
         self._profiles = tui_data.chain_profiles()
-        # Clamp selection in case the profile list is short — refresh_data
-        # can be called again if profiles are registered mid-session.
         if self._selected >= len(self._profiles):
             self._selected = max(0, len(self._profiles) - 1)
         self._render()
@@ -135,14 +163,14 @@ class ChainLaunchScreen(Screen):
         self.query_one("#chain-launch-target-input", Input).focus()
 
     def on_input_submitted(self, event):
-        """Enter in the target Input → launch."""
+        """Enter in any Input → launch."""
         self._launch()
 
     def action_launch(self):
         self._launch()
 
     def _launch(self):
-        """Push a ChainRunScreen with the current selection + target."""
+        """Push a ChainRunScreen with (profile, target, ctx)."""
         if not self._profiles:
             return
         target = self.query_one("#chain-launch-target-input", Input).value.strip()
@@ -157,27 +185,48 @@ class ChainLaunchScreen(Screen):
         self._push_run_screen(ChainRunScreen(profile_name=profile_name,
                                               target=target, ctx=ctx))
 
-    # Extracted so tests can monkey-patch the app hop without setting
-    # `self.app` (which is a Textual read-only property).
     def _push_run_screen(self, screen):
         self.app.push_screen(screen)
 
     def _build_ctx(self):
-        """Minimal ctx for the walker: db_path + engagement_name.
+        """Build the walker ctx: base (db_path + engagement_name) plus
+        any of the optional form fields the operator filled in.
 
-        Steps that need more (listener_ip, ca_endpoint, cred, domain)
-        surface their need via before_step — the operator supplies it
-        out-of-band or answers 'skip'.
+        Empty inputs are omitted rather than passed as empty strings —
+        a walker step that checks ``if ctx.listener_ip:`` will see the
+        difference between "empty" and "not provided". Int fields
+        parse to int when possible; unparseable ints stay as the raw
+        string and the step will surface its complaint.
         """
-        # Same reason for the getattr hop: `self.app` is a property
-        # that raises NoActiveAppError outside a running app.
         try:
             app = self.app
         except Exception:                                       # noqa: BLE001
             app = None
         db_path = getattr(app, "_db_path", None) or default_db_path()
         eng = getattr(app, "engagement_name", "(no engagement)")
-        return {"db_path": db_path, "engagement_name": eng}
+        ctx = {"db_path": db_path, "engagement_name": eng}
+        for key, _label, _placeholder, kind in _CTX_FIELDS:
+            val = self._read_field(key)
+            if not val:
+                continue
+            if kind == "int":
+                try:
+                    ctx[key] = int(val)
+                except ValueError:
+                    ctx[key] = val    # step will complain honestly
+            else:
+                ctx[key] = val
+        return ctx
+
+    def _read_field(self, key):
+        """Read one ctx-input field's current value (trimmed). Extracted
+        so tests can monkey-patch without stubbing query_one for every
+        field individually."""
+        try:
+            widget = self.query_one(f"#chain-launch-{key}-input", Input)
+        except Exception:                                       # noqa: BLE001
+            return ""
+        return (widget.value or "").strip()
 
 
 #: CSS additions for the chain-launch screen.
@@ -189,7 +238,7 @@ CHAIN_LAUNCH_TCSS = """
     height: auto;
     padding: 0 2;
 }
-#chain-launch-target-input {
+#chain-launch-body > Input {
     margin: 0 2;
     width: 60;
 }
