@@ -212,16 +212,67 @@ class PwnedBlock(Static):
         self.update("\n".join(lines))
 
 
+#: Unicode block-character ramp for the sparkline — 8 levels + a
+#: no-activity marker. The `▁` through `█` characters render correctly
+#: in every modern terminal font (font width is monospace-adjacent
+#: even for the block chars). The `·` marker for zero activity keeps
+#: the sparkline row height consistent + visually distinguishes
+#: "quiet hour" from "no data at all".
+_SPARK_CHARS = "▁▂▃▄▅▆▇█"
+_SPARK_ZERO = "·"
+
+
+def _sparkline(counts):
+    """Return an ASCII sparkline string of one character per bucket."""
+    if not counts:
+        return ""
+    peak = max(counts)
+    if peak == 0:
+        return _SPARK_ZERO * len(counts)
+    out = []
+    n = len(_SPARK_CHARS)
+    for c in counts:
+        if c == 0:
+            out.append(_SPARK_ZERO)
+        else:
+            # Map 1..peak into 0..n-1 (min 1 always becomes at
+            # least the smallest bar so activity is visible).
+            level = min(n - 1, max(0, (c * n) // (peak + 1)))
+            out.append(_SPARK_CHARS[level])
+    return "".join(out)
+
+
 class DetectionBlock(Static):
-    """Placeholder for the detection-ledger sparkline (Phase D)."""
+    """Detection-ledger sparkline — captured-activity volume across
+    the last 24 hours, one character per hour. Reads
+    ``d.detection_ledger`` populated by
+    :func:`fieldkit.tui.data._detection_ledger`.
+
+    Renders a compact single-line indicator when there IS activity,
+    including the total step count + the peak-hour marker so the
+    operator sees both cadence and intensity at a glance.
+    """
 
     def render_from(self, d):
-        # Detection ledger lands in Phase D; render honest placeholder until then.
-        # Header on its own line, content indented — matches every other section.
+        ledger = d.detection_ledger or []
+        if not ledger:
+            self.update(
+                f"\n  {_accent(theme.G.ACTION + ' DETECTION')}\n"
+                f"      [{theme.C.INK_DIM2}]no activity captured yet.[/]")
+            return
+        total = sum(ledger)
+        spark = _sparkline(ledger)
+        peak = max(ledger)
+        if total == 0:
+            summary = f"[{theme.C.INK_DIM2}]quiet — no steps in the last 24h[/]"
+        else:
+            summary = (
+                f"[{theme.C.INK}]{total}[/] step(s) over 24h, "
+                f"peak [{theme.C.ACCENT}]{peak}/h[/]")
         self.update(
-            f"\n  {_accent(theme.G.ACTION + ' DETECTION')}\n"
-            f"      [{theme.C.INK_DIM2}]ledger — Phase D. "
-            f"Every action captured to the step table.[/]")
+            f"\n  {_accent(theme.G.ACTION + ' DETECTION')}   {summary}\n"
+            f"      [{theme.C.ACCENT}]{spark}[/]  "
+            f"[{theme.C.INK_DIM2}](24h → now)[/]")
 
 
 class ChainsBlock(Static):
