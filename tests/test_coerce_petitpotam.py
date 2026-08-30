@@ -125,18 +125,21 @@ class FireWithMockToolTest(unittest.TestCase):
     """Wire a mocked subprocess so we can drive .fire() through each
     output classification without needing impacket installed."""
 
-    def _fake_run(self, output, returncode=0):
-        from subprocess import CompletedProcess
+    def _fake_run(self, output, exit_code=0, error=None, timed_out=False):
+        # runner.run() returns a RunResult, not a CompletedProcess.
+        # Build a RunResult that mirrors what runner would produce.
+        from fieldkit.runner import RunResult
 
         def _runner(argv, **kwargs):
-            _ = argv, kwargs
-            return CompletedProcess(args=argv, returncode=returncode,
-                                     stdout=output, stderr="")
+            return RunResult(argv=list(argv), exit_code=exit_code,
+                              stdout=output, stderr="",
+                              error=error, timed_out=timed_out)
         return _runner
 
     def test_ok_output_maps_to_ok_result(self):
         from fieldkit.coerce import petitpotam
-        with patch("subprocess.run",
+        from fieldkit import runner as runner_mod
+        with patch.object(runner_mod, "run",
                     side_effect=self._fake_run("[+] Attack worked, check smbserver !")):
             r = petitpotam.fire("10.0.0.1", r"\\10.0.0.5\share",
                                  tool_bin="/opt/petitpotam")
@@ -145,7 +148,8 @@ class FireWithMockToolTest(unittest.TestCase):
 
     def test_patched_output_maps_to_patched_result(self):
         from fieldkit.coerce import petitpotam
-        with patch("subprocess.run",
+        from fieldkit import runner as runner_mod
+        with patch.object(runner_mod, "run",
                     side_effect=self._fake_run("[-] Got RPC_S_ACCESS_DENIED!!")):
             r = petitpotam.fire("10.0.0.1", r"\\10.0.0.5\share",
                                  tool_bin="/opt/petitpotam")
@@ -153,29 +157,35 @@ class FireWithMockToolTest(unittest.TestCase):
 
     def test_unreachable_output_maps_to_unreachable_result(self):
         from fieldkit.coerce import petitpotam
-        with patch("subprocess.run",
+        from fieldkit import runner as runner_mod
+        with patch.object(runner_mod, "run",
                     side_effect=self._fake_run("Connection refused")):
             r = petitpotam.fire("10.0.0.1", r"\\10.0.0.5\share",
                                  tool_bin="/opt/petitpotam")
         self.assertEqual(r.kind, "unreachable")
 
     def test_timeout_maps_to_unreachable(self):
+        # runner.run signals timeout via RunResult(timed_out=True, ...);
+        # petitpotam.fire maps that to CoerceResult(kind="unreachable").
         from fieldkit.coerce import petitpotam
-        from subprocess import TimeoutExpired
-        with patch("subprocess.run",
-                    side_effect=TimeoutExpired(cmd="petitpotam", timeout=15,
-                                                output="", stderr="")):
+        from fieldkit import runner as runner_mod
+        with patch.object(runner_mod, "run",
+                    side_effect=self._fake_run("", timed_out=True,
+                                                error="timed out after 15s")):
             r = petitpotam.fire("10.0.0.1", r"\\10.0.0.5\share",
                                  tool_bin="/opt/petitpotam", tool_timeout=15)
         self.assertEqual(r.kind, "unreachable")
         self.assertIn("timed out", r.evidence)
 
     def test_missing_tool_at_exec_falls_back_to_no_tool(self):
-        # Race: find_tool returned a path but the file vanished by
-        # the time we exec. Should NOT crash; should surface as
-        # no-tool with a command hint.
+        # runner.run signals missing binary via RunResult(error="not found …")
+        # Should NOT crash; should surface as no-tool with a command hint.
         from fieldkit.coerce import petitpotam
-        with patch("subprocess.run", side_effect=FileNotFoundError()):
+        from fieldkit import runner as runner_mod
+        with patch.object(runner_mod, "run",
+                    side_effect=self._fake_run(
+                        "", error="/opt/petitpotam-vanished: not found — "
+                                   "is it installed and on PATH?")):
             r = petitpotam.fire("10.0.0.1", r"\\10.0.0.5\share",
                                  tool_bin="/opt/petitpotam-vanished")
         self.assertEqual(r.kind, "no-tool")
@@ -221,12 +231,15 @@ class ChainIntegrationTest(unittest.TestCase):
         return ch
 
     def test_missing_listener_uri_produces_manual_outcome(self):
-        # No listener_uri set → step reports manual with the D3
-        # placeholder message. Doesn't try to call petitpotam at all.
+        # No listener_uri, no listener_ip, no ca_endpoint on ctx —
+        # step defers to the operator with a message pointing at the
+        # required flags. (D3 tries to auto-spawn the listener when
+        # listener_ip + ca_endpoint are supplied — see the relay
+        # test file — but without them the coerce step is stuck.)
         ch = self._walk_with(listener_uri=None)
         self.assertEqual(len(ch.outcomes), 1)
         self.assertEqual(ch.outcomes[0].kind, "manual")
-        self.assertIn("listener_uri not configured", ch.outcomes[0].evidence)
+        self.assertIn("listener_ip", ch.outcomes[0].evidence)
 
     def test_coerce_ok_maps_to_chain_ok(self):
         from fieldkit.coerce import CoerceResult

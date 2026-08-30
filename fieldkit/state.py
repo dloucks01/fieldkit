@@ -297,9 +297,31 @@ _V6 = [
     """,
 ]
 
+#: v7 lands the certificate table — a chain artifact from D3's relay
+#: capture (ESC8 acquires a cert for a coerced principal; RBCD lands
+#: an ACL edit, no cert; SMB-exec lands a shell, no cert). Cert bytes
+#: are stored base64-encoded in place (small — a machine cert is
+#: ~2 KB) so the whole engagement DB stays a single file. Certificate
+#: rows link back to the chain that produced them via chain_id so
+#: `fieldkit chain show` can render the acquired cert inline.
+_V7 = [
+    """
+    CREATE TABLE certificate (
+        id           INTEGER PRIMARY KEY,
+        chain_id     INTEGER REFERENCES coerce_chain(id) ON DELETE SET NULL,
+        principal    TEXT NOT NULL,           -- CORP/DC01$ etc.
+        template     TEXT NOT NULL DEFAULT '',
+        source       TEXT NOT NULL,           -- 'relay-adcs' | 'operator' | ...
+        cert_b64     TEXT NOT NULL,           -- base64 of the PFX or PEM bytes
+        acquired_at  TEXT NOT NULL
+    )
+    """,
+]
+
 #: (version, [statements]) applied in order; a database records the last applied
 #: version in PRAGMA user_version. Append to migrate; never edit a shipped entry.
-MIGRATIONS = [(1, _V1), (2, _V2), (3, _V3), (4, _V4), (5, _V5), (6, _V6)]
+MIGRATIONS = [(1, _V1), (2, _V2), (3, _V3), (4, _V4), (5, _V5),
+              (6, _V6), (7, _V7)]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -968,6 +990,51 @@ class Store:
                      utcnow()))
         return chain_id
 
+    def reserve_chain_id(self, chain):
+        """Insert a placeholder coerce_chain row and return its id
+        BEFORE the walker runs. Used when a chain step (D3+) needs to
+        persist a linked artifact (a certificate, a captured cred)
+        while the walk is still in progress. After the walk,
+        :meth:`finalize_chain` writes the outcomes trail against the
+        same id — so the whole trail ends up in one row without
+        double-persisting."""
+        with self._write():
+            cur = self.conn.execute(
+                "INSERT INTO coerce_chain (profile, target, status, "
+                "started_at, created) VALUES (?, ?, ?, ?, ?)",
+                (chain.profile, chain.target, "in_progress",
+                 chain.started_at or utcnow(), utcnow()))
+            return cur.lastrowid
+
+    def finalize_chain(self, chain_id, chain):
+        """Update a chain reserved via :meth:`reserve_chain_id` with
+        the walked outcomes. Writes the full step trail + final
+        status + aborted_reason + timing."""
+        with self.transaction():
+            self.conn.execute(
+                "UPDATE coerce_chain SET status = ?, aborted_reason = ?, "
+                "total_detection_cost = ?, artifacts_json = ?, "
+                "started_at = ?, finished_at = ? WHERE id = ?",
+                (chain.status, chain.aborted_reason,
+                 chain.total_detection_cost,
+                 json.dumps(chain.artifacts, default=repr),
+                 chain.started_at, chain.finished_at, chain_id))
+            # step rows are append-only; if some already exist for this
+            # chain_id (rare — resume scenario) skip; otherwise write them.
+            existing = self.conn.execute(
+                "SELECT COUNT(*) FROM chain_step WHERE chain_id = ?",
+                (chain_id,)).fetchone()[0]
+            if existing == 0:
+                for idx, outcome in enumerate(chain.outcomes):
+                    step = chain.steps[idx]
+                    self.conn.execute(
+                        "INSERT INTO chain_step (chain_id, idx, step_name, step_kind, "
+                        "outcome_kind, evidence, detection_cost, ran_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (chain_id, idx, step.name, step.kind,
+                         outcome.kind, outcome.evidence, step.detection_cost,
+                         utcnow()))
+
     def chains(self, profile=None):
         """Every recorded coerce_chain, newest first. Optionally filter
         by profile name."""
@@ -991,6 +1058,38 @@ class Store:
             "SELECT * FROM chain_step WHERE chain_id = ? ORDER BY idx",
             (chain_id,)).fetchall()
         return [dict(r) for r in rows]
+
+    # -- certificates (chain artifacts) -------------------------------------
+
+    def add_certificate(self, principal, cert_b64, source="relay-adcs",
+                          template="", chain_id=None):
+        """Persist a certificate acquired during a coerce chain (or
+        loaded manually — ``source`` distinguishes). Returns row id."""
+        with self._write():
+            cur = self.conn.execute(
+                "INSERT INTO certificate (chain_id, principal, template, "
+                "source, cert_b64, acquired_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (chain_id, principal, template, source, cert_b64, utcnow()))
+            return cur.lastrowid
+
+    def certificates(self, chain_id=None, principal=None):
+        """Every persisted certificate; optional filter by chain or
+        by exact principal string (``CORP/DC01$``)."""
+        sql = "SELECT * FROM certificate WHERE 1=1"
+        params = []
+        if chain_id is not None:
+            sql += " AND chain_id = ?"
+            params.append(chain_id)
+        if principal:
+            sql += " AND principal = ?"
+            params.append(principal)
+        sql += " ORDER BY id DESC"
+        return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def certificate_by_id(self, cert_id):
+        row = self.conn.execute(
+            "SELECT * FROM certificate WHERE id = ?", (cert_id,)).fetchone()
+        return dict(row) if row else None
 
     # -- board --------------------------------------------------------------
 

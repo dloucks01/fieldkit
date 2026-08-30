@@ -41,6 +41,32 @@ class RunResult:
         return self.stdout + (("\n" + self.stderr) if self.stderr else "")
 
 
+def spawn(argv, env_add=None):
+    """Launch a long-running child process for the caller to poll + kill.
+
+    Returns a :class:`subprocess.Popen` handle. The caller owns the
+    lifecycle: reading stdout via ``proc.stdout``, deciding when to
+    ``send_signal`` / ``kill``, joining any reader threads it starts.
+    Used by :mod:`fieldkit.relay` for the ntlmrelayx listener — a
+    blocking :func:`run` doesn't fit a process the operator watches
+    tail-of-log style then stops on demand.
+
+    This is the ONLY other subprocess entry point in fieldkit outside
+    :func:`run`; the "runner is the only child-process spawn"
+    architecture invariant covers both (see
+    tests/test_report.py::test_runner_is_the_only_child_process_spawn).
+    Never call subprocess.Popen from anywhere else — pass through
+    here so a future test harness can inject a fake.
+    """
+    env = None
+    if env_add:
+        env = {**os.environ, **env_add}
+    return subprocess.Popen(
+        list(argv),
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1, env=env, start_new_session=True)
+
+
 def run(argv, env_add=None, timeout=600, input_text=None, input_bytes=None):
     """Execute ``argv``, capturing output. Never raises for an operator-caused failure.
 

@@ -23,9 +23,9 @@ implementation becomes worth the maintenance load.
 """
 import os
 import shutil
-import subprocess
 
 from . import CoerceResult
+from .. import runner
 
 
 #: Ordered list of tool binaries we recognize. First hit wins. The
@@ -167,26 +167,25 @@ def fire(target, listener_uri, cred=None, tool_bin=None,
             argv += ["-d", d]
     argv += [listener_uri, target]
 
-    try:
-        proc = subprocess.run(
-            argv,
-            capture_output=True, text=True,
-            timeout=tool_timeout, check=False)
-    except FileNotFoundError:
-        # Race: tool disappeared between find and exec.
+    # runner.run wraps subprocess.run — catches FileNotFoundError as
+    # a RunResult(error=…) and TimeoutExpired via .timed_out. Two
+    # branches downstream: `error` → tool vanished (rare race),
+    # `timed_out` → target likely unreachable.
+    result = runner.run(argv, timeout=tool_timeout)
+    if result.error and "not found" in result.error:
         return CoerceResult(
             kind="no-tool",
             evidence=f"tool binary {tool_bin!r} vanished before exec",
             command_hint=_build_command_hint(tool_bin, target, listener_uri, cred),
             listener_uri=listener_uri)
-    except subprocess.TimeoutExpired as exc:
+    if result.timed_out:
         return CoerceResult(
             kind="unreachable",
             evidence=f"tool timed out after {tool_timeout}s — target likely unreachable",
-            detail=(exc.stdout or "") + (exc.stderr or ""),
+            detail=result.stdout + result.stderr,
             listener_uri=listener_uri)
 
-    output = (proc.stdout or "") + (proc.stderr or "")
+    output = result.stdout + result.stderr
     kind = _classify_output(output)
     # A non-zero exit with an unrecognized output → keep as `fail`
     # (already the default); the detail carries the whole output.
@@ -197,7 +196,7 @@ def fire(target, listener_uri, cred=None, tool_bin=None,
             "patched":     f"{target}: MS-EFSR patched (RPC_S_ACCESS_DENIED)",
             "auth-error":  f"{target}: auth failed against MS-EFSR endpoint",
             "unreachable": f"{target}: MS-EFSR endpoint unreachable",
-            "fail":        f"{tool_bin} exited {proc.returncode} with unrecognized output",
+            "fail":        f"{tool_bin} exited {result.exit_code} with unrecognized output",
         }[kind],
         detail=output,
         listener_uri=listener_uri)
