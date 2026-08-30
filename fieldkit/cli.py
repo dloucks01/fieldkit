@@ -1908,6 +1908,98 @@ def cmd_chain_walk(args, store):
     return 0
 
 
+def cmd_ttps_list(args):
+    """Browse the shipped TTP catalog. Optional --grep filter runs
+    against key + name + technique + tactic (case-insensitive).
+    Prints one row per TTP: key, technique, platforms, ranking
+    triple. Read-only — no store."""
+    from .ttps import load_all
+    tt = load_all()
+    needle = (args.grep or "").lower().strip() if getattr(args, "grep", None) else ""
+    if needle:
+        def _match(t):
+            hay = (f"{t.key} {t.name} {t.technique} "
+                    f"{' '.join(t.tactic)} {t.report.vector_type}").lower()
+            return needle in hay
+        tt = [t for t in tt if _match(t)]
+    tt.sort(key=lambda t: (t.technique, t.key))
+    if not tt:
+        print("no TTPs match" + (f" `{needle}`" if needle else ""))
+        return 0
+    print(f"{len(tt)} TTP(s):\n")
+    print(f"  {'technique':<12} {'key':<44} {'platform':<12} "
+          f"{'exploit':<8} {'safety':<14} {'detection':<10}")
+    for t in tt:
+        plats = ",".join(t.platform)[:12]
+        r = t.ranking
+        print(f"  {t.technique:<12} {t.key:<44} {plats:<12} "
+               f"{r.exploitability:<8} {r.safety:<14} {r.detection:<10}")
+    return 0
+
+
+def cmd_ttps_show(args):
+    """Pretty-print one TTP by key. Renders every populated field
+    (detect, execute, verify, cleanup, report, playbook) — the
+    same shape the YAML carries, but resolved through the loader
+    so a bad TTP surfaces the parse error rather than raw yaml."""
+    from .ttps import load_all
+    tt = [t for t in load_all() if t.key == args.key]
+    if not tt:
+        _err(f"no TTP with key {args.key!r} — "
+             "`fieldkit ttps list` shows every key")
+        return 2
+    t = tt[0]
+    def _sep(title):
+        print(f"\n  ── {title} " + "─" * (56 - len(title)))
+    print(f"key       : {t.key}")
+    print(f"name      : {t.name}")
+    print(f"technique : {t.technique}")
+    print(f"tactic    : {', '.join(t.tactic)}")
+    print(f"platform  : {', '.join(t.platform)}")
+    r = t.ranking
+    print(f"ranking   : exploit={r.exploitability}  "
+          f"safety={r.safety}  detection={r.detection}")
+    if t.detect:
+        _sep("detect")
+        print(f"  kind : {t.detect.kind}")
+        for k, v in (t.detect.value or {}).items():
+            print(f"  {k}: {v}")
+    if t.execute and t.execute.command:
+        _sep("execute")
+        print(t.execute.command.strip())
+    if t.verify and t.verify.success:
+        _sep("verify")
+        print(f"success: {t.verify.success}")
+    if t.cleanup and t.cleanup.command:
+        _sep("cleanup")
+        print(t.cleanup.command.strip())
+    if t.report:
+        _sep("report")
+        print(f"vector_type : {t.report.vector_type}")
+        if t.report.evidence:
+            print(f"evidence    : {t.report.evidence}")
+        if t.report.description:
+            print(f"description :\n  {t.report.description.strip()}")
+        if t.report.remediation:
+            print(f"remediation :\n  {t.report.remediation.strip()}")
+        if t.report.refs:
+            print(f"refs        : {', '.join(t.report.refs)}")
+    if t.playbook:
+        _sep("playbook")
+        if t.playbook.summary:
+            print(f"summary : {t.playbook.summary.strip()}")
+        if t.playbook.place:
+            print(f"place   : {t.playbook.place}")
+        if t.playbook.steps:
+            print("steps   :")
+            for i, s in enumerate(t.playbook.steps, 1):
+                print(f"  {i}. {s}")
+        if t.playbook.restore:
+            print(f"restore : {t.playbook.restore}")
+    print(f"\nsource: {t.source_path}")
+    return 0
+
+
 def cmd_doctor(args):
     """One health-check for the whole install + current engagement.
 
@@ -3216,6 +3308,26 @@ the spec is missing that field. `--from-file` reads one credential per line.
     p_doctor.add_argument("--json", action="store_true",
                            help="emit machine-readable JSON; exit code unchanged")
     p_doctor.set_defaults(func=cmd_doctor)
+
+    p_ttps = sub.add_parser(
+        "ttps", help="browse the shipped TTP catalog (list / show)",
+        description="fieldkit ships a YAML catalog of TTPs (technique + "
+                    "detect + execute + verify + report + playbook). This "
+                    "command surfaces the catalog without hunting through "
+                    "the source tree.")
+    ttps_sub = p_ttps.add_subparsers(dest="ttps_command", metavar="<action>")
+    tt_list = ttps_sub.add_parser(
+        "list", help="one row per TTP (technique, key, platform, ranking)")
+    tt_list.add_argument("--grep", metavar="STR",
+                          help="case-insensitive substring filter over "
+                               "key / name / technique / tactic / "
+                               "vector_type")
+    tt_list.set_defaults(func=cmd_ttps_list)
+    tt_show = ttps_sub.add_parser(
+        "show", help="pretty-print one TTP by key")
+    tt_show.add_argument("key", help="TTP key from `fieldkit ttps list`")
+    tt_show.set_defaults(func=cmd_ttps_show)
+    p_ttps.set_defaults(func=lambda a: _missing(p_ttps))
 
     p_prep = sub.add_parser(
         "prep", help="build a manual route's artifact + print where to place it and the steps",
