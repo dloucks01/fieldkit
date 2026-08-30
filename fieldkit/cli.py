@@ -2638,6 +2638,48 @@ def cmd_retest(args, store):
     return 0
 
 
+def cmd_cloud_imds(args):
+    """Probe AWS/Azure/GCP IMDS from the local host — every
+    cloud VM has an unauth-reachable instance-metadata service
+    that exposes identity + temporary IAM credentials.
+    Read-only. ``--json`` for CI."""
+    from . import cloud_metadata as cm
+    results = cm.probe_all(timeout=args.timeout)
+    if args.json:
+        import json as _json
+        payload = [{
+            "provider": r.provider,
+            "reachable": r.reachable,
+            "identity": r.identity,
+            "creds": r.creds,
+            "error": r.error,
+        } for r in results]
+        print(_json.dumps(payload, indent=2))
+        return 0
+    print("cloud IMDS probe:\n")
+    for r in results:
+        marker = "OK  " if r.reachable else "--  "
+        print(f"  {marker}{r.provider}")
+        if r.reachable:
+            if r.identity:
+                brief = ", ".join(f"{k}={v}"
+                                    for k, v in list(r.identity.items())[:3]
+                                    if not isinstance(v, (dict, list)))
+                print(f"        identity: {brief[:120]}")
+            if r.creds:
+                # AWS creds have AccessKeyId + SecretAccessKey + Token
+                key = r.creds.get("AccessKeyId", "?")
+                print(f"        creds: AccessKeyId={key}"
+                      f" (Token=<{len(r.creds.get('Token', ''))} chars>)")
+        elif r.error:
+            print(f"        error: {r.error[:100]}")
+    reachable_any = any(r.reachable for r in results)
+    if not reachable_any:
+        print("\nnone reachable — either not running on a cloud VM, "
+              "or IMDS is firewalled off")
+    return 0
+
+
 def cmd_kerberos_forge(args):
     """Forge a Golden or Silver ticket via impacket-ticketer.
     Manual-hint when impacket isn't on PATH; ``args.kind`` picks
@@ -4884,6 +4926,26 @@ the spec is missing that field. `--from-file` reads one credential per line.
     s_rm.set_defaults(func=cmd_suppress_remove)
 
     p_sup.set_defaults(func=lambda a: _missing(p_sup))
+
+    p_cloud = sub.add_parser(
+        "cloud",
+        help="cloud IMDS probes (AWS / Azure / GCP)",
+        description="Instance-metadata service checks — every "
+                    "cloud VM has an unauth-reachable IMDS at "
+                    "169.254.169.254 (Azure) or metadata.google."
+                    "internal (GCP) that exposes identity + "
+                    "temporary IAM credentials.")
+    cloud_sub = p_cloud.add_subparsers(dest="cloud_command",
+                                           metavar="<action>")
+    c_imds = cloud_sub.add_parser(
+        "imds",
+        help="probe AWS/Azure/GCP IMDS from the local host")
+    c_imds.add_argument("--timeout", type=float, default=3.0,
+                         help="per-provider timeout (default: 3s)")
+    c_imds.add_argument("--json", action="store_true",
+                         help="emit machine-readable JSON")
+    c_imds.set_defaults(func=cmd_cloud_imds)
+    p_cloud.set_defaults(func=lambda a: _missing(p_cloud))
 
     p_refresh = sub.add_parser(
         "refresh",
