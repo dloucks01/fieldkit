@@ -1,0 +1,54 @@
+# Scheduled Tasks — persistence surface + abuse candidates
+#
+# schtasks /query gives every scheduled task on the host; the
+# interesting subset for persistence is:
+#
+#   * tasks whose Author is a low-privilege account (operator can
+#     modify them without admin)
+#   * tasks whose Task To Run points at a writable file / dir
+#     (silently swap the payload)
+#   * tasks marked "Ready" that run as SYSTEM (SYSTEM code exec
+#     via schtasks /change is admin-only, but the task list is
+#     the reconnaissance foundation)
+#
+# fieldkit already has a `schtask_abuse` reportkb entry; this TTP
+# is the DISCOVERY step that feeds it.
+technique: T1053.005
+name: Scheduled Task enumeration → persistence surface
+tactic: [persistence, discovery]
+platform: [windows]
+key: persist:win-schtasks
+ranking:
+  exploitability: medium
+  safety: read-only
+  detection: quiet
+detect:
+  always: true
+execute:
+  # /fo LIST /v prints every field (author, run as, task to run,
+  # last result). findstr filters the "Microsoft\Windows\*" auto-
+  # tasks so the operator-relevant custom tasks stay legible.
+  # `2>nul` catches "no matches" gracefully.
+  command: |-
+    schtasks /query /fo LIST /v 2>nul | findstr /v "\\Windows\\\\" 2>nul | findstr /r "TaskName: HostName: Author: TaskToRun: RunAsUser: Status:" 2>nul
+verify:
+  success: "TaskName"
+cleanup:
+  command: ""
+report:
+  vector_type: schtask_abuse
+  evidence: "custom scheduled tasks enumerable"
+  description: >
+    The scheduled-task list is the persistence-surface map for the
+    Windows side. Custom tasks (non Microsoft\Windows\*) are the
+    interesting subset: an operator scans them for a writable
+    Task-To-Run target (swap the payload) or a low-privileged
+    Author (modify the task via schtasks /change without admin).
+    Both routes let the operator inherit whatever RunAsUser the
+    task carries.
+  remediation: >
+    Baseline the task list; alert on new custom tasks (Sysmon
+    event 4698 in the security log). Audit every task's
+    Task-To-Run for a writable target and every task's ACL for
+    non-admin write.
+  refs: [T1053.005, scheduled-tasks, persistence]

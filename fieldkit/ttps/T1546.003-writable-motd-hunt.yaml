@@ -1,0 +1,47 @@
+# Writable /etc/update-motd.d/* → root code on next SSH login
+#
+# Debian-derivative systems (Ubuntu, Kali, Debian Server) run every
+# executable in /etc/update-motd.d/ as root when a user logs in via
+# SSH, then compose their stdout into the login banner. A writable
+# entry there is root code execution on the next SSH session.
+#
+# Also on the rarer /etc/profile.d/ (bash init snippets run at
+# every interactive login as the login user — root when a root
+# session opens) and /etc/bash.bashrc if writable.
+technique: T1546.003
+name: writable /etc/update-motd.d → root code on SSH login
+tactic: [persistence, privilege-escalation]
+platform: [linux]
+key: persist:writable-motd
+ranking:
+  exploitability: medium         # depends on someone logging in
+  safety: read-only
+  detection: quiet
+detect:
+  always: true
+execute:
+  # update-motd.d hits are the highest-signal — root runs the
+  # script on every SSH login and there's nothing else worth
+  # putting there. /etc/profile.d/*.sh + /etc/bash.bashrc run as
+  # the login user; still valuable when an admin SSHs in.
+  command: |-
+    find /etc/update-motd.d /etc/profile.d -type f -writable 2>/dev/null | head -20 ; [ -w /etc/bash.bashrc ] && echo /etc/bash.bashrc
+verify:
+  success: "/"
+cleanup:
+  command: ""
+report:
+  vector_type: writable_motd
+  evidence: "one or more MOTD / profile / bashrc files writable"
+  description: >
+    On Debian-family systems the executables in /etc/update-motd.d/
+    run as root on every SSH login to produce the banner. A
+    writable entry is a wait-for-admin persistence primitive:
+    plant a script that runs `chown/chmod/…` (or dumps hashes) and
+    the next root SSH session fires it.
+  remediation: >
+    Reset /etc/update-motd.d, /etc/profile.d, and /etc/bash.bashrc
+    to root:root 0644 (0755 for the motd .d entries — they must
+    be executable). Audit with `find /etc/update-motd.d
+    /etc/profile.d -not -uid 0 -o -perm /o+w`.
+  refs: [T1546.003, motd, persistence]

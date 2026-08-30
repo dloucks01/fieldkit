@@ -1,0 +1,52 @@
+# Writable cron entries → persistence + privilege escalation
+#
+# Discovers cron files a low-privileged user can write to. Any hit
+# is a persistence primitive: the operator appends a job that runs
+# as the file owner (root when the file lives under /etc/cron.*).
+# System cron dirs — /etc/cron.d, /etc/cron.daily, /etc/cron.hourly,
+# /etc/cron.weekly, /etc/cron.monthly — all run as root; per-user
+# crontabs (/var/spool/cron/crontabs/*) run as that user.
+#
+# Persistence-first framing: the FIND is the finding. Actual write
+# is the operator's next step (that's config-change; this TTP stays
+# read-only). Genuinely new coverage — no persistence TTP shipped
+# before this slice.
+technique: T1053.003
+name: writable cron entries → persistence + privilege escalation
+tactic: [persistence, privilege-escalation]
+platform: [linux]
+key: persist:writable-cron
+ranking:
+  exploitability: medium
+  safety: read-only              # find only; the plant is the operator's step
+  detection: quiet
+detect:
+  always: true
+execute:
+  # -writable filters to files the foothold can actually modify.
+  # /etc/crontab + /etc/cron.d/* + cron.{hourly,daily,weekly,monthly}
+  # run as root; /var/spool/cron/crontabs/<user> runs as user.
+  # -not -path filters kernel + snap noise; -maxdepth 4 keeps the
+  # walk fast.
+  command: |-
+    find /etc/crontab /etc/cron.d /etc/cron.hourly /etc/cron.daily /etc/cron.weekly /etc/cron.monthly /var/spool/cron -maxdepth 4 -type f -writable 2>/dev/null | head -30
+verify:
+  success: "/"
+cleanup:
+  command: ""
+report:
+  vector_type: writable_cron
+  evidence: "cron file(s) writable by the foothold user"
+  description: >
+    A cron file (or per-user crontab) is writable by the current
+    user. Appending a job to a file under /etc/cron.* gives root
+    execution on the next tick; a writable per-user crontab
+    persists as that user. Discovery is passive; the plant is a
+    config-change the operator gates through --allow config-change.
+  remediation: >
+    Restrict cron file permissions to root:root 0644 (or root:root
+    0600 for /etc/crontab and /etc/cron.d/*). Audit with
+    `find /etc/cron* -not -uid 0 -o -perm /o+w`. Prefer systemd
+    timers (also covered under writable-systemd) where cron isn't
+    load-bearing.
+  refs: [T1053.003, cron, persistence]

@@ -1,0 +1,51 @@
+# Windows Startup folders — the "always writable by every user" persistence
+#
+# %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup is a
+# per-user Startup folder every non-admin can write to freely for
+# THEIR account; %ALLUSERSPROFILE%\Microsoft\Windows\Start
+# Menu\Programs\StartUp is the all-users variant (admin-only
+# write). ANY .exe / .lnk / .bat / .vbs there fires on login of
+# the owning user.
+#
+# Complement to the run-keys enum: HKCU\...\Run needs registry
+# read; Startup folder needs filesystem read. Some EDRs hunt one
+# and miss the other.
+technique: T1547.001
+name: Windows Startup folders → per-user + all-users persistence enum
+tactic: [persistence, discovery]
+platform: [windows]
+key: persist:win-startup-folders
+ranking:
+  exploitability: medium
+  safety: read-only
+  detection: quiet
+detect:
+  always: true
+execute:
+  # Both per-user (walking every user's profile so a shared jump
+  # box reveals every account's Startup) and all-users. `dir /b /s`
+  # gives full paths for each entry so the operator can jump
+  # straight to "what fires next login for user X".
+  command: |-
+    dir /b /s "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup" 2>nul & dir /b /s "%ALLUSERSPROFILE%\Microsoft\Windows\Start Menu\Programs\StartUp" 2>nul & dir /b /s "%USERPROFILE%\..\*\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup" 2>nul
+verify:
+  # dir /b /s outputs full paths; any hit contains a drive letter.
+  success: ":\\"
+cleanup:
+  command: ""
+report:
+  vector_type: writable_run_key
+  evidence: "one or more Startup folder entries present"
+  description: >
+    Startup folder entries execute on login of the owning user.
+    Per-user %APPDATA%\...\Startup is unrestricted write for that
+    user; %ALLUSERSPROFILE%\...\StartUp needs admin. Reading the
+    contents shows both what already persists AND where a plant
+    would land. Complements the Run-keys enum (registry) — some
+    detections hunt one surface and miss the other.
+  remediation: >
+    Baseline the Startup folders; alert on new .exe/.lnk/.vbs/.bat
+    entries via Sysmon FileCreate (event 11) with the Startup
+    path filter. For the all-users variant, ensure the ACL grants
+    write only to Administrators.
+  refs: [T1547.001, startup-folder, persistence]

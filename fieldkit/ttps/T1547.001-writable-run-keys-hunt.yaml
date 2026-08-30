@@ -1,0 +1,55 @@
+# Windows Run keys → user-scope + machine-scope persistence enum
+#
+# HKCU\Software\Microsoft\Windows\CurrentVersion\Run and
+# HKLM\Software\Microsoft\Windows\CurrentVersion\Run values launch
+# on every login of that user (HKCU) or every user (HKLM). Reading
+# them tells the operator two things at once:
+#
+#   1) what already lives there (spot other operator activity or
+#      hunt for LOLBAS-style vendor auto-run entries — many carry
+#      writable target paths worth swapping)
+#   2) whether the operator can WRITE new entries (HKCU always yes;
+#      HKLM only with admin — the check surfaces both).
+#
+# `RunOnce` variants land in the same enum; they fire once at next
+# login and then delete themselves — good for narrow persistence
+# during a session takeover.
+technique: T1547.001
+name: Windows Run keys → persistence enum
+tactic: [persistence, discovery]
+platform: [windows]
+key: persist:win-run-keys
+ranking:
+  exploitability: medium
+  safety: read-only
+  detection: quiet
+detect:
+  always: true
+execute:
+  # HKCU + HKLM run keys, both 32-bit and 64-bit views on x64
+  # (Wow6432Node is where 32-bit installers write; it's a common
+  # forgotten surface). 2>nul on each so a missing key doesn't
+  # abort the sequence.
+  command: |-
+    reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" 2>nul & reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\RunOnce" 2>nul & reg query "HKLM\Software\Microsoft\Windows\CurrentVersion\Run" 2>nul & reg query "HKLM\Software\Microsoft\Windows\CurrentVersion\RunOnce" 2>nul & reg query "HKLM\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Run" 2>nul
+verify:
+  # Any populated key prints REG_SZ / REG_EXPAND_SZ lines.
+  success: "REG_"
+cleanup:
+  command: ""
+report:
+  vector_type: writable_run_key
+  evidence: "Windows Run key(s) enumerable"
+  description: >
+    Reading the HKCU + HKLM Run / RunOnce keys shows both what
+    persistence already lives on the box and what the operator
+    can add. HKCU write is unrestricted; HKLM requires admin.
+    LOLBAS auto-run entries whose target path is writable to a
+    lower-privilege user are a common escalation-adjacent finding.
+  remediation: >
+    Baseline the Run keys against known-good; alert on new values
+    (Sysmon event 13 with the specific Run subkey filter). For
+    HKCU, GPO can restrict who can write via
+    `HKCU\Software\Policies\...`; for HKLM, only Administrators
+    should hold write.
+  refs: [T1547.001, run-keys, persistence]
