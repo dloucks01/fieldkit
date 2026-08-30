@@ -1963,6 +1963,84 @@ def cmd_refresh(args, store):
     return 0 if ingest_ok else 1
 
 
+def cmd_session_log(args):
+    """Print the shell export line the operator needs to enable
+    recording. Meant for ``eval $(fieldkit session log --enable)``
+    or manual copy-paste."""
+    from . import session as session_mod
+    if not args.enable and not args.disable:
+        current = session_mod.log_path()
+        if current:
+            print(f"recording enabled — writing to {current}")
+        else:
+            print("recording disabled — export FIELDKIT_SESSION_LOG=<path> "
+                  "to enable, or run `fieldkit session log --enable`.")
+        return 0
+    if args.disable:
+        print(f"unset {session_mod.ENV_VAR}")
+        return 0
+    # --enable
+    path = os.path.abspath(args.out or "fieldkit-session.jsonl")
+    print(f"export {session_mod.ENV_VAR}={path}")
+    _err(f"# writes JSONL to {path} for every subsequent "
+         f"`fieldkit ...` invocation — eval the export above")
+    return 0
+
+
+def cmd_session_show(args):
+    """Pretty-print the entries in ``args.log``."""
+    from . import session as session_mod
+    entries = session_mod.read(args.log)
+    if not entries:
+        _err(f"no entries in {args.log} (empty log or unreadable file)")
+        return 1
+    if args.json:
+        import json as _json
+        for e in entries:
+            print(_json.dumps(e.to_dict()))
+        return 0
+    print(f"{len(entries)} entries in {args.log}:\n")
+    print(f"  {'timestamp':<25}  {'rc':>3}  {'dur':>6}  argv")
+    for e in entries:
+        argv_str = " ".join(e.argv)
+        if len(argv_str) > 70:
+            argv_str = argv_str[:67] + "..."
+        print(f"  {e.timestamp:<25}  {e.exit_code:>3}  "
+              f"{e.duration_ms:>4}ms  {argv_str}")
+    return 0
+
+
+def cmd_session_replay(args):
+    """Re-run every recorded invocation in ``args.log``. Returns
+    the last non-zero exit code (or 0 if every entry succeeded).
+    ``--dry-run`` prints without executing."""
+    from . import session as session_mod
+    entries = session_mod.read(args.log)
+    if not entries:
+        _err(f"no entries in {args.log}")
+        return 1
+    print(f"{'dry-run: ' if args.dry_run else ''}"
+          f"replaying {len(entries)} entries from {args.log}\n")
+    def _on(entry, rc):
+        argv_str = " ".join(entry.argv)
+        if len(argv_str) > 60:
+            argv_str = argv_str[:57] + "..."
+        marker = "  --  " if rc is None else f"  {rc:>3}  "
+        print(f"  [{entry.timestamp}]{marker}fieldkit {argv_str}")
+    results = session_mod.replay(args.log, on_entry=_on,
+                                   dry_run=args.dry_run)
+    if args.dry_run:
+        print(f"\n(dry-run: {len(results)} entries would have run)")
+        return 0
+    nonzero = [rc for _, rc in results if rc != 0]
+    if nonzero:
+        print(f"\n{len(nonzero)}/{len(results)} entries returned "
+              f"non-zero exit codes")
+        return max(nonzero)
+    print(f"\nall {len(results)} entries replayed cleanly")
+    return 0
+
+
 def cmd_ttps_list(args):
     """Browse the shipped TTP catalog. Optional --grep filter runs
     against key + name + technique + tactic (case-insensitive).
@@ -3287,6 +3365,54 @@ def _build_ttps_parser(sub):
     p_ttps.set_defaults(func=lambda a: _missing(p_ttps))
 
 
+def _build_session_parser(sub):
+    """Wire the ``session`` subcommand tree (log / show / replay)."""
+    from . import session as session_mod
+    p_session = sub.add_parser(
+        "session",
+        help="record + replay: every fieldkit invocation as a JSONL log",
+        description="Opt-in session recording — export "
+                    f"{session_mod.ENV_VAR}=<path> and every subsequent "
+                    "`fieldkit ...` call appends its argv + exit code + "
+                    "duration to that file. `session log --enable` prints "
+                    "the export line for eval; `session show` renders a "
+                    "log; `session replay` re-runs each entry in order.")
+    sess_sub = p_session.add_subparsers(dest="session_command",
+                                           metavar="<action>")
+
+    s_log = sess_sub.add_parser(
+        "log", help="show / enable / disable recording (prints eval line)")
+    s_log_group = s_log.add_mutually_exclusive_group()
+    s_log_group.add_argument("--enable", action="store_true",
+                              help="print the export line to eval "
+                                   "(with --out to name the file)")
+    s_log_group.add_argument("--disable", action="store_true",
+                              help="print the unset line to eval")
+    s_log.add_argument("--out", metavar="PATH",
+                        help="log path when enabling (default: "
+                             "fieldkit-session.jsonl in CWD)")
+    s_log.set_defaults(func=cmd_session_log)
+
+    s_show = sess_sub.add_parser(
+        "show", help="pretty-print the entries in a session log")
+    s_show.add_argument("log", help="path to the JSONL log")
+    s_show.add_argument("--json", action="store_true",
+                         help="emit raw JSONL (pipe-friendly)")
+    s_show.set_defaults(func=cmd_session_show)
+
+    s_replay = sess_sub.add_parser(
+        "replay", help="re-run every entry in a session log",
+        description="Re-executes each recorded invocation in order, "
+                    "in-process (same argparse + handler path a live "
+                    "invocation takes). Use --dry-run to preview.")
+    s_replay.add_argument("log", help="path to the JSONL log")
+    s_replay.add_argument("--dry-run", action="store_true",
+                           help="print what would run without executing")
+    s_replay.set_defaults(func=cmd_session_replay)
+
+    p_session.set_defaults(func=lambda a: _missing(p_session))
+
+
 def _build_bloodhound_parser(sub):
     """Wire the ``bloodhound`` subcommand tree (import / suggest)."""
     p_bh = sub.add_parser("bloodhound", help="ingest SharpHound data + find owned→DA paths")
@@ -3678,6 +3804,7 @@ the spec is missing that field. `--from-file` reads one credential per line.
                                 "exit code reflects the post-fix state.")
     p_doctor.set_defaults(func=cmd_doctor)
 
+    _build_session_parser(sub)
     _build_ttps_parser(sub)
 
     p_refresh = sub.add_parser(
@@ -4067,21 +4194,37 @@ def main(argv=None):
     if not getattr(args, "func", None):
         parser.print_help(sys.stderr)
         return 2
+    # Session recording — captures exit code + duration on any
+    # exit path (happy, error, interrupt). No-op unless
+    # FIELDKIT_SESSION_LOG is set; skips session-management
+    # subcommands to prevent replay loops.
+    from . import session as _session
+    import time as _time
+    recording = _session.is_recording_enabled()
+    invoked_argv = list(argv) if argv is not None else sys.argv[1:]
+    start = _time.monotonic() if recording else None
+    rc = 2
     try:
-        return args.func(args)
-    except FieldkitError as exc:
-        # Every operator-actionable failure lands here; anything else is a fieldkit bug.
-        _err(str(exc))
-        return 2
-    except FileNotFoundError as exc:
-        _err(f"{exc.filename}: no such file")
-        return 2
-    except sqlite3.Error as exc:
-        # A locked/read-only/corrupt database is an operator problem, not a crash.
-        _err(f"database error: {exc}")
-        return 2
-    except BrokenPipeError:  # pragma: no cover - `| head`
-        return 0
-    except KeyboardInterrupt:  # pragma: no cover - operator hit ^C
-        _err("interrupted")
-        return 130
+        try:
+            rc = args.func(args)
+        except FieldkitError as exc:
+            # Every operator-actionable failure lands here; anything else is a fieldkit bug.
+            _err(str(exc))
+            rc = 2
+        except FileNotFoundError as exc:
+            _err(f"{exc.filename}: no such file")
+            rc = 2
+        except sqlite3.Error as exc:
+            # A locked/read-only/corrupt database is an operator problem, not a crash.
+            _err(f"database error: {exc}")
+            rc = 2
+        except BrokenPipeError:  # pragma: no cover - `| head`
+            rc = 0
+        except KeyboardInterrupt:  # pragma: no cover - operator hit ^C
+            _err("interrupted")
+            rc = 130
+        return rc
+    finally:
+        if recording:
+            duration_ms = int((_time.monotonic() - start) * 1000)
+            _session.record(invoked_argv, rc, duration_ms)
