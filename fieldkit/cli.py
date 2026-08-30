@@ -1651,16 +1651,14 @@ def _domain_credential(store):
 
 # ------------------------------------------------------------- coerce chains
 
-@needs_engagement
-def cmd_chain_plan(args, store):
+def cmd_chain_plan(args):
     """Show the ordered steps of a chain profile without firing them.
 
-    D1 lands only the reachability preflight; every subsequent step
-    prints its manual-outcome message so the operator sees exactly
-    where the chain will hand off pending D2/D3/D4 slice landings.
+    Read-only over the in-memory profile registry — no engagement /
+    store required, so a fresh box can preview any shipped chain
+    before setting up state.
     """
     from . import chain as chain_mod
-    _ = store
     try:
         factory = chain_mod.profile(args.profile)
     except KeyError as exc:

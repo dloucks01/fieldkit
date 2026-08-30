@@ -244,7 +244,15 @@ _PRODUCT_VENDORS = frozenset({
     "cisco", "ivanti", "pulse",
 })
 #: Words that don't identify a product (they describe the shape of one).
-_PRODUCT_GENERIC = frozenset({"httpd", "server", "service", "daemon"})
+_PRODUCT_GENERIC = frozenset({
+    "httpd", "server", "service", "daemon",
+    # Edition-name suffixes common on nmap product strings
+    # ("GitLab Community Edition", "Elastic Enterprise", "Postgres
+    # Community"). Without these here the last-token rule picks
+    # "edition"/"community"/"enterprise" and version-gated TTPs
+    # keyed on the real product name silently miss.
+    "community", "enterprise", "edition",
+})
 
 
 def _canon_product(name):
