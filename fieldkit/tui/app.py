@@ -23,6 +23,7 @@ from ..state import Store, default_db_path
 from . import theme
 from .analyze import AnalyzeScreen, ANALYZE_TCSS
 from .chain_plan import ChainPlanScreen, CHAIN_PLAN_TCSS
+from .chain_run import CHAIN_RUN_TCSS
 from .dashboard import DashboardScreen, DASHBOARD_TCSS
 from .escalate import ESCALATE_TCSS
 from .watch_screen import WatchScreen, WATCH_TCSS
@@ -124,7 +125,7 @@ class FieldkitTUI(App):
     """
 
     CSS = (theme.APP_TCSS + DASHBOARD_TCSS + WATCH_TCSS + ANALYZE_TCSS
-           + ESCALATE_TCSS + CHAIN_PLAN_TCSS)
+           + ESCALATE_TCSS + CHAIN_PLAN_TCSS + CHAIN_RUN_TCSS)
     TITLE = "fieldkit"
 
     SCREENS = {
