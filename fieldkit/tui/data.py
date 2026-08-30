@@ -45,6 +45,15 @@ class DashboardData:
     #: "safety", "detection", "next_step", "detail"}
     top_moves: list = field(default_factory=list)
     preflight_missing: list = field(default_factory=list)
+    #: Recent coerce-chain runs — {id, profile, target, status,
+    #: detection_debt}. Populated by dashboard() from store.chains();
+    #: empty when no chains have been recorded in the engagement.
+    chains_recent: list = field(default_factory=list)
+    #: Rollup: {"total", "proven", "in_progress", "aborted"}.
+    #: Feeds the dashboard's chain-history block header.
+    chains_summary: dict = field(default_factory=lambda: {
+        "total": 0, "proven": 0, "in_progress": 0, "aborted": 0,
+    })
 
 
 def _phase_from_counts(counts):
@@ -178,6 +187,29 @@ def dashboard(db_path=None):
             {"tool": r[0], "reason": r[1]}
             for r in preflight.missing_required(preflight.check())
         ]
+
+        # Chain history — read the coerce_chain table, aggregate
+        # counts by status + surface the most-recent few. Graceful
+        # degradation when the schema doesn't have coerce_chain
+        # (pre-D1 databases) so the dashboard renders anyway.
+        try:
+            chain_rows = store.chains()
+        except Exception:                                     # noqa: BLE001
+            chain_rows = []
+        summary = {"total": len(chain_rows), "proven": 0,
+                    "in_progress": 0, "aborted": 0}
+        for r in chain_rows:
+            status = r.get("status") or ""
+            if status in summary:
+                summary[status] += 1
+        data.chains_summary = summary
+        data.chains_recent = [{
+            "id": r["id"],
+            "profile": r["profile"],
+            "target": r["target"],
+            "status": r.get("status") or "",
+            "detection_debt": r.get("total_detection_cost") or 0,
+        } for r in chain_rows[:5]]      # newest-first from store.chains()
     finally:
         store.close()
     return data
