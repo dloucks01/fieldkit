@@ -229,8 +229,11 @@ def suggest_chain(path_entry, nodes_by_sid=None):
                     break
         return candidates[-1] if candidates else target_name
 
-    # Rule 1: high-value Computer target → esc8. DCs are the
-    # canonical case; the rationale calls out the ADCS assumption.
+    # Rule 1: high-value Computer target → esc8 primary + nopac
+    # alternative. DCs are the canonical case; the rationale
+    # calls out ADCS as the esc8 precondition and MAQ as the
+    # nopac precondition, so the operator picks the profile
+    # that fits their environment.
     if nodes_by_sid is not None:
         for _sid, n in nodes_by_sid.items():
             if (n["name"] == target_name
@@ -245,6 +248,15 @@ def suggest_chain(path_entry, nodes_by_sid=None):
                         "auth a relay against the enterprise CA and "
                         "lands a DC cert. Verify ADCS is exposed "
                         "first: `fieldkit adcs find`."),
+                    "alternatives": [{
+                        "profile": "nopac",
+                        "rationale": (
+                            "alt: `fieldkit chain run nopac "
+                            f"{target_name}` — no ADCS dependency, "
+                            "requires ms-DS-MachineAccountQuota>0 "
+                            "(default is 10) + DC unpatched for "
+                            "KB5008380/KB5008218 (Nov 2021)."),
+                    }],
                 }
 
     # Rules 2-4: match against edge-kind hints in path order.
