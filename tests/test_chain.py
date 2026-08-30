@@ -85,7 +85,14 @@ class RegistryTest(unittest.TestCase):
             profile("does-not-exist")
 
     def test_duplicate_registration_raises(self):
+        from fieldkit import chain as chain_mod
         from fieldkit.chain import register
+        # Snapshot the registry so this test's synthetic profile
+        # is torn down at exit — otherwise it leaks into every
+        # subsequent test and trips the shipped-catalog audits.
+        _snap = dict(chain_mod._PROFILES)
+        self.addCleanup(lambda: (chain_mod._PROFILES.clear(),
+                                    chain_mod._PROFILES.update(_snap)))
         # register a first time
         @register("dup-test")
         def _f(t):    # noqa: E306
@@ -302,8 +309,13 @@ class ChainStorePersistenceTest(unittest.TestCase):
         self.assertEqual([r["id"] for r in listing], list(reversed(ids)))
 
     def test_chains_filter_by_profile(self):
+        from fieldkit import chain as chain_mod
         from fieldkit.chain import esc8_chain, walk, register, Chain, Step, Outcome
         class Ctx: probe_port = 1; probe_timeout = 0.3           # noqa: E701
+        # Snapshot the registry — see the dup-test rationale above.
+        _snap = dict(chain_mod._PROFILES)
+        self.addCleanup(lambda: (chain_mod._PROFILES.clear(),
+                                    chain_mod._PROFILES.update(_snap)))
 
         @register("test-filter-profile")
         def _mk(target):

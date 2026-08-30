@@ -623,17 +623,6 @@ SIGNALS_ESC1_ENROLL = (
 )
 
 
-def _stub_action(msg):
-    """Factory that returns a Step action which always yields ``manual``
-    with the given message. Used for the D1 esc8 profile — the whole
-    plan is walkable, but the non-preflight steps hand off to the
-    operator until their landing slice ships (D2 through D4)."""
-    def _action(chain, ctx):
-        _ = chain, ctx
-        return Outcome(kind="manual", evidence=msg)
-    return _action
-
-
 # ---------------------------------------------------------------- post-relay steps
 
 def _cert_request_action(chain, ctx):
@@ -1434,12 +1423,12 @@ def esc8_chain(target_dc, ca_endpoint=None, cred=None):
     to the enterprise CA → obtain a certificate for the DC account →
     PKINIT → DCSync.
 
-    D1 lands the shape with reachability as the only live primitive;
-    every subsequent step is a manual-outcome stub with an inline
-    ETA pointing at its landing slice (D2 → petitpotam, D3 → relay
-    server, D4 → post-relay actions).
+    Every step is a live primitive: reachability preflight, the
+    PetitPotam coerce, the ntlmrelayx listener + capture, the
+    ADCS cert-request validation, PKINIT AS-REQ, and DCSync
+    via DRSUAPI.
     """
-    _ = ca_endpoint, cred        # will be threaded into steps in D3/D4
+    _ = ca_endpoint, cred        # threaded into steps via ctx by the CLI
     return Chain(
         profile="esc8",
         target=target_dc,

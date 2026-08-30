@@ -213,7 +213,6 @@ class CtxFormTest(unittest.TestCase):
         # so we exercise the field-reading behavior.
         screen._app_db_path = "/tmp/x.db"
         screen._app_eng = "test-ctx"
-        original_build = screen._build_ctx
         def _patched_build_ctx():
             # Bypass the self.app lookup; use the same field-reading
             # logic by calling _read_field directly.

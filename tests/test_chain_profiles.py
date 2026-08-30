@@ -26,7 +26,6 @@ subprocess wrappers. The load-bearing surface changes are:
 import os
 import socket
 import sys
-import tempfile
 import threading
 import unittest
 from unittest.mock import patch, MagicMock

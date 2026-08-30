@@ -1721,7 +1721,7 @@ def cmd_chain_run(args, store):
         probe_timeout = args.probe_timeout
         listener_uri = args.listener
         cred = cred_dict
-        # D3 relay-listener config
+        # relay-listener config (esc8/rbcd/smb-relay-exec)
         listener_ip = args.listener_ip
         ca_endpoint = args.ca
         template = args.template
@@ -1730,7 +1730,7 @@ def cmd_chain_run(args, store):
         relay_wait_capture = args.relay_capture_timeout
         # D4 post-relay
         domain = args.domain
-        # D5 profile config
+        # per-profile config (relay_mode / relay_target / impersonate / dc_ip)
         relay_mode = args.relay_mode
         relay_target = args.relay_target
         impersonate = args.impersonate
@@ -3531,12 +3531,13 @@ the spec is missing that field. `--from-file` reads one credential per line.
     # ------------------------------------------------------- coerce chains
     p_chain = sub.add_parser(
         "chain",
-        help="orchestrate multi-step coerce chains (ESC8, RBCD, SMB-relay-exec)",
+        help="orchestrate multi-step coerce chains (ESC8, RBCD, SMB-relay-exec, ESC1)",
         description="fieldkit's charter piece: coerce a target to authenticate to a "
                     "fieldkit-hosted relay, then walk the outcome (cert, TGT, RBCD ACL) "
-                    "into DA. D1 lands the state machine + reachability preflight only; "
-                    "the coerce primitive (D2), relay wrap (D3), and post-relay actions "
-                    "(D4) hand off manually until their slices ship.")
+                    "into DA. Actions: plan (preview), run (walk unattended), walk "
+                    "(interactive), resume (pick up an in_progress chain), show / "
+                    "visual (inspect a recorded chain), list (browse), lint (audit "
+                    "the profile catalog).")
     chain_sub = p_chain.add_subparsers(dest="chain_command", metavar="<action>")
 
     from . import chain as _chain_mod

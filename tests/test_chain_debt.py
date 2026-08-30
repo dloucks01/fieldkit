@@ -289,7 +289,7 @@ class ChainShowRenderingTest(unittest.TestCase):
         import contextlib
         import io
         import tempfile
-        from fieldkit.chain import esc8_chain, walk, Outcome
+        from fieldkit.chain import esc8_chain, Outcome
         from fieldkit.state import Store
         # cmd_chain_show is @needs_engagement-wrapped; call the
         # inner function directly to skip the store-open shim.

@@ -21,7 +21,6 @@ import os
 import sys
 import tempfile
 import unittest
-from dataclasses import dataclass
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -156,7 +155,6 @@ class ListenerBindTest(unittest.TestCase):
         """Build a MagicMock that quacks like a Popen — poll returns
         exit_code (None while running), stdout iteration yields the
         initial_lines then blocks forever."""
-        import io
         # BufferedReader-like: iter() gives our lines then blocks; we
         # simulate that by using a small pipe with the lines pre-written.
         proc = MagicMock()
@@ -293,7 +291,7 @@ class StoreCertRoundTripTest(unittest.TestCase):
                                               principal="CORP/A")), 1)
 
     def test_reserve_and_finalize_chain_persists_trail_once(self):
-        from fieldkit.chain import esc8_chain, walk, Chain, Step, Outcome
+        from fieldkit.chain import walk, Chain, Step, Outcome
         s = self._make_store()
 
         # A minimal 2-step chain we can walk cleanly.
@@ -339,7 +337,6 @@ class ChainRelayIntegrationTest(unittest.TestCase):
     def _walk_chain(self, ctx_overrides=None, capture_lines=None,
                     cert_bytes="MIIABC" + "A" * 200):
         from fieldkit.chain import esc8_chain, walk, Chain
-        from fieldkit import relay as relay_mod
 
         # Trim the chain down to relay:listen + relay:capture so the
         # test isn't dependent on reachability / coerce / post-relay.
@@ -413,7 +410,7 @@ class ChainRelayIntegrationTest(unittest.TestCase):
         s = Store.create(os.path.join(tmp.name, "e.db"))
         s.init_engagement("test")
         self.addCleanup(s.close)
-        ch = self._walk_chain(ctx_overrides={"store": s})
+        self._walk_chain(ctx_overrides={"store": s})
         # No chain_id was passed on ctx — cert lands with chain_id=None
         # which is fine (chain_id FK is nullable).
         certs = s.certificates()

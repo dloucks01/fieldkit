@@ -178,7 +178,7 @@ class ServiceCVEEndToEndTest(unittest.TestCase):
 
     def test_apache_ingest_to_ttp_emission(self):
         import tempfile
-        from fieldkit.hostenum import facts_for, LINUX
+        from fieldkit.hostenum import facts_for
         from fieldkit.state import Store
         from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
         _reset_ttp_cache_for_tests()
@@ -199,7 +199,7 @@ class ServiceCVEEndToEndTest(unittest.TestCase):
 
     def test_openssh_ingest_to_ttp_emission(self):
         import tempfile
-        from fieldkit.hostenum import facts_for, LINUX
+        from fieldkit.hostenum import facts_for
         from fieldkit.state import Store
         from fieldkit.privesc import _reset_ttp_cache_for_tests, vectors_for
         _reset_ttp_cache_for_tests()
