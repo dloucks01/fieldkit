@@ -54,6 +54,12 @@ class DashboardData:
     chains_summary: dict = field(default_factory=lambda: {
         "total": 0, "proven": 0, "in_progress": 0, "aborted": 0,
     })
+    #: Per-hour count of steps captured across the last 24 hours,
+    #: oldest → newest. Feeds the detection-ledger sparkline; each
+    #: bucket is one hour's worth of executor-captured steps
+    #: (steps table + chain_step table combined). Empty list on
+    #: engagements with no captured activity.
+    detection_ledger: list = field(default_factory=list)
 
 
 def _phase_from_counts(counts):
@@ -210,9 +216,74 @@ def dashboard(db_path=None):
             "status": r.get("status") or "",
             "detection_debt": r.get("total_detection_cost") or 0,
         } for r in chain_rows[:5]]      # newest-first from store.chains()
+
+        # Detection ledger: per-hour bucket counts of captured
+        # steps over the last 24 hours. Sources both the classic
+        # `step` table (executor captures) and `chain_step`
+        # (coerce-chain step outcomes) so a chain-heavy engagement
+        # doesn't render an empty ledger.
+        data.detection_ledger = _detection_ledger(store)
     finally:
         store.close()
     return data
+
+
+#: Number of buckets in the detection-ledger sparkline. 24 hourly
+#: buckets covers a work-day-plus-overnight and fits comfortably in
+#: a terminal row.
+LEDGER_BUCKETS = 24
+
+
+def _detection_ledger(store, buckets=LEDGER_BUCKETS):
+    """Return per-hour counts of captured activity across the last
+    ``buckets`` hours, oldest → newest.
+
+    Sources:
+      * ``step.ts``       — executor-captured commands (every ``escalate``,
+                            ``enum``, ``run`` step lands here);
+      * ``chain_step.ran_at`` — coerce-chain per-step outcomes.
+
+    Both tables carry ISO-8601 UTC timestamps (utcnow() format). Zero-
+    activity engagements return a list of zeros — the dashboard shows
+    a flat sparkline in that case, honest rather than blank.
+    """
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    # Bucket boundaries: [now - N h, now - (N-1) h, ..., now]
+    edges = [now - timedelta(hours=(buckets - i)) for i in range(buckets + 1)]
+
+    def _to_dt(iso):
+        if not iso:
+            return None
+        try:
+            # Handles both "…+00:00" and legacy "…Z" forms.
+            return datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            return None
+
+    stamps = []
+    for table, column in (("step", "ts"), ("chain_step", "ran_at")):
+        try:
+            rows = store.conn.execute(
+                f"SELECT {column} FROM {table} "
+                f"WHERE {column} >= ?",
+                (edges[0].isoformat(),)).fetchall()
+        except Exception:                                       # noqa: BLE001
+            # chain_step doesn't exist on pre-D1 databases;
+            # step is v1 so its absence would be a broken store.
+            continue
+        for r in rows:
+            dt = _to_dt(r[0])
+            if dt is not None:
+                stamps.append(dt)
+
+    counts = [0] * buckets
+    for dt in stamps:
+        for i in range(buckets):
+            if edges[i] <= dt < edges[i + 1]:
+                counts[i] += 1
+                break
+    return counts
 
 
 def chain_profiles():
