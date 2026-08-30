@@ -65,25 +65,23 @@ class ArcCloseTest(unittest.TestCase):
         from fieldkit.privesc import DRIVERS, LINUX, _d_ttp_yaml
         self.assertEqual(DRIVERS[LINUX], (_d_ttp_yaml,))
 
-    def test_every_retired_driver_is_absent_from_drivers(self):
-        # Sanity: none of the retired drivers are wired in on either
-        # platform. Catches an accidental re-add during a merge.
+    def test_every_retired_driver_symbol_is_gone(self):
+        # Every retired inlined driver has been deleted from the
+        # source. Verify the symbols no longer exist — catches an
+        # accidental re-add during a merge.
         from fieldkit import privesc
-        retired = [
-            privesc._d_sudo_gtfo, privesc._d_kernel_lpe,
-            privesc._d_suid_gtfo, privesc._d_caps,
-            privesc._d_sudo_all, privesc._d_docker_group,
-            privesc._d_sudo_env,
-            privesc._d_win_privs, privesc._d_win_lpe,
-            privesc._d_win_aie,
-            privesc._d_win_unquoted, privesc._d_win_weak_service,
-            privesc._d_win_writable_service, privesc._d_win_dll_hijack,
-        ]
-        wired = set(privesc.DRIVERS[privesc.LINUX]
-                    + privesc.DRIVERS[privesc.WINDOWS])
-        for d in retired:
-            with self.subTest(driver=d.__name__):
-                self.assertNotIn(d, wired)
+        retired_names = (
+            "_d_sudo_gtfo", "_d_kernel_lpe",
+            "_d_suid_gtfo", "_d_caps",
+            "_d_sudo_all", "_d_docker_group", "_d_sudo_env",
+            "_d_win_privs", "_d_win_lpe", "_d_win_aie",
+            "_d_win_unquoted", "_d_win_weak_service",
+            "_d_win_writable_service", "_d_win_dll_hijack",
+        )
+        for name in retired_names:
+            with self.subTest(driver=name):
+                self.assertFalse(hasattr(privesc, name),
+                                  f"privesc.{name} was resurrected")
 
 
 class UnquotedServiceTTPTest(unittest.TestCase):

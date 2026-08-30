@@ -37,12 +37,18 @@ class DriverRetirementTest(unittest.TestCase):
         from fieldkit.privesc import DRIVERS, LINUX, _d_ttp_yaml
         self.assertEqual(DRIVERS[LINUX], (_d_ttp_yaml,))
 
-    def test_retired_drivers_not_in_drivers_linux(self):
-        from fieldkit.privesc import (
-            DRIVERS, LINUX, _d_sudo_all, _d_docker_group, _d_sudo_env,
-        )
-        for d in (_d_sudo_all, _d_docker_group, _d_sudo_env):
-            self.assertNotIn(d, DRIVERS[LINUX])
+    def test_retired_driver_symbols_are_gone(self):
+        # `_d_sudo_all` + `_d_docker_group` + `_d_sudo_env` were
+        # retired at Phase B5g and have since been deleted from
+        # the source. Verify the symbols no longer exist —
+        # any regression that re-adds one will trip this pin
+        # rather than silently reintroducing an inlined driver
+        # alongside `_d_ttp_yaml`.
+        from fieldkit import privesc
+        for name in ("_d_sudo_all", "_d_docker_group", "_d_sudo_env"):
+            self.assertFalse(hasattr(privesc, name),
+                              f"privesc.{name} was resurrected — "
+                              "should have stayed deleted")
 
 
 class SudoAllTTPTest(unittest.TestCase):

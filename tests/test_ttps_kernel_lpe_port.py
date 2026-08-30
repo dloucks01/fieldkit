@@ -41,13 +41,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class DriverRetirementTest(unittest.TestCase):
-    """`_d_kernel_lpe` no longer appears in DRIVERS[LINUX] — every
-    kernel-CVE vector emitted by `vectors_for` now comes from the TTP
-    adapter (`_d_ttp_yaml`)."""
+    """`_d_kernel_lpe` was retired at Phase B5c and its function has
+    since been deleted. Every kernel-CVE vector emitted by
+    `vectors_for` now comes from the TTP adapter (`_d_ttp_yaml`).
+    Test pins the stronger post-condition: DRIVERS[LINUX] is
+    exclusively `_d_ttp_yaml`."""
 
-    def test_d_kernel_lpe_not_in_drivers_linux(self):
-        from fieldkit.privesc import DRIVERS, LINUX, _d_kernel_lpe
-        self.assertNotIn(_d_kernel_lpe, DRIVERS[LINUX])
+    def test_only_ttp_yaml_driver_wired_for_linux(self):
+        from fieldkit.privesc import DRIVERS, LINUX, _d_ttp_yaml
+        self.assertEqual(DRIVERS[LINUX], (_d_ttp_yaml,))
 
     def test_kernel_candidates_still_exported(self):
         # The pure-Python lookup stays available for the reportkb sanity

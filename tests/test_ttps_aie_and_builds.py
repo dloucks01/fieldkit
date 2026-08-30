@@ -28,26 +28,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 class DriverRetirementTest(unittest.TestCase):
 
-    def test_d_win_aie_not_in_drivers_windows(self):
-        from fieldkit.privesc import DRIVERS, WINDOWS, _d_win_aie
-        self.assertNotIn(_d_win_aie, DRIVERS[WINDOWS])
-
-    def test_iterable_service_drivers_retired_at_b5i(self):
-        # B5h left these four inlined pending per-item iteration; B5i
-        # landed `ttp_to_vectors` + iterable predicates
-        # (unquoted_services / reconfigurable_services /
-        # writable_service_bins / writable_service_dirs) and retired
-        # them. DRIVERS[WINDOWS] is now (_d_ttp_yaml,) — the whole
-        # B-phase port arc closes here.
-        from fieldkit.privesc import (
-            DRIVERS, WINDOWS, _d_ttp_yaml,
-            _d_win_unquoted, _d_win_weak_service,
-            _d_win_writable_service, _d_win_dll_hijack,
-        )
+    def test_only_ttp_yaml_driver_wired_for_windows(self):
+        # `_d_win_aie` + `_d_win_unquoted` + `_d_win_weak_service`
+        # + `_d_win_writable_service` + `_d_win_dll_hijack` were
+        # retired at Phase B5h/B5i and have since been deleted.
+        # DRIVERS[WINDOWS] is now exclusively `_d_ttp_yaml` — the
+        # whole B-phase port arc closes here.
+        from fieldkit.privesc import DRIVERS, WINDOWS, _d_ttp_yaml
         self.assertEqual(DRIVERS[WINDOWS], (_d_ttp_yaml,))
-        for d in (_d_win_unquoted, _d_win_weak_service,
-                   _d_win_writable_service, _d_win_dll_hijack):
-            self.assertNotIn(d, DRIVERS[WINDOWS])
 
 
 class AIETTPTest(unittest.TestCase):
