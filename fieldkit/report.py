@@ -473,6 +473,137 @@ def _render_observation(w, i, f):
     w("")
 
 
+def _render_per_host_summary(w, engagement, proven, observations):
+    """One condensed row per host — a host-centric complement to the
+    severity-centric "at a glance" tables.
+
+    A reader who cares about "what happened on box X" often has to
+    page through every finding writeup to reconstruct the per-host
+    picture. This block does that reconstruction once: per host,
+    render the highest severity, the proven-vs-observation counts,
+    the credential that reached the host (if known), and a short
+    row-per-finding table + the credentials recovered on that host.
+
+    Rendered nothing when there are no findings and no observations,
+    or when everything is against "(unspecified host)".
+    """
+    if not proven and not observations:
+        return
+    # Bucket everything by affected_host — same key both sides use.
+    by_host = {}
+    for f in proven:
+        by_host.setdefault(f.get("affected_host", ""),
+                            {"proven": [], "obs": []})["proven"].append(f)
+    for f in observations:
+        by_host.setdefault(f.get("affected_host", ""),
+                            {"proven": [], "obs": []})["obs"].append(f)
+    # Drop unspecified-host buckets — a per-host section with no host
+    # would be strange to read. Everything with a real host stays.
+    by_host = {h: v for h, v in by_host.items()
+                if h and h != "(unspecified host)"}
+    if not by_host:
+        return
+
+    # Index the recovered-credential list by host substring — the
+    # recovered_credentials list carries source strings like
+    # "dumped-hive:10.0.0.5", "lsa-secrets:host=DC01", "kerberoast".
+    # We match a cred to a host when the host's IP OR hostname
+    # appears in the source string; unmatched creds fall through
+    # to the global "Credentials recovered" table unchanged.
+    recovered = engagement.get("recovered_credentials") or []
+
+    def _creds_on(host_label):
+        """Best-effort: pick recovered creds whose source references
+        this host's IP or hostname substring."""
+        out = []
+        for c in recovered:
+            src = (c.get("source") or "").lower()
+            hl = host_label.lower()
+            # host_label is "ip (hostname, os)"; pull each token.
+            tokens = [t.strip("(), ") for t in hl.replace("(", " ")
+                        .replace(")", " ").replace(",", " ").split()
+                        if t.strip("(), ")]
+            for tok in tokens:
+                if len(tok) >= 3 and tok in src:
+                    out.append(c)
+                    break
+        return out
+
+    # Order hosts: highest severity first, then most findings, then label.
+    def _host_sort_key(item):
+        host, buckets = item
+        sevs = [_sev(f) for f in buckets["proven"]]
+        # SEV_ORDER: lower rank = worse. min() picks the worst sev
+        # present; missing hosts fall to end.
+        rank = min((kb.SEV_ORDER.get(s, 9) for s in sevs), default=9)
+        n = len(buckets["proven"]) + len(buckets["obs"])
+        return (rank, -n, host)
+
+    w("# Per-host summary")
+    w("")
+    w("The condensed view below groups every proven finding and "
+      "observation by the affected host — read this to see what "
+      "each host suffered without paging through the full "
+      "writeups. The finding numbers here match the numbering in "
+      "the *Findings (proven)* and *Observations* sections that "
+      "follow.")
+    w("")
+    # Global finding-index map so per-host tables can cite the same
+    # numbers the later per-finding sections use.
+    proven_ix = {id(f): i for i, f in enumerate(proven, 1)}
+    obs_ix = {id(f): i for i, f in enumerate(observations, 1)}
+
+    for host, buckets in sorted(by_host.items(), key=_host_sort_key):
+        pr, ob = buckets["proven"], buckets["obs"]
+        w(f"### {host}")
+        w("")
+        # Highest severity (proven takes priority; observations only
+        # if no proven finding exists on the host).
+        if pr:
+            top = min(pr, key=lambda f: kb.SEV_ORDER.get(_sev(f), 9))
+            w(f"- **Highest proven severity:** {_sev(top)}")
+        elif ob:
+            top = min(ob, key=lambda f: kb.SEV_ORDER.get(_sev(f), 9))
+            w(f"- **Highest observation severity:** {_sev(top)} "
+              f"(unconfirmed)")
+        w(f"- **Findings proven:** {len(pr)}")
+        w(f"- **Observations:** {len(ob)}")
+        # Reached-via — pick the first proven finding that has one.
+        via = next((f["reached_via"] for f in pr
+                     if f.get("reached_via")), None)
+        if via:
+            src = (via.get("source") or "manual")
+            origin = ("operator-provided" if src == "manual"
+                       else f"recovered — `{src}`")
+            admin = " (admin)" if via.get("admin") else ""
+            w(f"- **Reached via:** `{via['principal']}`{admin} "
+              f"— {origin}")
+        w("")
+        w("| # | Finding | Severity | Type |")
+        w("|---|---------|----------|------|")
+        for f in pr:
+            k = _kb(f)
+            title = f.get("title") or k["name"]
+            w(f"| {proven_ix[id(f)]} | {title} | "
+              f"{_sev(f)} | proven |")
+        for f in ob:
+            k = _kb(f)
+            title = f.get("title") or k["name"]
+            w(f"| {obs_ix[id(f)]} | {title} | "
+              f"{_sev(f)} | observation |")
+        w("")
+        host_creds = _creds_on(host)
+        if host_creds:
+            w("Recovered on this host:")
+            w("")
+            for c in host_creds:
+                w(f"- `{c['principal']}` — {c['kind']} "
+                  f"(from `{c['source']}`)")
+            w("")
+    w("---")
+    w("")
+
+
 def _render_chain_history(w, chains):
     """The per-chain summary section: profile, target, status, step
     trail, aggregate detection debt. Empty section (no output) when
@@ -659,6 +790,8 @@ def render_markdown(engagement, findings):
         _glance(w, observations, "Observations")
     w("---")
     w("")
+
+    _render_per_host_summary(w, engagement, proven, observations)
 
     if proven:
         w("# Findings (proven)")
