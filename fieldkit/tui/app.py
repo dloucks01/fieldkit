@@ -26,6 +26,7 @@ from .chain_detail import CHAIN_DETAIL_TCSS
 from .chain_launch import ChainLaunchScreen, CHAIN_LAUNCH_TCSS
 from .chain_plan import ChainPlanScreen, CHAIN_PLAN_TCSS
 from .chain_run import CHAIN_RUN_TCSS
+from .ttps_browser import TTPsBrowserScreen, TTPS_BROWSER_TCSS
 from .dashboard import DashboardScreen, DASHBOARD_TCSS
 from .escalate import ESCALATE_TCSS
 from .watch_screen import WatchScreen, WATCH_TCSS
@@ -128,7 +129,7 @@ class FieldkitTUI(App):
 
     CSS = (theme.APP_TCSS + DASHBOARD_TCSS + WATCH_TCSS + ANALYZE_TCSS
            + ESCALATE_TCSS + CHAIN_PLAN_TCSS + CHAIN_RUN_TCSS
-           + CHAIN_LAUNCH_TCSS + CHAIN_DETAIL_TCSS)
+           + CHAIN_LAUNCH_TCSS + CHAIN_DETAIL_TCSS + TTPS_BROWSER_TCSS)
     TITLE = "fieldkit"
 
     SCREENS = {
@@ -137,6 +138,7 @@ class FieldkitTUI(App):
         "watch":        WatchScreen,
         "chain-plan":   ChainPlanScreen,
         "chain-launch": ChainLaunchScreen,
+        "ttps":         TTPsBrowserScreen,
         "help":         HelpScreen,
     }
 
@@ -149,6 +151,7 @@ class FieldkitTUI(App):
         Binding("w", "switch_screen('watch')",     "watch",     show=False),
         Binding("c", "switch_screen('chain-plan')","chain-plan",show=False),
         Binding("l", "push_screen('chain-launch')","chain-launch",show=False),
+        Binding("t", "switch_screen('ttps')",      "ttps",       show=False),
         Binding("?", "push_screen('help')",        "help",      show=False),
         Binding("q", "quit",                       "quit",      show=False),
         Binding("ctrl+c", "quit",                  "quit",      show=False),
