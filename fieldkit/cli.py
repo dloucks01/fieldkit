@@ -851,7 +851,7 @@ def cmd_analyze(args, store):
         if rc == 0:
             print(f"[refresh] re-ingested {args.refresh}\n")
         else:
-            print(f"[refresh] ingest failed (continuing with existing state)\n")
+            print("[refresh] ingest failed (continuing with existing state)\n")
     items = list(kb_mod.analyze(store))
     items += privesc_mod.vectors_from_state(store, **_stage_dirs(cfg))
     counts = store.counts()
@@ -1082,7 +1082,7 @@ def cmd_escalate(args):
             if rc == 0:
                 print(f"[refresh] re-ingested {args.refresh}\n")
             else:
-                print(f"[refresh] ingest failed (continuing with existing state)\n")
+                print("[refresh] ingest failed (continuing with existing state)\n")
         host, cred, err = _resolve_target(store, args.host)
         # --dry-run is plan-only: proceed even when no credential is yet proven
         # on this host, as long as the host itself is resolvable. The plan is
@@ -1936,8 +1936,8 @@ def cmd_refresh(args, store):
         if ingest_ok:
             print(f"[refresh] re-ingested {args.bridge}")
         else:
-            print(f"[refresh] ingest failed — continuing with "
-                  f"previously-ingested state")
+            print("[refresh] ingest failed — continuing with "
+                  "previously-ingested state")
     else:
         cfg = config_mod.load(store)
         bridge = cfg.get("recce_bridge") or ""
@@ -1960,7 +1960,7 @@ def cmd_refresh(args, store):
     if deltas:
         print(f"[refresh] state changed — {', '.join(deltas)}")
     else:
-        print(f"[refresh] no state change")
+        print("[refresh] no state change")
     print()
 
     # Now delegate to cmd_analyze — same output as `fieldkit analyze`
@@ -2202,7 +2202,7 @@ def cmd_chain_lint(args):
         print(header)
         fs = by_profile.get(p, [])
         if not fs:
-            print(f"  ok   no findings")
+            print("  ok   no findings")
         else:
             for f in fs:
                 marker = "ERR " if f.severity == "error" else "warn"

@@ -51,10 +51,10 @@ def spawn(argv, env_add=None):
     blocking :func:`run` doesn't fit a process the operator watches
     tail-of-log style then stops on demand.
 
-    This is the ONLY other subprocess entry point in fieldkit outside
-    :func:`run`; the "runner is the only child-process spawn"
-    architecture invariant covers both (see
-    tests/test_report.py::test_runner_is_the_only_child_process_spawn).
+    This is one of the child-process entry points in fieldkit outside
+    :func:`run` (see also :func:`spawn_detached`); the "runner is the
+    only child-process spawn" architecture invariant covers all three
+    (see tests/test_report.py::test_runner_is_the_only_child_process_spawn).
     Never call subprocess.Popen from anywhere else — pass through
     here so a future test harness can inject a fake.
     """
@@ -65,6 +65,33 @@ def spawn(argv, env_add=None):
         list(argv),
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, bufsize=1, env=env, start_new_session=True)
+
+
+def spawn_detached(argv, env_add=None, cwd=None):
+    """Launch a child process fully detached from the caller: no
+    stdio pipes, its own session so a Ctrl-C on the parent (or a
+    TUI closing) doesn't propagate. Fire-and-forget shape.
+
+    Used by the TUI's escalate confirm screen — the escalate loop
+    can run for minutes and blocking the Textual event loop would
+    freeze every screen; the caller only cares that the process
+    started, not its output (which lands in the shared engagement
+    DB where Watch picks it up).
+
+    Returns the caller-side :class:`subprocess.Popen` handle so a
+    caller that wants to (rarely) check ``proc.pid`` for logging
+    can. The stdio handles are DEVNULL — reading them yields EOF.
+    """
+    env = None
+    if env_add:
+        env = {**os.environ, **env_add}
+    return subprocess.Popen(
+        list(argv),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        env=env, cwd=cwd)
 
 
 def run(argv, env_add=None, timeout=600, input_text=None, input_bytes=None):

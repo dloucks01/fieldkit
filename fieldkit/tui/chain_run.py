@@ -125,14 +125,6 @@ class ChainRunScreen(Screen):
                 f"[{theme.C.INK_DIM}][{s.kind:14s}][/]  "
                 f"cost={cost:>2}")
         # Trail evidence for completed steps
-        for i, o in enumerate(self._chain.outcomes):
-            if o.evidence and self._step_states[i] not in ("queued", "awaiting"):
-                snippet = (o.evidence[:70] + "…") if len(o.evidence) > 70 \
-                    else o.evidence
-                # Insert evidence line after its step row (index i+1
-                # accounting for the leading blank line at index 0)
-                # -- simpler: just render everything fresh above.
-                pass
         self.query_one("#chain-run-steps", Static).update("\n".join(lines))
 
     def _prompt(self, msg):
