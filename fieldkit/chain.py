@@ -336,7 +336,7 @@ def known_profiles():
 
 # ---------------------------------------------------------------- walker
 
-def walk(chain, ctx, on_step=None):
+def walk(chain, ctx, on_step=None, before_step=None):
     """Run every remaining step of ``chain``, in order. Returns the
     chain object mutated in-place (caller reads ``chain.status`` +
     ``chain.outcomes`` for the result).
@@ -348,11 +348,52 @@ def walk(chain, ctx, on_step=None):
 
     ``on_step(chain, step, outcome)`` (optional) is called after each
     step for CLI progress rendering.
+
+    ``before_step(chain, step) -> str`` (optional) is called BEFORE
+    each step. Return values control the walker:
+
+      * ``"go"``   — run the step normally (default when callback
+        omitted).
+      * ``"skip"`` — record a ``manual`` outcome ("operator declined")
+        and advance to the next step; the chain does NOT abort. Used
+        by the interactive walker when the operator wants to jump a
+        step without ending the plan.
+      * ``"stop"`` — record a ``manual`` outcome ("operator stopped")
+        and end the walk immediately without marking the chain
+        aborted. Used when the operator wants to pause + resume
+        later (chain status ends as ``in_progress``).
+
+    Any other return value is treated as ``"go"``.
     """
     if chain.started_at is None:
         chain.started_at = utcnow()
     while chain.current < len(chain.steps):
         step = chain.steps[chain.current]
+        # Operator confirm hook — the interactive walker uses this.
+        decision = "go"
+        if before_step is not None:
+            try:
+                decision = before_step(chain, step) or "go"
+            except Exception:                                 # noqa: BLE001
+                decision = "go"
+        if decision == "skip":
+            outcome = Outcome(
+                kind="manual",
+                evidence=f"operator skipped step {step.name!r}")
+            chain.outcomes.append(outcome)
+            if on_step:
+                on_step(chain, step, outcome)
+            chain.current += 1
+            continue
+        if decision == "stop":
+            outcome = Outcome(
+                kind="manual",
+                evidence=f"operator stopped walk before {step.name!r}")
+            chain.outcomes.append(outcome)
+            if on_step:
+                on_step(chain, step, outcome)
+            chain.finished_at = utcnow()
+            return chain
         try:
             outcome = step.action(chain, ctx)
         except Exception as exc:                              # noqa: BLE001
