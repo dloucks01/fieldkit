@@ -2229,6 +2229,45 @@ def cmd_bloodhound_import(args, store):
 
 
 @needs_engagement
+def cmd_bloodhound_suggest(args, store):
+    """For every owned→high-value path the ingested BH graph
+    surfaces, suggest the best-fit shipped chain profile + the
+    exact `chain launch` command to walk it.
+
+    Read-only. Exit codes:
+      * 0 — one or more paths inspected (whether or not any got a
+        chain suggestion — an empty path list is not a failure).
+      * 2 — no BH graph ingested yet.
+    """
+    paths = bloodhound_mod.suggest_chains(store)
+    if not paths:
+        # Distinguish empty-graph from graph-but-no-paths.
+        if not store.bh_nodes():
+            _err("no BloodHound graph ingested — "
+                 "run `fieldkit bloodhound import <path>` first")
+            return 2
+        print("no owned principal reaches a high-value target yet — "
+              "own more credentials (spray/roast) and re-check.")
+        return 0
+    print(f"{_plural(len(paths), 'path')} from owned to high-value:\n")
+    for p in paths:
+        print(f"  ▸ {p['owned']}  →  {p['target']}  "
+              f"({p['hops']} hops)")
+        print(f"    {p['path']}")
+        s = p.get("suggestion")
+        if s:
+            print(f"    ↳ suggested: `fieldkit chain run "
+                  f"{s['profile']} {s['target']}`")
+            print(f"      why: {s['rationale']}")
+        else:
+            print("    ↳ no shipped chain profile fits — walk the "
+                  "BH path directly (see `fieldkit bloodhound "
+                  "import` output).")
+        print()
+    return 0
+
+
+@needs_engagement
 def cmd_delegation(args, store):
     dcs = [h for h in store.hosts() if h["is_dc"]]
     dc_ip = args.dc or (dcs[0]["ip"] if dcs else None)
@@ -3343,6 +3382,17 @@ the spec is missing that field. `--from-file` reads one credential per line.
                     "reports which owned principals reach a high-value target.")
     b_import.add_argument("path", help="SharpHound .zip, a directory of JSON, or a .json")
     b_import.set_defaults(func=cmd_bloodhound_import)
+
+    b_suggest = bh_sub.add_parser(
+        "suggest",
+        help="for each owned→high-value path, suggest a chain profile that lands it",
+        description="Reads the ingested BH graph, enumerates the shortest "
+                    "path from each owned principal to a high-value target, "
+                    "and where a shipped chain profile fits the path shape, "
+                    "prints the exact `chain run` command to walk it. "
+                    "Read-only.")
+    b_suggest.set_defaults(func=cmd_bloodhound_suggest)
+
     p_bh.set_defaults(func=lambda a: _missing(p_bh))
 
     p_deleg = sub.add_parser(

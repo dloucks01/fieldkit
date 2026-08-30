@@ -163,6 +163,119 @@ def owned_paths(store, *, max_depth=8):
     return results
 
 
+#: Edge-kind → best-fit chain-profile mapping. Kept as tuples of
+#: (edge_kinds, profile, rationale) so a single edge-kind hit
+#: earlier in the path wins over a weaker one later. Ordered from
+#: strongest heuristic to weakest.
+_EDGE_HINTS = (
+    (("AllowedToActOnBehalfOfOtherIdentity",
+      "AllowedToDelegate"),          "rbcd",
+     "path traverses an RBCD / delegation edge — rbcd chain "
+     "writes msDS-AllowedToActOnBehalfOfOtherIdentity then S4U2Self"),
+    (("AddSelf",),                    "rbcd",
+     "path uses AddSelf to a group — the rbcd chain's write-primitive "
+     "abuses this same permission shape"),
+    (("WriteDacl", "GenericAll",
+      "GenericWrite"),                "rbcd",
+     "path holds a dangerous ACE on a Computer object — rbcd chain "
+     "writes the RBCD attribute using that ACE"),
+    (("AdminTo",),                    "smb-relay-exec",
+     "path lands as local admin on a Computer — if SMB signing is "
+     "disabled there, smb-relay-exec drops a shell via relayed auth"),
+)
+
+
+def suggest_chain(path_entry, nodes_by_sid=None):
+    """Suggest the best-fit chain profile for one owned→high-value path.
+
+    Returns ``{"profile", "target", "rationale"}`` or ``None`` when
+    no shipped chain profile is a clean fit. ``nodes_by_sid`` is
+    optional context (from :meth:`Store.bh_nodes`) used to pick a
+    meaningful chain target from the path — the final Computer
+    node when the target itself isn't a Computer.
+
+    Heuristics (first match wins):
+
+      * Target is a Computer with ``high_value`` set (usually a
+        DC) → suggest ``esc8`` against that Computer's name.
+        Assumes ADCS is in the environment; the rationale spells
+        this out so the operator can verify with
+        ``fieldkit adcs find`` before committing.
+      * Path traverses an RBCD/delegation edge → ``rbcd`` targeting
+        the Computer the delegation is written to.
+      * Path holds ``AddSelf``/``WriteDacl``/``GenericAll``/
+        ``GenericWrite`` on a Computer → ``rbcd`` (same write
+        primitive, different discovery angle).
+      * Path uses ``AdminTo`` on a Computer → ``smb-relay-exec``
+        against that Computer (contingent on SMB signing disabled).
+    """
+    path_str = path_entry.get("path", "")
+    target_name = path_entry.get("target", "")
+
+    def _final_computer():
+        """Return the last Computer node name mentioned in the path,
+        or the target name as fallback."""
+        if nodes_by_sid is None:
+            return target_name
+        # path tokens include "-EdgeKind-> NAME" pairs; strip the
+        # arrow markers and look up ntype for each name.
+        candidates = []
+        for tok in path_str.split():
+            if tok.startswith("-") or tok.endswith("->"):
+                continue
+            for _sid, n in nodes_by_sid.items():
+                if n["name"] == tok and (n["ntype"] or "").lower() == "computer":
+                    candidates.append(tok)
+                    break
+        return candidates[-1] if candidates else target_name
+
+    # Rule 1: high-value Computer target → esc8. DCs are the
+    # canonical case; the rationale calls out the ADCS assumption.
+    if nodes_by_sid is not None:
+        for _sid, n in nodes_by_sid.items():
+            if (n["name"] == target_name
+                    and (n["ntype"] or "").lower() == "computer"
+                    and n["high_value"]):
+                return {
+                    "profile": "esc8",
+                    "target": target_name,
+                    "rationale": (
+                        "target is a high-value Computer (usually a "
+                        "DC); esc8 coerces its machine account to "
+                        "auth a relay against the enterprise CA and "
+                        "lands a DC cert. Verify ADCS is exposed "
+                        "first: `fieldkit adcs find`."),
+                }
+
+    # Rules 2-4: match against edge-kind hints in path order.
+    for edge_kinds, profile, rationale in _EDGE_HINTS:
+        for ek in edge_kinds:
+            if f"-{ek}->" in path_str:
+                return {
+                    "profile": profile,
+                    "target": _final_computer(),
+                    "rationale": rationale,
+                }
+    return None
+
+
+def suggest_chains(store, *, max_depth=8):
+    """Enumerate every :func:`owned_paths` entry and attach a
+    ``suggestion`` dict where a shipped chain profile fits.
+
+    Returns the same list :func:`owned_paths` returns, with an
+    additional ``suggestion`` key on each entry (or ``None`` when
+    no chain fits). Empty when no graph is loaded.
+    """
+    paths = owned_paths(store, max_depth=max_depth)
+    if not paths:
+        return []
+    nodes_by_sid = {n["sid"]: n for n in store.bh_nodes()}
+    for p in paths:
+        p["suggestion"] = suggest_chain(p, nodes_by_sid)
+    return paths
+
+
 def _bfs(start, adj, nodes, max_depth):
     """Shortest path from ``start`` to a high-value node. Returns ``(target_sid, hops)``
     where hops is ``[(kind, dst), ...]``, or ``(None, [])``."""
