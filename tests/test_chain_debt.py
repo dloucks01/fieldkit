@@ -170,12 +170,16 @@ class ESC8SignalCatalogTest(unittest.TestCase):
         return ch
 
     def test_esc8_aggregate_debt_pinned(self):
-        # 47 units after D6 — DCSync (17) is the loudest step;
-        # coerce:petitpotam (12) second; relay:capture (10) third.
+        # 46 units after C12 slice 1 — dropped from 47 when
+        # post:cert-request went from detection_cost=1 to 0
+        # (empty signals catalog was intentional; step is local
+        # cert-material validation with no target-visible signals).
+        # DCSync (17) is still the loudest step; coerce:petitpotam
+        # (12) second; relay:capture (10) third.
         # Regenerate this number when the signal catalog changes;
         # the pin makes the change visible in code review.
         ch = self._walk_full()
-        self.assertEqual(ch.total_detection_cost, 47)
+        self.assertEqual(ch.total_detection_cost, 46)
 
     def test_dcsync_is_the_loudest_step(self):
         # The MS-DRSR/DRSGetNCChanges RPC call is the definitive
