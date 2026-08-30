@@ -1019,21 +1019,25 @@ class Store:
                  chain.total_detection_cost,
                  json.dumps(chain.artifacts, default=repr),
                  chain.started_at, chain.finished_at, chain_id))
-            # step rows are append-only; if some already exist for this
-            # chain_id (rare — resume scenario) skip; otherwise write them.
+            # step rows are append-only; when the chain is being
+            # resumed (some rows already exist), insert only the ones
+            # walked past the previous boundary — chain.resume seeds
+            # chain.outcomes with the persisted trail before the new
+            # walk starts, so outcomes[0:existing] already have rows.
             existing = self.conn.execute(
                 "SELECT COUNT(*) FROM chain_step WHERE chain_id = ?",
                 (chain_id,)).fetchone()[0]
-            if existing == 0:
-                for idx, outcome in enumerate(chain.outcomes):
-                    step = chain.steps[idx]
-                    self.conn.execute(
-                        "INSERT INTO chain_step (chain_id, idx, step_name, step_kind, "
-                        "outcome_kind, evidence, detection_cost, ran_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (chain_id, idx, step.name, step.kind,
-                         outcome.kind, outcome.evidence, step.detection_cost,
-                         utcnow()))
+            for idx, outcome in enumerate(chain.outcomes):
+                if idx < existing:
+                    continue
+                step = chain.steps[idx]
+                self.conn.execute(
+                    "INSERT INTO chain_step (chain_id, idx, step_name, step_kind, "
+                    "outcome_kind, evidence, detection_cost, ran_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (chain_id, idx, step.name, step.kind,
+                     outcome.kind, outcome.evidence, step.detection_cost,
+                     utcnow()))
 
     def chains(self, profile=None):
         """Every recorded coerce_chain, newest first. Optionally filter

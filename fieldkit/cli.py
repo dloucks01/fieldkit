@@ -1909,6 +1909,98 @@ def cmd_chain_walk(args, store):
 
 
 @needs_engagement
+def cmd_chain_resume(args, store):
+    """Pick up an ``in_progress`` chain from where the previous walk
+    stopped. Same walker semantics as ``chain run``/``chain walk``;
+    the difference is the chain object is seeded from the persisted
+    trail rather than a fresh factory call.
+
+    Exit codes match ``chain run``: 0 proven, 1 aborted/in_progress,
+    2 bad invocation. Non-resumable chains (proven/aborted) surface
+    a hard error rather than a silent re-walk — those are terminal.
+    """
+    from . import chain as chain_mod
+    try:
+        ch = chain_mod.resume(store, args.chain_id)
+    except KeyError as exc:
+        _err(str(exc))
+        return 2
+    except ValueError as exc:
+        _err(str(exc))
+        return 2
+
+    cred_dict = None
+    if args.cred_id:
+        row = store.credential_by_id(args.cred_id)
+        if not row:
+            _err(f"no credential #{args.cred_id} in this engagement")
+            return 2
+        cred_dict = {"domain": row["domain"], "username": row["username"],
+                     "password": row["password"]}
+
+    class _Ctx:
+        probe_port = args.probe_port
+        probe_timeout = args.probe_timeout
+        listener_uri = args.listener
+        cred = cred_dict
+        listener_ip = args.listener_ip
+        ca_endpoint = args.ca
+        template = args.template
+        relay_port_smb = args.relay_port_smb
+        relay_port_http = args.relay_port_http
+        relay_wait_capture = args.relay_capture_timeout
+        domain = args.domain
+        relay_mode = args.relay_mode
+        relay_target = args.relay_target
+        impersonate = args.impersonate
+        dc_ip = args.dc_ip
+    _Ctx.store = store
+
+    done = len(ch.outcomes)
+    total = len(ch.steps)
+    print(f"resuming chain #{args.chain_id}: {ch.profile} → {ch.target}")
+    print(f"  {done}/{total} steps already walked; "
+          f"continuing from step {done}")
+    if not _confirm(
+            f"resume walk (continues from step {done})?",
+            args.yes):
+        print("aborted — chain state unchanged")
+        return 1
+
+    def _before(chain, step):
+        cost = step.signal_cost if step.signals else step.detection_cost
+        prompt = (f"  next: {step.name}  [{step.kind}]  cost={cost}\n"
+                  f"    → [g]o (default), [s]kip, [q]uit: ")
+        try:
+            ans = input(prompt).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return "stop"
+        if ans in ("s", "skip"):
+            return "skip"
+        if ans in ("q", "quit", "stop"):
+            return "stop"
+        return "go"
+
+    def _render(chain, step, outcome):
+        marker = {"ok": "  ok ", "manual": " man ", "skip": "skip ",
+                  "fail": "FAIL "}[outcome.kind]
+        print(f"    {marker} {step.name}  {outcome.evidence}")
+
+    chain_mod.walk(ch, _Ctx(), on_step=_render, before_step=_before)
+    store.finalize_chain(args.chain_id, ch)
+    total_cost = ch.total_detection_cost
+    print(f"\nchain #{args.chain_id}  status={ch.status}  "
+          f"detection cost so far = {total_cost}")
+    if ch.aborted_reason:
+        print(f"aborted: {ch.aborted_reason}")
+        return 1
+    if ch.status == "in_progress":
+        return 1
+    return 0
+
+
+@needs_engagement
 def cmd_chain_visual(args, store):
     """Render a text kill-chain visualization of one walked chain.
 
@@ -3103,6 +3195,35 @@ the spec is missing that field. `--from-file` reads one credential per line.
     c_walk.add_argument("--dc-ip", metavar="IP")
     c_walk.add_argument("--cred-id", type=int, metavar="ID")
     c_walk.set_defaults(func=cmd_chain_walk)
+
+    c_resume = chain_sub.add_parser(
+        "resume",
+        help="pick up an in_progress chain from where the previous walk stopped",
+        description="Reconstructs a Chain from the persisted trail and hands "
+                    "it to the same interactive walker as `chain walk`. Only "
+                    "in_progress chains are resumable; proven/aborted chains "
+                    "surface a hard error rather than a silent re-walk.")
+    c_resume.add_argument("chain_id", type=int,
+                           help="chain id from `fieldkit chain list` (must be in_progress)")
+    c_resume.add_argument("--probe-port", type=int, default=445)
+    c_resume.add_argument("--probe-timeout", type=float, default=3.0)
+    c_resume.add_argument("--listener", metavar="SMB_URI")
+    c_resume.add_argument("--listener-ip", metavar="IP")
+    c_resume.add_argument("--ca", metavar="HOST")
+    c_resume.add_argument("--template", metavar="NAME", default="DomainController")
+    c_resume.add_argument("--relay-port-smb", type=int, default=445)
+    c_resume.add_argument("--relay-port-http", type=int, default=80)
+    c_resume.add_argument("--relay-capture-timeout", type=float, default=60.0)
+    c_resume.add_argument("--domain", metavar="AD_DOMAIN")
+    c_resume.add_argument("--relay-mode", metavar="MODE",
+                           choices=("adcs-cert", "ldap-rbcd", "smb-exec", "socks"))
+    c_resume.add_argument("--relay-target", metavar="HOST")
+    c_resume.add_argument("--impersonate", metavar="USER", default="Administrator")
+    c_resume.add_argument("--dc-ip", metavar="IP")
+    c_resume.add_argument("--cred-id", type=int, metavar="ID")
+    c_resume.add_argument("-y", "--yes", action="store_true",
+                           help="skip the confirm-back")
+    c_resume.set_defaults(func=cmd_chain_resume)
 
     p_bh = sub.add_parser("bloodhound", help="ingest SharpHound data + find owned→DA paths")
     bh_sub = p_bh.add_subparsers(dest="bloodhound_command", metavar="<action>")
