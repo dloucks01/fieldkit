@@ -82,9 +82,22 @@ class DashboardTitleBar(Static):
     def _tick(self):
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d · %H:%M UTC")
         eng = self.engagement or "(no engagement)"
+        rec = _recording_marker()
         self.update(
             f"[bold]FIELDKIT[/bold] · [bold]{eng}[/bold]"
-            f"      [{theme.C.INK_DIM}]{now}[/]")
+            f"      [{theme.C.INK_DIM}]{now}[/]"
+            + rec)
+
+
+def _recording_marker():
+    """Return a rich-markup suffix for the title bar when
+    FIELDKIT_SESSION_LOG is set (session recording active).
+    Empty string when disabled — the title bar reads the same
+    as before recording landed."""
+    from .. import session as session_mod
+    if not session_mod.is_recording_enabled():
+        return ""
+    return f"   [{theme.C.WARN}]● REC[/]"
 
 
 # --- content blocks --------------------------------------------------------

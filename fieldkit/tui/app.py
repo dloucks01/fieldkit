@@ -54,9 +54,12 @@ class TitleBar(Static):
         eng = self.engagement or "(no engagement)"
         # Rich markup — [color] and [style] literals live only inside these
         # Static widgets, never on raw palette hex — theme.C is still the source.
+        from .dashboard import _recording_marker
+        rec = _recording_marker()
         self.update(
             f"[bold]FIELDKIT[/bold] · [bold]{eng}[/bold]"
-            f"      [dim {theme.C.INK_DIM}]{now}[/]")
+            f"      [dim {theme.C.INK_DIM}]{now}[/]"
+            + rec)
 
 
 # ---------------------------------------------------------------------------
