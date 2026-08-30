@@ -2755,7 +2755,10 @@ def cmd_bloodhound_suggest(args, store):
         chain suggestion — an empty path list is not a failure).
       * 2 — no BH graph ingested yet.
     """
-    paths = bloodhound_mod.suggest_chains(store)
+    paths = bloodhound_mod.suggest_chains(
+        store,
+        all_paths=getattr(args, "all_paths", False),
+        max_paths_per_start=getattr(args, "max_paths", 5))
     if not paths:
         # Distinguish empty-graph from graph-but-no-paths.
         if not store.bh_nodes():
@@ -3666,6 +3669,14 @@ def _build_bloodhound_parser(sub):
                     "and where a shipped chain profile fits the path shape, "
                     "prints the exact `chain run` command to walk it. "
                     "Read-only.")
+    b_suggest.add_argument("--all-paths", action="store_true",
+                            help="surface every distinct high-value target "
+                                 "reachable per owned principal, not just "
+                                 "the shortest (capped by --max-paths). "
+                                 "Default: one path per owned principal.")
+    b_suggest.add_argument("--max-paths", type=int, default=5, metavar="N",
+                            help="with --all-paths: cap per source principal "
+                                 "(default: 5)")
     b_suggest.set_defaults(func=cmd_bloodhound_suggest)
 
     p_bh.set_defaults(func=lambda a: _missing(p_bh))
