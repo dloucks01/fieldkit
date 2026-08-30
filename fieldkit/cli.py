@@ -1908,6 +1908,66 @@ def cmd_chain_walk(args, store):
     return 0
 
 
+def cmd_chain_lint(args):
+    """Coverage audit for every registered chain profile — surfaces
+    plan gaps (missing signals, duplicate step names, preflight
+    misplacement) before they show up in a report or a debt view.
+
+    Exit codes:
+      * 0 — no findings across the scoped profiles;
+      * 1 — one or more warnings, no errors;
+      * 2 — one or more errors, or bad invocation.
+    """
+    from . import chain as chain_mod
+    from . import chainlint
+    if args.profile:
+        try:
+            chain_mod.profile(args.profile)
+        except KeyError as exc:
+            _err(str(exc))
+            return 2
+        profiles = [args.profile]
+    else:
+        profiles = chain_mod.known_profiles()
+    if not profiles:
+        print("no chain profiles registered — nothing to audit")
+        return 0
+    findings = []
+    for p in profiles:
+        findings.extend(chainlint.audit_profile(p))
+    by_profile = {}
+    for f in findings:
+        by_profile.setdefault(f.profile, []).append(f)
+    print(f"chain lint: {len(profiles)} profile(s) inspected\n")
+    for p in profiles:
+        try:
+            ch = chain_mod.profile(p)("<lint-target>")
+            cost = ch.total_detection_cost or sum(
+                s.signal_cost if s.signals else s.detection_cost
+                for s in ch.steps)
+            header = f"▸ {p}   {len(ch.steps)} steps, {cost} cost"
+        except Exception:                                       # noqa: BLE001
+            header = f"▸ {p}   (factory failure — see finding)"
+        print(header)
+        fs = by_profile.get(p, [])
+        if not fs:
+            print(f"  ok   no findings")
+        else:
+            for f in fs:
+                marker = "ERR " if f.severity == "error" else "warn"
+                loc = (f" step {f.step_index} {f.step_name!r}"
+                       if f.step_index is not None else "")
+                print(f"  {marker}{loc}  [{f.code}]  {f.message}")
+        print()
+    ok, warn, err = chainlint.summarize(findings, profiles)
+    print(f"summary: {ok} ok, {warn} with warnings, {err} with errors")
+    if err:
+        return 2
+    if warn:
+        return 1
+    return 0
+
+
 @needs_engagement
 def cmd_chain_resume(args, store):
     """Pick up an ``in_progress`` chain from where the previous walk
@@ -3224,6 +3284,18 @@ the spec is missing that field. `--from-file` reads one credential per line.
     c_resume.add_argument("-y", "--yes", action="store_true",
                            help="skip the confirm-back")
     c_resume.set_defaults(func=cmd_chain_resume)
+
+    c_lint = chain_sub.add_parser(
+        "lint",
+        help="coverage audit of every registered chain profile "
+             "(missing signals, duplicate step names, preflight order)",
+        description="Read-only audit of the shipped chain-profile catalog. "
+                    "Surfaces gaps that would understate detection debt or "
+                    "break the walker's semantic contract. Exit codes: "
+                    "0 clean, 1 warnings, 2 errors.")
+    c_lint.add_argument("--profile",
+                         help="audit a single profile (default: every profile)")
+    c_lint.set_defaults(func=cmd_chain_lint)
 
     p_bh = sub.add_parser("bloodhound", help="ingest SharpHound data + find owned→DA paths")
     bh_sub = p_bh.add_subparsers(dest="bloodhound_command", metavar="<action>")
