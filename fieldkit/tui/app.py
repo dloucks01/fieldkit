@@ -22,6 +22,7 @@ from textual.widgets import Footer, Static
 from ..state import Store, default_db_path
 from . import theme
 from .analyze import AnalyzeScreen, ANALYZE_TCSS
+from .chain_plan import ChainPlanScreen, CHAIN_PLAN_TCSS
 from .dashboard import DashboardScreen, DASHBOARD_TCSS
 from .escalate import ESCALATE_TCSS
 from .watch_screen import WatchScreen, WATCH_TCSS
@@ -122,14 +123,16 @@ class FieldkitTUI(App):
     display and dispatch subprocess `fieldkit` commands for actions.
     """
 
-    CSS = theme.APP_TCSS + DASHBOARD_TCSS + WATCH_TCSS + ANALYZE_TCSS + ESCALATE_TCSS
+    CSS = (theme.APP_TCSS + DASHBOARD_TCSS + WATCH_TCSS + ANALYZE_TCSS
+           + ESCALATE_TCSS + CHAIN_PLAN_TCSS)
     TITLE = "fieldkit"
 
     SCREENS = {
-        "dashboard": DashboardScreen,
-        "analyze":   AnalyzeScreen,
-        "watch":     WatchScreen,
-        "help":      HelpScreen,
+        "dashboard":  DashboardScreen,
+        "analyze":    AnalyzeScreen,
+        "watch":      WatchScreen,
+        "chain-plan": ChainPlanScreen,
+        "help":       HelpScreen,
     }
 
     BINDINGS = [
@@ -139,6 +142,7 @@ class FieldkitTUI(App):
         # move (⏎ from Analyze). No context-less Escalate screen.
         Binding("e", "switch_screen('analyze')",   "escalate",  show=False),
         Binding("w", "switch_screen('watch')",     "watch",     show=False),
+        Binding("c", "switch_screen('chain-plan')","chain-plan",show=False),
         Binding("?", "push_screen('help')",        "help",      show=False),
         Binding("q", "quit",                       "quit",      show=False),
         Binding("ctrl+c", "quit",                  "quit",      show=False),

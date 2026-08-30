@@ -181,3 +181,39 @@ def dashboard(db_path=None):
     finally:
         store.close()
     return data
+
+
+def chain_profiles():
+    """Return every registered chain profile as a display-ready dict:
+    {name, step_count, total_cost, steps: [{name, kind, cost}]}.
+    Uses a placeholder target ("<target>") when constructing the
+    Chain object; step cost + count don't depend on target IP.
+
+    Zero-cost when the chain module isn't importable (empty list).
+    """
+    try:
+        from .. import chain as chain_mod
+    except Exception:                                             # noqa: BLE001
+        return []
+    out = []
+    for name in chain_mod.known_profiles():
+        try:
+            factory = chain_mod.profile(name)
+            ch = factory("<target>")
+        except Exception:                                         # noqa: BLE001
+            continue
+        steps = []
+        total = 0
+        for s in ch.steps:
+            # signal_cost preferred over legacy detection_cost when
+            # the step has a catalog — same shape as
+            # Chain.total_detection_cost.
+            cost = s.signal_cost if s.signals else s.detection_cost
+            total += cost
+            steps.append({"name": s.name, "kind": s.kind, "cost": cost})
+        out.append({"name": name, "step_count": len(ch.steps),
+                     "total_cost": total, "steps": steps})
+    # Sort quietest-first (operator preference: pick lowest-debt
+    # profile when multiple apply).
+    out.sort(key=lambda p: p["total_cost"])
+    return out
