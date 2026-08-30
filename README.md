@@ -95,12 +95,61 @@ bin/fieldkit export-recce recce.json               # fold proven findings into r
 bin/fieldkit archive                               # one .tar.gz for handoff/retention (DB + report + cleanup + recce + steps)
 
 bin/fieldkit status                                # the board, any time
+bin/fieldkit doctor                                # one health check: tools + chain lint + engagement + TTPs
+bin/fieldkit refresh eng/fieldkit/recce-bridge.json  # returning-operator one-liner: re-ingest + analyze
 ```
 
 Riskier vectors need `--allow config-change` (or `crash-risk`); read-only runs freely.
 `bin/fieldkit` is a shim for `python3 -m fieldkit`; the DB defaults to `./engagement.db`
 (`--db` / `$FIELDKIT_DB`). Every `add cred` echoes its interpretation before storing —
 a wrong-format credential is caught at input, not forty hosts into a spray (`--yes` to skip).
+
+## Coerce chains
+
+`fieldkit chain` walks multi-step coerce sequences end-to-end (coerce a
+target to auth, relay to a listener, land the payoff). Four shipped
+profiles: **esc8** (coerce DC → ADCS relay → DC cert → PKINIT → DCSync),
+**rbcd** (coerce workstation → LDAPS relay → msDS-AllowedToActOnBehalf
+write → S4U2Self), **smb-relay-exec** (coerce → SMB relay to a signing-
+disabled host → command exec), **esc1** (direct ADCS enroll on a
+misconfigured template → PKINIT → DCSync).
+
+```bash
+bin/fieldkit chain lint                       # audit the profile catalog
+bin/fieldkit chain plan esc8 10.0.0.10        # preview steps + detection debt
+bin/fieldkit chain run esc8 10.0.0.10 \
+    --listener-ip 10.10.14.7 --ca ca01.corp.local --domain corp.local
+bin/fieldkit chain walk esc8 10.0.0.10  ...   # interactive: g/s/q per step
+bin/fieldkit chain list                       # every recorded chain
+bin/fieldkit chain show 12 --signals          # trail + per-step defender-visible signals
+bin/fieldkit chain resume 12  ...             # pick up an in_progress walk
+bin/fieldkit chain visual 12                  # ASCII kill-chain
+```
+
+Every walked step persists to state with its outcome kind, evidence
+snippet, and detection cost. The report renders the full chain history
+under the per-host summary — a chain that targeted `10.0.0.10` is cited
+in that host's block alongside the finding writeups.
+
+## Ecosystem commands
+
+The audit / meta / catalog surfaces that make a session-long fieldkit
+install self-documenting:
+
+```bash
+bin/fieldkit doctor [--json]                  # health check: preflight + chain lint + engagement + TTPs
+bin/fieldkit ttps list [--grep STR]           # browse the shipped TTP catalog
+bin/fieldkit ttps show <key>                  # pretty-print one TTP (detect / execute / playbook / …)
+bin/fieldkit chain lint [--json --profile X]  # coverage audit of the chain-profile catalog
+bin/fieldkit bloodhound import <path>         # ingest a SharpHound zip
+bin/fieldkit bloodhound suggest               # for each owned→high-value path, suggest a chain
+                                              #   profile + cite matching CVE TTPs for the target
+bin/fieldkit refresh [<bridge.json>]          # re-ingest recce + analyze in one step
+```
+
+`fieldkit doctor` returns a single exit code (0 clean, 1 warnings,
+2 errors) — CI can gate on it. `chain lint --json` emits a structured
+findings payload for the same purpose.
 
 ## The TUI
 
@@ -112,13 +161,21 @@ runs on a fresh clone.
 ```bash
 bin/fieldkit tui                                   # opens on the Dashboard
 
-  g   dashboard      counts, phase, top-3 moves, pwned hosts
+  g   dashboard      counts, phase, top-3 moves, pwned hosts, chain history + resume nudge
   a   analyze        every ranked opportunity + detail pane · ⏎ → escalate confirm
   e   → analyze      (Escalate is push-only with a highlighted move)
   w   watch          live event tail — sees steps from another terminal in ~250ms
+  c   chain plan     preview every registered chain profile
+  l   chain launch   pick a profile + target + ctx, walk it
+  t   ttps           browse the 148-TTP catalog with live filter
+  1-5 chain detail   from the dashboard's CHAINS block, jump to chain #N
   ?   help           keymap overlay
   q   quit           (Ctrl-C also)
 ```
+
+Chain-detail (from the dashboard's number keys) renders the per-step
+trail + signal breakdown + a **r** to resume the walk in the Textual
+chain-run screen when the chain is in_progress.
 
 The TUI is a thin client — every action dispatches an existing CLI command; screen state
 reads through `fieldkit status --json` (projection) or the direct SQLite store. Same seam is

@@ -52,6 +52,15 @@ fieldkit roast --dc 10.0.0.10
 fieldkit delegation --dc 10.0.0.10
 fieldkit adcs find --dc 10.0.0.10
 fieldkit bloodhound import ./bh/
+fieldkit bloodhound suggest                            # for each owned→high-value path,
+                                                       #   suggest a chain profile + matching CVE TTPs
+
+# 7a — coerce chains: multi-step attacks with per-step trail + resume
+fieldkit chain lint                                    # audit shipped profile catalog
+fieldkit chain plan esc8 10.0.0.10                     # preview steps + detection debt
+fieldkit chain run esc8 10.0.0.10 --listener-ip 10.10.14.7 --ca ca01.corp.local --domain corp.local
+fieldkit chain walk esc8 10.0.0.10 --listener-ip ...   # interactive: g/s/q per step
+fieldkit chain resume 12                               # pick up an in_progress walk
 
 # 8 — deliver
 fieldkit report --check                                 # anti-fabrication gate
@@ -62,7 +71,12 @@ fieldkit archive                                        # one .tar.gz for handof
 ```
 
 Run **`fieldkit status`** anytime — one command shows the phase, top-3 next moves,
-which hosts you're pwned on, and any missing spine tools.
+which hosts you're pwned on, and any missing spine tools. **`fieldkit doctor`**
+is the broader health check (tools + chain lint + engagement + TTPs, single exit
+code for CI). **`fieldkit refresh <bridge.json>`** re-ingests a recce bridge +
+runs analyze in one command — the returning-operator flow after a break.
+**`fieldkit ttps list`** browses the 148-TTP catalog; **`fieldkit ttps show <key>`**
+pretty-prints one.
 
 ## If…
 
@@ -78,7 +92,10 @@ which hosts you're pwned on, and any missing spine tools.
 - **A route can't be one-shot** (overwrite a running service binary, kernel LPE against a client host)? `escalate` hands it to `prep`: `fieldkit prep 10.0.0.7 <vector.key>` builds the payload and prints exactly where to place it and the steps. On an interactive `escalate` run, it offers this inline.
 - **Blocked by the safety gate?** Riskier vectors need `--allow config-change` (or `crash-risk`).
 - **Just want to see the plan?** `fieldkit escalate <ip> --dry-run` renders it — works even before any cred is proven on the target.
-- **Coming back after a break?** `fieldkit status` gives you the whole board in one command.
+- **Coming back after a break?** `fieldkit status` gives you the whole board in one command. For the "re-ingest recce + rank + surface next moves" one-liner, `fieldkit refresh <bridge.json>`.
+- **In_progress chain from before the break?** `fieldkit chain list` shows it; `fieldkit chain resume <id>` picks up where the last walk stopped — same interactive walker as `chain walk`, chain state seeded from the persisted trail.
+- **BloodHound graph ingested?** `fieldkit bloodhound suggest` reads the owned→high-value paths and, where a shipped chain profile fits the path shape (RBCD edge → rbcd, AdminTo edge → smb-relay-exec, high-value Computer target → esc8), prints the exact `chain run` command + cites shipped CVE TTPs that match services on the target host.
+- **CI gate?** `fieldkit doctor --json` (0 clean / 1 warnings / 2 errors) + `fieldkit chain lint --json` return structured payloads for pipelines.
 
 ## Deliverables
 
