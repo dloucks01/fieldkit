@@ -95,8 +95,15 @@ def _top_moves(store, cfg, limit=3):
     items = list(kb.analyze(store))
     try:
         items += privesc.vectors_from_state(store, **_stage_dirs())
-    except Exception:  # noqa: BLE001 — vectors from state can fail on partial state
-        pass
+    except Exception as exc:  # noqa: BLE001 — partial state can raise
+        # Silently dropping the failure hides regressions in
+        # privesc during dashboard render. Print to stderr so
+        # a curious operator sees "why is top-moves empty?" —
+        # can't raise, that would blank the whole dashboard.
+        import sys as _sys
+        print(f"tui: vectors_from_state failed: "
+              f"{type(exc).__name__}: {exc}",
+              file=_sys.stderr)
     items.sort(key=lambda x: -getattr(x, "score", 0))
     return items[:limit]
 

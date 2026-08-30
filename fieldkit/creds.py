@@ -601,9 +601,10 @@ def render_mongosh(cred, host, port=None, database=None, auth_source="admin",
         argv += ["-u", cred.username]
     if cred.secret_type == "password":
         argv += ["-p", cred.secret]
-    elif cred.secret_type != "password" and cred.secret:
-        # mongosh has no direct hash/kerberos flag; the caller decides.
-        pass
+    # NB: hash / kerberos / other secret_types can't render into a
+    # mongosh -p flag; the note appended below tells the caller
+    # exactly that so they surface an honest error rather than
+    # spawning a mongosh that hangs on a password prompt.
     if auth_source:
         argv += ["--authenticationDatabase", auth_source]
     if database:
