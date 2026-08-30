@@ -29,6 +29,9 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+#: The C4-shipped AD-visibility routes. C6 adds escalation-side
+#: routes (adroute:generic-all-user etc.) — those live in a separate
+#: test file and this set stays scoped to what C4 pinned.
 AD_ROUTE_KEYS = {
     "adroute:kerberoast",
     "adroute:asrep-roast",
@@ -45,8 +48,11 @@ class ADRouteCoverageTest(unittest.TestCase):
         return [t for t in load_all() if t.key.startswith("adroute:")]
 
     def test_five_ad_route_ttps_shipped(self):
+        # subset check — C6 adds more adroute:* TTPs (escalation-side);
+        # this pin stays scoped to the C4 visibility routes.
         keys = {t.key for t in self._load_ad()}
-        self.assertEqual(keys, AD_ROUTE_KEYS)
+        self.assertTrue(AD_ROUTE_KEYS.issubset(keys),
+                         f"missing: {AD_ROUTE_KEYS - keys}")
 
     def test_all_target_windows_only(self):
         for t in self._load_ad():
@@ -77,9 +83,11 @@ class ADRouteFiringTest(unittest.TestCase):
         return vectors_for(HostFacts(**base), "10.0.0.7")
 
     def test_all_five_fire_on_domain_joined_windows(self):
+        # Subset — C6 adds more adroute:* firings on the same gate.
         vs = self._fire(win_groups={"Domain Users"})
         keys = {v.key for v in vs if v.key.startswith("adroute:")}
-        self.assertEqual(keys, AD_ROUTE_KEYS)
+        self.assertTrue(AD_ROUTE_KEYS.issubset(keys),
+                         f"missing: {AD_ROUTE_KEYS - keys}")
 
     def test_none_fire_on_non_domain_windows(self):
         # A local-account foothold shouldn't surface AD moves.
@@ -133,13 +141,14 @@ class ADRouteRankingTest(unittest.TestCase):
                     self.assertEqual(v.score, 133)
 
     def test_all_ad_routes_are_read_only(self):
-        # None of the C4 TTPs writes to disk / rewrites config, so
-        # every one is read-only. Load-bearing: if a future edit
-        # ever lifts one to config-change it would auto-fire under
-        # --allow config-change and could get noisy in analyze.
+        # Scoped to the C4 visibility TTPs — those are all read-only
+        # by design (recon + hunt only). C6 adds escalation-side
+        # routes (adroute:writeowner-group etc.) that are
+        # deliberately config-change and land in a separate test
+        # file; excluding them here keeps the C4 invariant intact.
         vs = self._fire()
         for v in vs:
-            if v.key.startswith("adroute:"):
+            if v.key in AD_ROUTE_KEYS:
                 with self.subTest(key=v.key):
                     self.assertEqual(v.safety, "read-only")
 

