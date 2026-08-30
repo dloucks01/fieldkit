@@ -1768,6 +1768,169 @@ def cmd_chain_show(args, store):
 
 
 @needs_engagement
+def cmd_chain_walk(args, store):
+    """Interactive walker — pauses before each step for operator
+    confirm. Same underlying `walk()` as `chain run`, plus a
+    per-step prompt: [g]o (default) / [s]kip / [q]uit.
+
+    Skipping records a manual outcome and advances to the next step
+    (chain continues); quitting records a manual outcome and stops
+    the walk (chain status = in_progress, resumable via a follow-up
+    `chain run`).
+    """
+    from . import chain as chain_mod
+    try:
+        factory = chain_mod.profile(args.profile)
+    except KeyError as exc:
+        _err(str(exc))
+        return 2
+    ch = factory(args.target)
+
+    cred_dict = None
+    if args.cred_id:
+        row = store.credential_by_id(args.cred_id)
+        if not row:
+            _err(f"no credential #{args.cred_id} in this engagement")
+            return 2
+        cred_dict = {"domain": row["domain"], "username": row["username"],
+                     "password": row["password"]}
+
+    class _Ctx:
+        probe_port = args.probe_port
+        probe_timeout = args.probe_timeout
+        listener_uri = args.listener
+        cred = cred_dict
+        listener_ip = args.listener_ip
+        ca_endpoint = args.ca
+        template = args.template
+        relay_port_smb = args.relay_port_smb
+        relay_port_http = args.relay_port_http
+        relay_wait_capture = args.relay_capture_timeout
+        domain = args.domain
+        relay_mode = args.relay_mode
+        relay_target = args.relay_target
+        impersonate = args.impersonate
+        dc_ip = args.dc_ip
+    _Ctx.store = store
+
+    print(f"\ninteractive walk — {ch.profile} against {ch.target}")
+    print(f"  {len(ch.steps)} steps queued; per step, choose "
+          f"[g]o (default) / [s]kip / [q]uit\n")
+
+    def _before(chain, step):
+        cost = step.signal_cost if step.signals else step.detection_cost
+        prompt = (f"  next: {step.name}  [{step.kind}]  cost={cost}\n"
+                  f"    → [g]o (default), [s]kip, [q]uit: ")
+        try:
+            ans = input(prompt).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return "stop"
+        if ans in ("s", "skip"):
+            return "skip"
+        if ans in ("q", "quit", "stop"):
+            return "stop"
+        return "go"
+
+    def _render(chain, step, outcome):
+        marker = {"ok": "  ok ", "manual": " man ", "skip": "skip ",
+                  "fail": "FAIL "}[outcome.kind]
+        print(f"    {marker} {step.name}  {outcome.evidence}")
+
+    chain_id = store.reserve_chain_id(ch)
+    ch._persisted_id = chain_id                  # noqa: SLF001
+    chain_mod.walk(ch, _Ctx(), on_step=_render, before_step=_before)
+    store.finalize_chain(chain_id, ch)
+    total_cost = ch.total_detection_cost
+    print(f"\nchain #{chain_id}  status={ch.status}  "
+          f"detection cost so far = {total_cost}")
+    if ch.aborted_reason:
+        print(f"aborted: {ch.aborted_reason}")
+        return 1
+    if ch.status == "in_progress":
+        return 1
+    return 0
+
+
+@needs_engagement
+def cmd_chain_visual(args, store):
+    """Render a text kill-chain visualization of one walked chain.
+
+    Compact operator's-eye view: profile → target header, then one
+    line per step showing the outcome marker, step name, cost, and
+    ASCII flow arrows between steps. Verbose text version of what
+    a full Textual kill-chain widget would render — same information,
+    no dependency on Textual scope.
+    """
+    row = store.chain_by_id(args.chain_id)
+    if not row:
+        _err(f"no chain #{args.chain_id} in this engagement")
+        return 2
+    trail = store.chain_step_trail(args.chain_id)
+    if not trail:
+        print(f"chain #{args.chain_id} recorded but no steps walked yet")
+        return 0
+
+    # Outcome-to-marker mapping — keeps the box characters ASCII so
+    # the visual renders correctly in every terminal (no unicode
+    # dependency issues on Windows cmd or older SSH clients).
+    markers = {
+        "ok":     "[+]",
+        "manual": "[?]",
+        "skip":   "[-]",
+        "fail":   "[X]",
+    }
+    print()
+    print(f"  ┌─ chain #{row['id']}: {row['profile']} → {row['target']}")
+    print(f"  │  status = {row['status']}    "
+          f"detection debt = {row['total_detection_cost']}")
+    if row["aborted_reason"]:
+        print(f"  │  aborted: {row['aborted_reason'][:70]}")
+    print(f"  └{'─' * 60}")
+    print()
+
+    # Compute the max name width for aligned rendering.
+    max_name = max((len(t["step_name"]) for t in trail), default=20)
+    running_cost = 0
+    for i, t in enumerate(trail):
+        marker = markers.get(t["outcome_kind"], "[?]")
+        connector = "│" if i > 0 else " "
+        # Vertical connector from previous step down to this one.
+        if i > 0:
+            print(f"     {connector}")
+        running_cost += t["detection_cost"]
+        line = (f"     {marker} {t['step_name']:<{max_name}}  "
+                f"cost={t['detection_cost']:>2}  "
+                f"(running {running_cost:>3})")
+        print(line)
+        # Wrap the evidence line under it, indented, when it's short
+        # enough to be worth showing.
+        evidence = (t.get("evidence") or "").strip()
+        if evidence:
+            if len(evidence) > 65:
+                evidence = evidence[:62] + "..."
+            print(f"         {evidence}")
+
+    # Terminal punctuation
+    print()
+    if row["status"] == "proven":
+        print(f"     [+] chain complete — {row['total_detection_cost']} units of "
+              f"detection debt spent")
+    elif row["status"] == "aborted":
+        aborted_step = next((t for t in trail
+                              if t["outcome_kind"] in ("fail", "skip")),
+                             None)
+        step_name = aborted_step["step_name"] if aborted_step else "?"
+        print(f"     [X] chain aborted at `{step_name}` — see step trail")
+    elif row["status"] == "in_progress":
+        remaining = "next step pending — call `fieldkit chain run` to advance"
+        print(f"     [~] chain still in progress — {remaining}")
+    print()
+
+    return 0
+
+
+@needs_engagement
 def cmd_roast(args, store):
     dcs = [h for h in store.hosts() if h["is_dc"]]
     dc_ip = args.dc or (dcs[0]["ip"] if dcs else None)
@@ -2845,6 +3008,36 @@ the spec is missing that field. `--from-file` reads one credential per line.
                         help="show the per-step detection-signal breakdown "
                              "(event IDs, RPC opcodes, ticket requests)")
     c_show.set_defaults(func=cmd_chain_show)
+
+    c_visual = chain_sub.add_parser(
+        "visual", help="render a compact kill-chain visualization of one chain")
+    c_visual.add_argument("chain_id", type=int,
+                          help="chain id from `fieldkit chain list`")
+    c_visual.set_defaults(func=cmd_chain_visual)
+
+    c_walk = chain_sub.add_parser(
+        "walk",
+        help="interactive walker — pauses before each step for operator "
+             "confirm (go/skip/quit)")
+    c_walk.add_argument("profile", choices=_chain_choices, help="chain profile")
+    c_walk.add_argument("target", help="chain target")
+    c_walk.add_argument("--probe-port", type=int, default=445)
+    c_walk.add_argument("--probe-timeout", type=float, default=3.0)
+    c_walk.add_argument("--listener", metavar="SMB_URI")
+    c_walk.add_argument("--listener-ip", metavar="IP")
+    c_walk.add_argument("--ca", metavar="HOST")
+    c_walk.add_argument("--template", metavar="NAME", default="DomainController")
+    c_walk.add_argument("--relay-port-smb", type=int, default=445)
+    c_walk.add_argument("--relay-port-http", type=int, default=80)
+    c_walk.add_argument("--relay-capture-timeout", type=float, default=60.0)
+    c_walk.add_argument("--domain", metavar="AD_DOMAIN")
+    c_walk.add_argument("--relay-mode", metavar="MODE",
+                        choices=("adcs-cert", "ldap-rbcd", "smb-exec", "socks"))
+    c_walk.add_argument("--relay-target", metavar="HOST")
+    c_walk.add_argument("--impersonate", metavar="USER", default="Administrator")
+    c_walk.add_argument("--dc-ip", metavar="IP")
+    c_walk.add_argument("--cred-id", type=int, metavar="ID")
+    c_walk.set_defaults(func=cmd_chain_walk)
 
     p_bh = sub.add_parser("bloodhound", help="ingest SharpHound data + find owned→DA paths")
     bh_sub = p_bh.add_subparsers(dest="bloodhound_command", metavar="<action>")
