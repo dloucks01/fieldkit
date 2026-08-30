@@ -38,9 +38,11 @@ CAP_SETUID_INTERPRETERS = ("python", "perl", "ruby", "php")
 
 class DriverRetirementTest(unittest.TestCase):
 
-    def test_d_caps_not_in_drivers_linux(self):
-        from fieldkit.privesc import DRIVERS, LINUX, _d_caps
-        self.assertNotIn(_d_caps, DRIVERS[LINUX])
+    def test_only_ttp_yaml_driver_wired_for_linux(self):
+        # `_d_caps` was retired at Phase B5f and has since been
+        # deleted. DRIVERS[LINUX] is exclusively `_d_ttp_yaml`.
+        from fieldkit.privesc import DRIVERS, LINUX, _d_ttp_yaml
+        self.assertEqual(DRIVERS[LINUX], (_d_ttp_yaml,))
 
 
 class CapSetuidPortCoverageTest(unittest.TestCase):

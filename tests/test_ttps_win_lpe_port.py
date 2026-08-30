@@ -37,9 +37,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class DriverRetirementTest(unittest.TestCase):
-    def test_d_win_lpe_not_in_drivers_windows(self):
-        from fieldkit.privesc import DRIVERS, WINDOWS, _d_win_lpe
-        self.assertNotIn(_d_win_lpe, DRIVERS[WINDOWS])
+    def test_only_ttp_yaml_driver_wired_for_windows(self):
+        # `_d_win_lpe` was retired at Phase B5d and has since
+        # been deleted. DRIVERS[WINDOWS] is exclusively `_d_ttp_yaml`.
+        from fieldkit.privesc import DRIVERS, WINDOWS, _d_ttp_yaml
+        self.assertEqual(DRIVERS[WINDOWS], (_d_ttp_yaml,))
 
     def test_win_lpe_candidates_still_exported(self):
         from fieldkit.privesc import WIN_LPE, win_lpe_candidates
