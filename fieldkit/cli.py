@@ -204,7 +204,8 @@ def cmd_config_unset(args):
     return 0
 
 
-def cmd_add_cred(args):
+@needs_engagement
+def cmd_add_cred(args, store):
     kwargs = dict(domain=args.domain, username=args.user, password=args.password,
                   nt_hash=args.hash, aes_key=args.aes, ccache=args.ccache,
                   ssh_key=args.ssh_key, local_auth=True if args.local else None)
@@ -236,20 +237,19 @@ def cmd_add_cred(args):
         print("aborted — nothing was stored")
         return 1
 
-    with _open_store(args) as store:
-        store.require_engagement()
-        added = reused = 0
-        with store.transaction():
-            for item in parsed:
-                _, created = store.add_credential(item.credential, source=args.source)
-                added += created
-                reused += not created
+    added = reused = 0
+    with store.transaction():
+        for item in parsed:
+            _, created = store.add_credential(item.credential, source=args.source)
+            added += created
+            reused += not created
     print(f"stored {_plural(added, 'credential')}"
           + (f", {reused} already known" if reused else ""))
     return 0
 
 
-def cmd_add_hosts(args):
+@needs_engagement
+def cmd_add_hosts(args, store):
     if not args.targets and not args.file:
         _err("nothing to add — give IPs/CIDRs or a scope file")
         return 2
@@ -262,23 +262,21 @@ def cmd_add_hosts(args):
         _err("no usable targets found")
         return 2
 
-    with _open_store(args) as store:
-        store.require_engagement()
-        added = enriched = out_of_scope = 0
-        rejected = []
-        with store.transaction():  # one commit for the whole scope file
-            for ip, hostname in targets:
-                if not store.in_scope(ip):
-                    out_of_scope += 1
-                    if len(rejected) < 5:
-                        rejected.append(ip)
-                    continue
-                _, created = store.add_host(
-                    ip, hostname=hostname or None, os_name=args.os,
-                    is_dc=True if args.dc else None, subnet=args.subnet)
-                added += created
-                enriched += not created
-        total = store.counts()["hosts"]
+    added = enriched = out_of_scope = 0
+    rejected = []
+    with store.transaction():  # one commit for the whole scope file
+        for ip, hostname in targets:
+            if not store.in_scope(ip):
+                out_of_scope += 1
+                if len(rejected) < 5:
+                    rejected.append(ip)
+                continue
+            _, created = store.add_host(
+                ip, hostname=hostname or None, os_name=args.os,
+                is_dc=True if args.dc else None, subnet=args.subnet)
+            added += created
+            enriched += not created
+    total = store.counts()["hosts"]
     print(f"added {_plural(added, 'host')}"
           + (f", {enriched} already in the engagement" if enriched else "")
           + f" — {total} host(s) in the engagement")
@@ -290,10 +288,9 @@ def cmd_add_hosts(args):
     return 0 if not errors and not out_of_scope else 1
 
 
-def cmd_scope_show(args):
-    with _open_store(args) as store:
-        store.require_engagement()
-        rows = store.scope_rules()
+@needs_engagement
+def cmd_scope_show(args, store):
+    rows = store.scope_rules()
     if not rows:
         print("no scope rules — every IP is allowed (no enforcement)")
         print(f"tighten with: `{PROG} scope allow 10.0.0.0/24`")
@@ -306,41 +303,40 @@ def cmd_scope_show(args):
     return 0
 
 
-def cmd_scope_add(args):
+@needs_engagement
+def cmd_scope_add(args, store):
     kind = "deny" if args.deny else "allow"
-    with _open_store(args) as store:
-        store.require_engagement()
-        cidrs = []
-        for target in args.cidrs:
-            try:
-                cid, created = store.scope_add(target, kind=kind, notes=args.notes)
-            except ValueError as exc:
-                _err(f"{target!r}: {exc}")
-                return 2
-            cidrs.append((target, created))
+    cidrs = []
+    for target in args.cidrs:
+        try:
+            cid, created = store.scope_add(target, kind=kind, notes=args.notes)
+        except ValueError as exc:
+            _err(f"{target!r}: {exc}")
+            return 2
+        cidrs.append((target, created))
     for cidr, created in cidrs:
         print(f"{kind:<5}  {cidr}   ({'added' if created else 'already present'})")
     return 0
 
 
-def cmd_scope_clear(args):
-    with _open_store(args) as store:
-        store.require_engagement()
-        n = len(store.scope_rules())
-        if not n:
-            print("no scope rules to clear")
-            return 0
-        prompt = (f"drop {_plural(n, 'scope rule')} — enforcement will be OFF and "
-                  "every IP will be allowed?")
-        if not _confirm(prompt, args.yes):
-            print("aborted — nothing changed")
-            return 1
-        store.scope_clear()
+@needs_engagement
+def cmd_scope_clear(args, store):
+    n = len(store.scope_rules())
+    if not n:
+        print("no scope rules to clear")
+        return 0
+    prompt = (f"drop {_plural(n, 'scope rule')} — enforcement will be OFF and "
+              "every IP will be allowed?")
+    if not _confirm(prompt, args.yes):
+        print("aborted — nothing changed")
+        return 1
+    store.scope_clear()
     print(f"cleared {_plural(n, 'scope rule')} — enforcement OFF")
     return 0
 
 
-def cmd_ingest_nxc(args):
+@needs_engagement
+def cmd_ingest_nxc(args, store):
     if args.file and args.file != "-":
         with open(args.file, "r", errors="replace") as fh:
             text = fh.read()
@@ -368,9 +364,7 @@ def cmd_ingest_nxc(args):
         print("aborted — nothing was stored")
         return 1
 
-    with _open_store(args) as store:
-        store.require_engagement()
-        rep = ingest_mod.apply_nxc(store, intent, source=args.source)
+    rep = ingest_mod.apply_nxc(store, intent, source=args.source)
     print(f"stored {_plural(rep.creds_added, 'credential')}"
           + (f", {rep.creds_reused} already known" if rep.creds_reused else "")
           + f"; {rep.access_added} new access {_word(rep.access_added, 'record')}"
@@ -379,7 +373,8 @@ def cmd_ingest_nxc(args):
     return 0
 
 
-def cmd_ingest_hashcat(args):
+@needs_engagement
+def cmd_ingest_hashcat(args, store):
     """Read a hashcat potfile and promote cracked hashes to credentials.
 
     Matches each cracked ``hash:plaintext`` line against loot rows we already
@@ -420,9 +415,7 @@ def cmd_ingest_hashcat(args):
         print("aborted — nothing was stored")
         return 1
 
-    with _open_store(args) as store:
-        store.require_engagement()
-        rep = hashcat_mod.apply(store, entries)
+    rep = hashcat_mod.apply(store, entries)
     print(f"matched {rep.matched}/{rep.entries} cracked hashes to loot; "
           f"promoted {_plural(rep.creds_promoted, 'new credential')}"
           + (f"; kept {rep.unmatched_stored} unmatched pair(s) as loot"
@@ -511,7 +504,8 @@ def cmd_ingest_recce(args):
     return 0
 
 
-def cmd_ingest_nmap(args):
+@needs_engagement
+def cmd_ingest_nmap(args, store):
     """Read nmap output and fold discovered hosts + services into state.
 
     Format auto-detects: ``-oX`` (XML, richest), ``-oN`` (normal), ``-oG``
@@ -555,9 +549,7 @@ def cmd_ingest_nmap(args):
         print("aborted — nothing was stored")
         return 1
 
-    with _open_store(args) as store:
-        store.require_engagement()
-        rep = nmap_mod.apply(store, intent)
+    rep = nmap_mod.apply(store, intent)
     print(f"stored {_plural(rep.hosts_added, 'host')}"
           + (f" ({rep.hosts_enriched} enriched)" if rep.hosts_enriched else "")
           + f", {_plural(rep.services_added, 'service')}"
@@ -1546,23 +1538,22 @@ def cmd_mongodb_escalate(args, store, host, cred):
     return 0
 
 
-def cmd_recce_ping(args):
+@needs_engagement
+def cmd_recce_ping(args, store):
     """Diagnostic: POST a one-shot command through a recce-caught session and
     print the output. Proves the recce-session execution transport is wired up
     without touching escalate/enum. Defaults to `whoami` (windows-safe on both
     platforms since PowerShell also has it; use --cmd to override).
     """
-    with _open_store(args) as store:
-        store.require_engagement()
-        cfg = recce_transport_mod._config_from_store(store)
-        if not cfg.url:
-            _err("recce_url not set — `fieldkit config set recce_url=http://<host>:<port>`")
-            return 2
-        command = args.cmd or "whoami"
-        print(f"POST {cfg.url}/api/sessions/{args.session_id}/task  (X-Tester={cfg.tester})")
-        print(f"  command: {command}")
-        result = recce_transport_mod.task_session(
-            cfg, args.session_id, command, timeout=args.timeout)
+    cfg = recce_transport_mod._config_from_store(store)
+    if not cfg.url:
+        _err("recce_url not set — `fieldkit config set recce_url=http://<host>:<port>`")
+        return 2
+    command = args.cmd or "whoami"
+    print(f"POST {cfg.url}/api/sessions/{args.session_id}/task  (X-Tester={cfg.tester})")
+    print(f"  command: {command}")
+    result = recce_transport_mod.task_session(
+        cfg, args.session_id, command, timeout=args.timeout)
     if result.error:
         _err(result.error)
         return 2
@@ -1572,27 +1563,26 @@ def cmd_recce_ping(args):
     return 0
 
 
-def cmd_lab_test(args):
-    with _open_store(args) as store:
-        store.require_engagement()
-        cfg = config_mod.load(store)
-        lab_host = args.host or cfg.get("lab_host")
-        if not lab_host:
-            _err("no lab host — set one with `fieldkit config set lab_host=<ip>` or pass --host")
-            return 2
-        host, cred, err = _resolve_target(store, lab_host)
-        if err:
-            _err(err)
-            return 2
-        if host["os"] and host["os"] != evasion_mod.WINDOWS:
-            _err(f"the lab host {lab_host} is not Windows — the Defender harness is Windows-only")
-            return 2
-        if not _confirm(f"run the Defender lab probes against {lab_host}? (drops the EICAR "
-                        "control + benign probes on the lab)", args.yes):
-            print("aborted — nothing ran")
-            return 1
-        report = lab_mod.run_tests(store, host, cred, allow=("read-only", "config-change"),
-                                   on_event=lambda m: print(m))
+@needs_engagement
+def cmd_lab_test(args, store):
+    cfg = config_mod.load(store)
+    lab_host = args.host or cfg.get("lab_host")
+    if not lab_host:
+        _err("no lab host — set one with `fieldkit config set lab_host=<ip>` or pass --host")
+        return 2
+    host, cred, err = _resolve_target(store, lab_host)
+    if err:
+        _err(err)
+        return 2
+    if host["os"] and host["os"] != evasion_mod.WINDOWS:
+        _err(f"the lab host {lab_host} is not Windows — the Defender harness is Windows-only")
+        return 2
+    if not _confirm(f"run the Defender lab probes against {lab_host}? (drops the EICAR "
+                    "control + benign probes on the lab)", args.yes):
+        print("aborted — nothing ran")
+        return 1
+    report = lab_mod.run_tests(store, host, cred, allow=("read-only", "config-change"),
+                               on_event=lambda m: print(m))
 
     if report.aborted:
         _err(report.aborted)
@@ -1606,14 +1596,13 @@ def cmd_lab_test(args):
     return 0
 
 
-def cmd_posture(args):
+@needs_engagement
+def cmd_posture(args, store):
     now = datetime.now(timezone.utc)
-    with _open_store(args) as store:
-        store.require_engagement()
-        cfg = config_mod.load(store)
-        lab_host = cfg.get("lab_host")
-        statuses = [evasion_mod.resolve(t, store.evasion_result(t.key), now=now)
-                    for t in evasion_mod.TECHNIQUES]
+    cfg = config_mod.load(store)
+    lab_host = cfg.get("lab_host")
+    statuses = [evasion_mod.resolve(t, store.evasion_result(t.key), now=now)
+                for t in evasion_mod.TECHNIQUES]
 
     label = {evasion_mod.GREEN: "GREEN", evasion_mod.CAUGHT: "RED  caught",
              evasion_mod.STALE: "RED  stale", evasion_mod.UNTESTED: "RED  untested"}
