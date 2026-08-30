@@ -2272,6 +2272,112 @@ def cmd_doctor(args):
                 pass
 
 
+def cmd_changelog(args):
+    """Auto-generate a CHANGELOG.md from git commit history.
+
+    Reads `git log` for conventional-commit-shaped subjects
+    (feat / fix / refactor / chore / docs / test), groups by
+    prefix, and emits a markdown changelog.
+
+    Output goes to stdout by default; ``--out PATH`` writes to
+    a file. ``--since <ref>`` limits history from a git ref
+    (tag, commit, or `HEAD~50`); default is the whole history.
+    Read-only — never edits git state.
+    """
+    import re as _re
+    argv = ["git", "log", "--pretty=format:%h|%s"]
+    if args.since:
+        argv.append(f"{args.since}..HEAD")
+    result = runner_mod.run(argv, timeout=30)
+    if result.error:
+        _err(f"git log failed: {result.error}")
+        return 2
+    if result.exit_code not in (0, None):
+        _err(f"git log exited {result.exit_code}: "
+             f"{(result.stderr or '').strip()[:200]}")
+        return 2
+
+    # Group commits by conventional-commit prefix.
+    # Match `type(scope): message` OR `type: message`.
+    pat = _re.compile(r"^(\w+)(?:\(([^)]+)\))?:\s*(.*)")
+    sections = {}
+    other = []
+    total = 0
+    for line in (result.stdout or "").splitlines():
+        if not line.strip():
+            continue
+        total += 1
+        try:
+            sha, subject = line.split("|", 1)
+        except ValueError:
+            continue
+        m = pat.match(subject)
+        if m:
+            ctype = m.group(1)
+            scope = m.group(2) or ""
+            msg = m.group(3)
+            sections.setdefault(ctype, []).append((sha, scope, msg))
+        else:
+            other.append((sha, subject))
+
+    # Rendering order: feat first (users care most), fix, refactor,
+    # docs, test, chore, then "other" (non-conventional commits).
+    order = ("feat", "fix", "refactor", "docs", "test",
+             "chore", "perf", "style", "build", "ci")
+    labels = {
+        "feat":     "Features",
+        "fix":      "Bug fixes",
+        "refactor": "Refactoring",
+        "docs":     "Documentation",
+        "test":     "Tests",
+        "chore":    "Chores + housekeeping",
+        "perf":     "Performance",
+        "style":    "Style",
+        "build":    "Build",
+        "ci":       "CI",
+    }
+    lines = ["# Changelog", ""]
+    if args.since:
+        lines.append(f"Commits since `{args.since}` ({total} total).")
+    else:
+        lines.append(f"Auto-generated from git log ({total} commits).")
+    lines.append("")
+    for ctype in order:
+        entries = sections.pop(ctype, [])
+        if not entries:
+            continue
+        lines.append(f"## {labels[ctype]}")
+        lines.append("")
+        for sha, scope, msg in entries:
+            scope_str = f"**{scope}:** " if scope else ""
+            lines.append(f"- `{sha}` {scope_str}{msg}")
+        lines.append("")
+    # Any remaining conventional-commit types not in `order`.
+    for ctype, entries in sorted(sections.items()):
+        lines.append(f"## {ctype.capitalize()}")
+        lines.append("")
+        for sha, scope, msg in entries:
+            scope_str = f"**{scope}:** " if scope else ""
+            lines.append(f"- `{sha}` {scope_str}{msg}")
+        lines.append("")
+    if other:
+        lines.append("## Other")
+        lines.append("")
+        for sha, subject in other:
+            lines.append(f"- `{sha}` {subject}")
+        lines.append("")
+
+    text = "\n".join(lines)
+    if args.out:
+        with open(args.out, "w") as fh:
+            fh.write(text)
+        print(f"wrote {args.out}  ({total} commits, "
+              f"{len([1 for e in sections.values() for _ in e]) + sum(len(e) for e in sections.values())} classified)")
+    else:
+        print(text)
+    return 0
+
+
 def cmd_chain_register(args):
     """Install a YAML-defined chain profile into
     ~/.fieldkit/chains/ so it auto-loads on future invocations.
@@ -4145,6 +4251,21 @@ the spec is missing that field. `--from-file` reads one credential per line.
 
     _build_session_parser(sub)
     _build_ttps_parser(sub)
+
+    p_changelog = sub.add_parser(
+        "changelog",
+        help="auto-generate a CHANGELOG.md from git commit history",
+        description="Parses `git log` for conventional-commit-shaped "
+                    "subjects (feat/fix/refactor/chore/docs/test), "
+                    "groups by prefix, and emits a markdown changelog. "
+                    "Read-only — never edits git state.")
+    p_changelog.add_argument("--out", metavar="PATH",
+                              help="write to file (default: stdout)")
+    p_changelog.add_argument("--since", metavar="REF",
+                              help="git ref to limit history from "
+                                   "(tag / commit / HEAD~N; default: "
+                                   "whole history)")
+    p_changelog.set_defaults(func=cmd_changelog)
 
     p_refresh = sub.add_parser(
         "refresh",
