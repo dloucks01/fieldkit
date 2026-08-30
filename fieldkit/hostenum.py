@@ -124,6 +124,16 @@ class HostFacts:
     #: is the main source. Enables version-gated TTPs via the version_range
     #: predicate's dotted-path form (``services.apache``, ``services.openssh``).
     services: dict = field(default_factory=dict)
+    #: True when the store has BloodHound graph data ingested AND at
+    #: least one owned credential reaches a high-value target via the
+    #: control edges the graph knows about. Populated by
+    #: :func:`facts_for` via a lazy call to
+    #: :func:`fieldkit.bloodhound.owned_paths`. Zero-cost when no graph
+    #: is loaded (bloodhound.owned_paths returns [] fast when bh_node
+    #: is empty). Feeds the `adroute:bh-owned-to-hv-path` TTP so
+    #: analyze / escalate surface the finding without the operator
+    #: having to open the BloodHound UI.
+    bh_owned_reaches_hv: bool = False
     # -- linux · container context --
     #: `True` when the foothold is inside a container (docker / podman / k8s
     #: pod). Detected by the presence of /.dockerenv, /run/.containerenv, or
@@ -294,6 +304,18 @@ def facts_for(store, host_id):
                 # the same version; a discrepancy would be an operator-facing
                 # oddity to surface elsewhere, not a TTP-predicate concern.
                 facts.services.setdefault(product, version)
+    # BloodHound-owned-to-highvalue check — one call, zero-cost when
+    # no graph is loaded (bh_node table empty → returns [] fast).
+    # Lazy import to avoid pulling bloodhound into every facts_for
+    # caller when the store has nothing to look at.
+    try:
+        from . import bloodhound as bh_mod
+        facts.bh_owned_reaches_hv = bool(bh_mod.owned_paths(store))
+    except Exception:                                             # noqa: BLE001
+        # bloodhound import/query failure is non-fatal — a facts
+        # snapshot without the graph flag is still useful for every
+        # non-BloodHound-gated TTP.
+        pass
     return facts
 
 
