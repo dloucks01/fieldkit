@@ -1667,6 +1667,11 @@ def cmd_chain_run(args, store):
         relay_wait_capture = args.relay_capture_timeout
         # D4 post-relay
         domain = args.domain
+        # D5 profile config
+        relay_mode = args.relay_mode
+        relay_target = args.relay_target
+        impersonate = args.impersonate
+        dc_ip = args.dc_ip
         # Store passed through so relay:capture can persist the cert
         # against the chain id — see _persisted_id below.
         store = None
@@ -2773,6 +2778,21 @@ the spec is missing that field. `--from-file` reads one credential per line.
     c_run.add_argument("--domain", metavar="AD_DOMAIN",
                        help="AD domain for post-relay steps (PKINIT + DCSync); "
                             "e.g. CORP.LOCAL.")
+    c_run.add_argument("--relay-mode", metavar="MODE",
+                       choices=("adcs-cert", "ldap-rbcd", "smb-exec", "socks"),
+                       help="ntlmrelayx relay flavor: adcs-cert (esc8), "
+                            "ldap-rbcd (rbcd), smb-exec (smb-relay-exec), "
+                            "socks. Inferred from --ca for esc8.")
+    c_run.add_argument("--relay-target", metavar="HOST",
+                       help="host to relay caught auth to. DC for rbcd, "
+                            "workstation for smb-relay-exec. --ca implies "
+                            "this for esc8.")
+    c_run.add_argument("--impersonate", metavar="USER", default="Administrator",
+                       help="account to impersonate via S4U2Self (rbcd "
+                            "profile; default Administrator).")
+    c_run.add_argument("--dc-ip", metavar="IP",
+                       help="DC IP for post:s4u2self KDC round-trip "
+                            "(rbcd profile); defaults to chain target.")
     c_run.add_argument("--cred-id", type=int, metavar="ID",
                        help="credential id to use for auth to the target's "
                             "MS-EFSR endpoint (see `fieldkit list creds`); "
