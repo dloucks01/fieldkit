@@ -163,6 +163,100 @@ def probe_ttps():
                     message=f"{len(tt)} TTP(s) loaded")
 
 
+def fix(reports, store=None):
+    """Attempt to auto-remediate the actionable warnings from a
+    :func:`run` pass. Returns a list of ``(action, outcome)`` tuples
+    where ``outcome`` is one of ``"fixed"`` / ``"skipped"`` /
+    ``"failed: <reason>"``.
+
+    Fixes are conservative: only issues with an unambiguous safe
+    action are attempted (mkdir a missing stage_lin, config-set a
+    default when missing). Anything requiring a value judgment
+    (chain-lint findings, chain-lint errors from a broken profile,
+    unwritable directories the operator owns) is surfaced with a
+    concrete command hint but not touched.
+    """
+    import os
+    from . import config as config_mod
+    actions = []
+    reports_by_name = {r.name: r for r in reports}
+
+    # ----- engagement probe fixes ------------------------------------
+    if "engagement" in reports_by_name and store is not None:
+        r = reports_by_name["engagement"]
+        cfg = None
+        for detail in r.details:
+            # "stage_win: /path — no such directory" → mkdir
+            if " — no such directory" in detail:
+                key, path = detail.split(":", 1)[0], \
+                    detail.split(": ", 1)[1].split(" — ")[0]
+                # Only mkdir Linux-shaped paths; Windows stage on Linux
+                # host is a config artifact the operator set intending
+                # to run against Windows targets — don't create it.
+                if path.startswith("/") and not os.path.isdir(path):
+                    try:
+                        os.makedirs(path, mode=0o700, exist_ok=True)
+                        actions.append((f"mkdir {path}", "fixed"))
+                    except OSError as exc:
+                        actions.append(
+                            (f"mkdir {path}", f"failed: {exc}"))
+                else:
+                    actions.append(
+                        (f"mkdir {path}",
+                         "skipped: not a Linux-shaped path; "
+                         "windows stage dir must be created on the target"))
+            elif ": not configured" in detail:
+                key = detail.split(":", 1)[0].strip()
+                # Restore the shipped default
+                default = config_mod.DEFAULTS.get(key)
+                if default:
+                    try:
+                        cfg = cfg or config_mod.load(store)
+                        cfg.set(key, default)
+                        actions.append(
+                            (f"config set {key}={default}", "fixed"))
+                    except Exception as exc:  # noqa: BLE001
+                        actions.append(
+                            (f"config set {key}={default}",
+                             f"failed: {exc}"))
+            elif "not writable" in detail:
+                path = detail.split(": ", 1)[1].split(" — ")[0]
+                actions.append(
+                    (f"chmod +w {path}",
+                     "skipped: doctor doesn't chmod on the operator's "
+                     "behalf — run manually or move stage_dir elsewhere"))
+            elif "0 credentials" in detail:
+                actions.append(
+                    ("add a credential",
+                     "skipped: run `fieldkit add cred <spec>` or "
+                     "`fieldkit spray --wordlist`"))
+
+    # ----- tools probe: print install hints; can't apt-get --------
+    if reports_by_name.get("tools") and reports_by_name["tools"].details:
+        for line in reports_by_name["tools"].details:
+            tool = line.split(" — ")[0]
+            actions.append(
+                (f"install {tool}",
+                 f"skipped: run `apt install {tool}` or the tool's "
+                 "documented install (`fieldkit preflight` names each)"))
+
+    # ----- chains probe: findings need code / YAML edits ---------
+    if reports_by_name.get("chains") and reports_by_name["chains"].details:
+        for line in reports_by_name["chains"].details:
+            actions.append(
+                (line, "skipped: chain-lint findings need a code / "
+                 "YAML edit — see `fieldkit chain lint --json`"))
+
+    # ----- ttps probe: parse errors need YAML edits --------------
+    if (reports_by_name.get("ttps") and
+            reports_by_name["ttps"].rung != "ok"):
+        actions.append(
+            (reports_by_name["ttps"].message,
+             "skipped: TTP catalog parse errors need a YAML edit"))
+
+    return actions
+
+
 def run(store=None):
     """Compose every probe → return ``(reports, exit_code)``.
 
