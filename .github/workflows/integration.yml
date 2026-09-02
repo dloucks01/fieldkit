@@ -1,0 +1,71 @@
+name: integration
+
+# Fieldkit integration tests — needs a live lab (real DC / recce
+# bridge / vulnerable services / staged DPAPI artifacts).
+#
+# Never fires on push or PR — labs are billed + carry live
+# credentials the operator may not want in CI transcripts.
+# Trigger manually from the Actions tab; the runner needs the
+# FIELDKIT_INTEGRATION_LAB_YAML secret populated with the
+# lab.yaml content (fieldkit writes it to a temp file before
+# firing).
+#
+# Fixture skip semantics: a lab.yaml missing an optional
+# section (e.g. `dpapi_host`) skips only the tests that need
+# it — the workflow succeeds as long as no run test fails.
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_selector:
+        description: 'pytest -k pattern (default: all integration tests)'
+        required: false
+        default: ''
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: install impacket + bloodyAD (for real chain tests)
+        run: |
+          pipx install impacket
+          pipx install bloodyAD
+
+      - name: stage lab.yaml
+        env:
+          LAB_YAML: ${{ secrets.FIELDKIT_INTEGRATION_LAB_YAML }}
+        run: |
+          if [ -z "$LAB_YAML" ]; then
+            echo "::error::FIELDKIT_INTEGRATION_LAB_YAML secret is empty — set it in repo settings"
+            exit 1
+          fi
+          echo "$LAB_YAML" > /tmp/lab.yaml
+          echo "wrote /tmp/lab.yaml ($(wc -l < /tmp/lab.yaml) lines)"
+
+      - name: pytest — integration only
+        env:
+          FIELDKIT_INTEGRATION_LAB: /tmp/lab.yaml
+        run: |
+          # Clear the pytest.ini default `addopts = -m "not integration"`
+          # so the integration marker actually fires.
+          python3 -m pytest tests/integration/ \
+            -m integration \
+            --override-ini "addopts=" \
+            ${{ github.event.inputs.test_selector && format('-k "{0}"', github.event.inputs.test_selector) || '' }} \
+            -v
+
+      - name: upload session log if present
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-session
+          path: |
+            /tmp/lab.yaml
+            fieldkit-session.jsonl
+          if-no-files-found: ignore
