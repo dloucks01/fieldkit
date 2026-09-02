@@ -1,62 +1,91 @@
-"""Pytest fixtures for fieldkit integration tests.
+"""Pytest fixtures for fieldkit integration tests — folder-first.
 
-Every fixture reads from a lab.yaml file whose path is in the
-``FIELDKIT_INTEGRATION_LAB`` env var. Without the env var, every
-integration test skips — a normal ``pytest`` run doesn't touch
-lab infrastructure.
+Recce provisions a lab + stashes every artifact in a single
+engagement folder with a canonical layout. Fieldkit reads it
+via `fieldkit sync <folder>`; integration tests read the same
+folder + assert what should be true after a sync.
 
-The lab.yaml schema is documented in tests/integration/README.md
-and validated per-fixture: a missing ``dc_ip`` key skips only
-the tests that ask for that fixture, not every integration
-test.
+The env var is ``FIELDKIT_INTEGRATION_LAB`` and it points at the
+folder root. A single-file lab.yaml sits inside the folder to
+declare the lab's identity (dc.ip, low_priv_cred, expectations)
+— everything else fixtures learn by walking the folder shape.
 
-Provisioning is out of scope for fieldkit — recce (or whoever
-stands the lab up) writes lab.yaml + points the env var. The
-handoff contract is the YAML shape; fixtures here parse it.
+Folder layout (recce writes this; fieldkit reads it):
+
+    <lab-folder>/
+    ├── lab.yaml               # dc.ip, low_priv_cred, expectations
+    ├── recce-bridge.json      # authoritative bridge
+    ├── nmap/                  # optional raw scans
+    ├── nxc/                   # optional capture logs
+    ├── bloodhound/            # optional SharpHound zip/JSON
+    ├── loot/                  # optional hashcat potfiles
+    ├── dpapi/                 # optional staged DPAPI artifacts
+    │   ├── mkey-<guid>
+    │   ├── cred-<guid>
+    └── notes.md               # ignored — for operator use
+
+A missing section skips only the tests that ask for it.
+Provisioning is out of scope for fieldkit — recce owns the
+folder + its contents; fieldkit owns the sync + assertions.
 """
 import os
 import pytest
-import tempfile
 
 
 ENV_VAR = "FIELDKIT_INTEGRATION_LAB"
 
 
-def _load_lab_config():
-    """Read + parse the lab config referenced by
-    :data:`ENV_VAR`. Returns the parsed dict, or None when
-    the env is unset."""
-    path = os.environ.get(ENV_VAR, "").strip()
-    if not path:
+def _load_lab_root():
+    """Read + validate the lab folder referenced by the env var."""
+    root = os.environ.get(ENV_VAR, "").strip()
+    if not root:
         return None
+    if not os.path.isdir(root):
+        pytest.fail(
+            f"{ENV_VAR} points at {root!r} which isn't a directory. "
+            "Point it at the engagement folder root, not a file.")
+    return root
+
+
+def _load_lab_yaml(root):
+    """Read + parse <root>/lab.yaml — the identity declaration."""
+    path = os.path.join(root, "lab.yaml")
     if not os.path.isfile(path):
-        pytest.fail(f"{ENV_VAR} points at {path!r} but it doesn't exist")
+        pytest.fail(
+            f"{root}/lab.yaml is missing — recce should write it "
+            "with dc.ip, low_priv_cred, expectations (see "
+            "tests/integration/README.md).")
     from fieldkit.vendor import yaml
     try:
         with open(path) as fh:
             doc = yaml.safe_load(fh)
     except Exception as exc:                                # noqa: BLE001
-        pytest.fail(f"{path}: cannot parse lab config: {exc}")
+        pytest.fail(f"{path}: cannot parse: {exc}")
     if not isinstance(doc, dict):
-        pytest.fail(f"{path}: lab config must be a top-level mapping")
+        pytest.fail(f"{path}: must be a top-level mapping")
     return doc
 
 
 @pytest.fixture(scope="session")
-def lab_config():
-    """Full lab.yaml — every test may key into it directly, but
-    prefer the more specific fixtures below which enforce
-    per-key skip behavior."""
-    cfg = _load_lab_config()
-    if cfg is None:
+def lab_folder():
+    """Absolute path to the engagement folder root — the primary
+    fixture; every other fixture derives from it or lab.yaml
+    inside it."""
+    root = _load_lab_root()
+    if root is None:
         pytest.skip(f"integration test — set {ENV_VAR} to enable")
-    return cfg
+    return root
+
+
+@pytest.fixture(scope="session")
+def lab_config(lab_folder):
+    """Parsed lab.yaml — the identity declaration."""
+    return _load_lab_yaml(lab_folder)
 
 
 @pytest.fixture(scope="session")
 def lab_dc(lab_config):
-    """The lab's DC row: {ip, hostname, domain}. Skips when
-    the lab.yaml doesn't declare one."""
+    """DC identity: {ip, hostname, domain}. Skips when absent."""
     dc = lab_config.get("dc")
     if not dc or not dc.get("ip"):
         pytest.skip("lab.yaml has no dc.ip — DC-scoped test skipped")
@@ -65,7 +94,7 @@ def lab_dc(lab_config):
 
 @pytest.fixture(scope="session")
 def lab_domain(lab_dc):
-    """AD domain string (e.g. 'CORP.LOCAL')."""
+    """AD domain string."""
     d = lab_dc.get("domain")
     if not d:
         pytest.skip("lab.yaml has no dc.domain")
@@ -74,61 +103,70 @@ def lab_domain(lab_dc):
 
 @pytest.fixture(scope="session")
 def lab_low_priv_cred(lab_config):
-    """A low-priv domain credential the lab guarantees exists.
-    Shape: {user, password, domain}."""
+    """{user, password, domain} — a low-priv AD account the lab
+    guarantees works."""
     cred = lab_config.get("low_priv_cred")
     if not cred or not cred.get("user") or not cred.get("password"):
-        pytest.skip("lab.yaml has no low_priv_cred — auth-scoped test skipped")
+        pytest.skip("lab.yaml has no low_priv_cred")
     return cred
 
 
 @pytest.fixture(scope="session")
-def lab_recce_bridge(lab_config):
-    """Path (or URL) to a recce-bridge.json the lab provides."""
-    b = lab_config.get("recce_bridge")
-    if not b:
-        pytest.skip("lab.yaml has no recce_bridge — recce integration skipped")
-    return b
+def lab_expectations(lab_config):
+    """Per-test pinned outcomes from lab.yaml — falls back to
+    empty dict when the operator didn't pin."""
+    return lab_config.get("expectations") or {}
+
+
+@pytest.fixture(scope="session")
+def lab_dpapi_artifacts(lab_folder, lab_config):
+    """DPAPI staging inside the lab folder: expects
+    <lab-folder>/dpapi/mkey-* and cred-* to exist, plus
+    lab.yaml.dpapi.sid + password. Skips when either side missing."""
+    dpapi_cfg = lab_config.get("dpapi") or {}
+    if not dpapi_cfg.get("sid") or not dpapi_cfg.get("password"):
+        pytest.skip("lab.yaml has no dpapi.sid + dpapi.password")
+    dpapi_dir = os.path.join(lab_folder, "dpapi")
+    if not os.path.isdir(dpapi_dir):
+        pytest.skip(f"{dpapi_dir}/ missing — recce should stage a "
+                    "DPAPI master key + credential blob there")
+    import glob
+    mkeys = sorted(glob.glob(os.path.join(dpapi_dir, "mkey-*")))
+    blobs = sorted(glob.glob(os.path.join(dpapi_dir, "cred-*")))
+    if not mkeys or not blobs:
+        pytest.skip(f"{dpapi_dir}/ has no mkey-* or cred-* files")
+    return {**dpapi_cfg,
+            "mkey_path": mkeys[0],
+            "cred_blob_path": blobs[0]}
 
 
 @pytest.fixture(scope="session")
 def lab_vulnerable_services(lab_config):
-    """List of {host, product, version, expected_cve_key}
-    entries the lab guarantees vulnerable. Empty list skips."""
+    """Declared vulnerable services — each {host, product,
+    version, expected_cve_key}. Empty list skips."""
     svcs = lab_config.get("vulnerable_services") or []
     if not svcs:
         pytest.skip("lab.yaml has no vulnerable_services")
     return svcs
 
 
-@pytest.fixture(scope="session")
-def lab_windows_dpapi_host(lab_config):
-    """Windows host with staged DPAPI artifacts. Shape:
-    {ip, user, password, mkey_path, cred_blob_path, sid}."""
-    host = lab_config.get("dpapi_host")
-    if not host or not host.get("ip"):
-        pytest.skip("lab.yaml has no dpapi_host")
-    return host
-
-
-@pytest.fixture(scope="session")
-def lab_expectations(lab_config):
-    """Test-specific outcome expectations from lab.yaml. Each
-    integration test looks up its own key here (see the README
-    for the naming convention). Empty dict when the operator
-    didn't pin outcomes — tests then fall back to their own
-    defaults."""
-    return lab_config.get("expectations") or {}
-
-
 @pytest.fixture
 def fresh_engagement_db(tmp_path):
-    """A fresh Store with an initialized engagement. Function-
-    scoped so each test gets an isolated DB — integration tests
-    that mutate state don't cross-contaminate."""
+    """Function-scoped isolated engagement DB — every test gets
+    a fresh Store so state mutations don't cross-contaminate."""
     from fieldkit.state import Store
     db = tmp_path / "eng.db"
     s = Store.create(str(db))
     s.init_engagement("integration-test")
     yield s
     s.close()
+
+
+@pytest.fixture
+def synced_engagement(fresh_engagement_db, lab_folder):
+    """A fresh engagement with `fieldkit sync <lab_folder>`
+    already applied. Most integration tests want this — they
+    care about assertions post-sync, not the sync mechanics."""
+    from fieldkit import engagement_sync
+    engagement_sync.sync_folder(fresh_engagement_db, lab_folder)
+    return fresh_engagement_db

@@ -1,10 +1,8 @@
 """Integration: esc8 chain walk against a real vulnerable DC.
 
-Every step of the esc8 chain (reachability → PetitPotam →
-ntlmrelayx → ADCS cert-request → PKINIT → DCSync) fires for
-real. Catches: impacket arg drift, ntlmrelayx output-parsing
-regressions, real KDC / ADCS response strings vs marker
-patterns.
+Uses the synced_engagement fixture (already has hosts / creds
+folded from recce's bridge). Walks esc8; asserts terminal
+status matches operator's pinned expectation.
 """
 import pytest
 
@@ -13,24 +11,20 @@ import pytest
 class TestEsc8Chain:
 
     def test_esc8_walks_to_proven_against_lab_dc(
-            self, lab_dc, lab_low_priv_cred, lab_expectations,
-            fresh_engagement_db):
-        """Walk esc8 against the lab DC + assert the terminal
-        status matches the operator-pinned expectation
-        (usually 'proven' for a known-vulnerable lab)."""
+            self, synced_engagement, lab_dc, lab_low_priv_cred,
+            lab_expectations):
         from fieldkit import chain as chain_mod
-        from fieldkit.creds import Credential
 
-        # Add the low-priv cred to the engagement so
-        # coerce/relay steps can auth
+        # Cred should already be in the store from the sync,
+        # but seed it defensively so this test doesn't depend
+        # on the bridge shape.
+        from fieldkit.creds import Credential
         cred = Credential(
             username=lab_low_priv_cred["user"],
             secret=lab_low_priv_cred["password"],
             domain=lab_low_priv_cred.get("domain", ""))
-        fresh_engagement_db.add_credential(cred, source="lab-fixture")
+        synced_engagement.add_credential(cred, source="integration-fixture")
 
-        # Build + walk the chain with the ctx the CLI's
-        # cmd_chain_run would assemble
         class _Ctx:
             probe_port = 445
             probe_timeout = 5
@@ -49,7 +43,7 @@ class TestEsc8Chain:
             impersonate = "Administrator"
             dc_ip = lab_dc["ip"]
             listener_uri = None
-            store = fresh_engagement_db
+            store = synced_engagement
 
         ch = chain_mod.esc8_chain(lab_dc["ip"])
         chain_mod.walk(ch, _Ctx())

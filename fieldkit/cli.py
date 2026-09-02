@@ -2639,6 +2639,57 @@ def cmd_retest(args, store):
 
 
 @needs_engagement
+def cmd_sync(args, store):
+    """Walk a recce-owned engagement folder + auto-ingest every
+    recognized artifact. One command instead of five separate
+    `ingest recce/nmap/nxc/hashcat/bloodhound import` calls;
+    idempotent so re-running against an updated folder folds
+    only new material.
+
+    Folder layout is documented in
+    fieldkit/engagement_sync.py and tests/integration/README.md.
+    """
+    from . import engagement_sync
+    try:
+        report = engagement_sync.sync_folder(store, args.folder)
+    except ValueError as exc:
+        _err(str(exc))
+        return 2
+
+    if getattr(args, "json", False):
+        import json as _json
+        print(_json.dumps({
+            "processed": report.processed,
+            "skipped": report.skipped,
+            "delta": {k: {"before": b, "after": a}
+                       for k, (b, a) in report.delta.items()},
+        }, indent=2))
+        return 0
+
+    print(f"sync {args.folder}:\n")
+    if report.processed:
+        print("processed:")
+        for e in report.processed:
+            rel = os.path.relpath(e["path"], args.folder)
+            print(f"  + {e['kind']:<12} {rel}"
+                  + (f"  ({e['note']})" if e["note"] else ""))
+    if report.skipped:
+        print("\nskipped:")
+        for e in report.skipped:
+            rel = os.path.relpath(e["path"], args.folder)
+            marker = "!" if e["action"] == "failed" else "-"
+            print(f"  {marker} {e['kind']:<12} {rel}"
+                  + (f"  ({e['note']})" if e["note"] else ""))
+    if report.delta:
+        print("\nstate delta:")
+        for k, (before, after) in sorted(report.delta.items()):
+            print(f"  {k}: {before} → {after}")
+    else:
+        print("\nno state change (folder was already synced)")
+    return 0
+
+
+@needs_engagement
 def cmd_sccm_enum(args, store):
     """SCCM/MECM enum — surface the attack surface of a Microsoft
     Endpoint Configuration Manager install: management points,
@@ -5161,6 +5212,22 @@ the spec is missing that field. `--from-file` reads one credential per line.
         "enum", help="print SCCM enum + attack-path one-liners")
     sc_enum.set_defaults(func=cmd_sccm_enum)
     p_sccm.set_defaults(func=lambda a: _missing(p_sccm))
+
+    p_sync = sub.add_parser(
+        "sync",
+        help="ingest every recognized artifact from a recce engagement folder",
+        description="Walk a canonical recce-owned engagement folder + "
+                    "auto-ingest every artifact (recce-bridge.json, "
+                    "nmap/*.xml, nxc/*.log, bloodhound/*.zip, "
+                    "loot/*.potfile) into the current engagement. "
+                    "One command instead of five separate ingest calls; "
+                    "idempotent so re-running folds only new material. "
+                    "Folder layout: see fieldkit/engagement_sync.py "
+                    "docstring or tests/integration/README.md.")
+    p_sync.add_argument("folder", help="engagement folder path")
+    p_sync.add_argument("--json", action="store_true",
+                         help="emit machine-readable JSON")
+    p_sync.set_defaults(func=cmd_sync)
 
     p_refresh = sub.add_parser(
         "refresh",
