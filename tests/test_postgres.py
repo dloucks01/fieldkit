@@ -181,5 +181,15 @@ class RendererTest(unittest.TestCase):
         self.assertTrue(any("password only" in n for n in r.notes))
 
 
+
+class RoleEscapingTest(unittest.TestCase):
+    """Role names come from the untrusted target; escape both the string literal and
+    the double-quoted identifier so a crafted name can't break/inject the query."""
+
+    def test_literal_and_identifier_escaping(self):
+        self.assertEqual(postgres._pg_lit("a'b"), "a''b")
+        self.assertEqual(postgres._pg_ident('a"b'), 'a""b')
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

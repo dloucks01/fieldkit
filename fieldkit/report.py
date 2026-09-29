@@ -42,8 +42,12 @@ def _affected_host(host):
     return label, ip, host["hostname"] or ""
 
 
-def build(store, config, *, proven_only=True):
-    """Assemble ``(engagement, findings)`` dicts from the engagement database."""
+def build(store, config, *, proven_only=True, include_suppressed=False):
+    """Assemble ``(engagement, findings)`` dicts from the engagement database.
+
+    Suppressed (accepted-risk) findings are excluded by default — suppression means
+    "don't surface this again", which must hold for the client deliverable too. Pass
+    ``include_suppressed=True`` to keep them (e.g. an appendix)."""
     row = store.require_engagement()
     hosts = {h["id"]: h for h in store.hosts()}
     client = config.get("client") or row["name"]
@@ -75,6 +79,9 @@ def build(store, config, *, proven_only=True):
     }
     findings = []
     for f in store.findings(proven_only=proven_only):
+        if not include_suppressed and store.is_suppressed(
+                f["vector_type"], host_id=f["host_id"], title=f["title"] or ""):
+            continue
         host = hosts.get(f["host_id"])
         label, ip, hostname = _affected_host(host)
         steps = [{"cmd": s["cmd"], "output": s["output"] or "",
@@ -109,6 +116,8 @@ def build(store, config, *, proven_only=True):
             "ip": ip,
             "hostname": hostname,
             "proven": bool(f["proven"]),
+            "severity": f["severity"],
+            "risk": f["risk"],
             "evidence": f["evidence"] or "",
             "references": "",
             "steps": steps,
@@ -206,9 +215,13 @@ def _kb(f):
 
 # --------------------------------------------------------------------- --check
 
-def check(findings):
+def check(findings, chain_history=None):
     """Anti-fabrication / completeness gate. Returns ``(errors, warns)`` as
     ``(tag, message)`` lists — errors must be empty before a report is trustworthy.
+
+    ``chain_history`` (optional) is validated too: a chain rendered as a proven walk
+    must carry captured step evidence, closing the gap where a compromise claim in the
+    chain-history section bypassed the finding-level gate.
 
     A **proven** finding must carry its captured proof (command + output) — that is the
     anti-fabrication spine. An **observation** (an unproven finding, ``proven=False``,
@@ -235,11 +248,25 @@ def check(findings):
         for n, s in enumerate(steps, 1):
             if not str(s.get("cmd", "")).strip():
                 errors.append((tag, f"step {n}: empty command"))
-            if not str(s.get("output", "")).strip():
-                errors.append((tag, f"step {n}: NO output captured"))
             blob = (str(s.get("cmd", "")) + " " + str(s.get("output", ""))).lower()
             if any(p in blob for p in PLACEHOLDERS):
                 warns.append((tag, f"step {n}: contains a placeholder token"))
+        # Anti-fabrication: a proven finding must have AT LEAST ONE step that captured
+        # output (the proof). Setup/aux steps may legitimately produce none (chmod, a
+        # redirect), so requiring output on EVERY step wrongly blocks honest findings
+        # and trains operators to reach for --force, which disables this gate entirely.
+        if proven and steps and not any(str(s.get("output", "")).strip() for s in steps):
+            errors.append((tag, "no step captured any output — the proof is missing"))
+    # Chain-history compromise claims render into the SAME deliverable but are not in
+    # `findings`, so they would otherwise skip this gate. A chain claiming a completed
+    # (proven) walk must carry captured step evidence too, or it is an unbacked claim.
+    for ch in (chain_history or []):
+        if ch.get("status") == "proven":
+            tag = f"chain #{ch.get('id')} ({ch.get('profile')})"
+            csteps = ch.get("steps", [])
+            if not csteps or not any(str(s.get("evidence", "")).strip() for s in csteps):
+                errors.append(
+                    (tag, "chain claims a proven walk but captured no step evidence"))
     return errors, warns
 
 
