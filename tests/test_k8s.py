@@ -105,5 +105,42 @@ class ApplyTest(K8sTestCase):
         self.assertEqual(len(k8s.escalation_paths(self.store)), 1)
 
 
+class PrivescRuleTest(K8sTestCase):
+    """Edges are DERIVED from raw RBAC grants (kubectl auth can-i --list) via the
+    privesc-primitive ruleset, so an operator can feed a grants dump, not a graph."""
+
+    def _apply(self, subjects, edges=None):
+        k8s.apply_rbac(self.store, json.dumps(
+            {"cluster": "p", "subjects": subjects, "edges": edges or []}))
+
+    def test_create_pods_reaches_cluster_admin(self):
+        self._apply([{"id": "sa:default/app", "name": "app", "owned": True,
+                      "permissions": ["get configmaps", "create pods"]}])
+        paths = k8s.escalation_paths(self.store)
+        self.assertEqual(len(paths), 1)
+        self.assertIn("create pods", paths[0]["evidence"])
+        self.assertIn("cluster-admin-equivalent", paths[0]["evidence"])
+
+    def test_full_wildcard_matches(self):
+        self._apply([{"id": "sa:x/y", "name": "y", "owned": True,
+                      "permissions": ["* *"]}])
+        self.assertEqual(len(k8s.escalation_paths(self.store)), 1)
+
+    def test_multi_hop_pod_create_then_bind(self):
+        self._apply(
+            [{"id": "sa:default/app", "name": "app", "owned": True},
+             {"id": "sa:ci/runner", "name": "runner",
+              "permissions": ["bind clusterroles"]}],
+            edges=[{"src": "sa:default/app", "dst": "sa:ci/runner", "kind": "pods/create"}])
+        ev = k8s.escalation_paths(self.store)[0]["evidence"]
+        self.assertIn("pods/create", ev)
+        self.assertIn("bind clusterroles", ev)
+
+    def test_benign_grants_yield_no_path(self):
+        self._apply([{"id": "sa:x/w", "name": "w", "owned": True,
+                      "permissions": ["get pods", "list configmaps"]}])
+        self.assertEqual(k8s.escalation_paths(self.store), [])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
