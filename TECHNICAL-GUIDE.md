@@ -367,12 +367,14 @@ Each records findings/loot and feeds `analyze`. The loop closes: `roast` → cra
 
 ### Non-AD domains & the asset model
 
-AD is the spine; the same store → capture → anti-fabrication-report core carries four
+AD is the spine; the same store → capture → anti-fabrication-report core carries five
 more domains, each a thin driver over shared machinery — the **asset** table
-(`host` / `endpoint` / `cloud_principal` / `k8s_subject`), the **asset_edge** graph, and
-the shared owned→high-value BFS (`assetgraph`, reusing `bloodhound._bfs`). Findings from
+(`host` / `endpoint` / `cloud_principal` / `k8s_subject` / `saas_principal`), the
+**asset_edge** graph, and the shared owned→high-value BFS (`assetgraph`, reusing
+`bloodhound._bfs`), which **ranks every path worst-first by blast radius**. Findings from
 every domain flow through `analyze` (cross-domain block), `status`, and `report --check`
-like AD's, and are **observations** until proven.
+like AD's (the report groups them by domain with a cross-domain summary), and are
+**observations** until proven.
 
 ```bash
 # external services — match discovered versions against the CVE-TTP library
@@ -383,6 +385,8 @@ fieldkit web probe|scan <url> ; fieldkit ingest httpx|nuclei <file>
 fieldkit ingest cloud <graph.json> ; fieldkit cloud paths ; fieldkit cloud rules
 # kubernetes RBAC
 fieldkit ingest k8s <graph.json> ; fieldkit k8s paths ; fieldkit k8s rules
+# SaaS / identity provider (Entra ID / Okta) — owned identity → tenant admin
+fieldkit ingest saas <graph.json> ; fieldkit saas paths ; fieldkit saas rules
 ```
 
 **The cloud/k8s graph contract** (a normalized JSON your own enumerator produces —
@@ -411,6 +415,8 @@ and fieldkit converts it to the graph above:
 aws iam get-account-authorization-details > authdetails.json
 fieldkit ingest cloud authdetails.json --from aws-authdetails --owned <your-arn-or-name>
 kubectl auth can-i --list | fieldkit ingest k8s - --from kubectl --subject <foothold-sa>
+az rest --method GET --url "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?\$expand=principal,roleDefinition" \
+  | fieldkit ingest saas - --from entra-roles --owned <you>
 ```
 
 The AWS adapter resolves each user's/role's effective **Allow** actions (inline +

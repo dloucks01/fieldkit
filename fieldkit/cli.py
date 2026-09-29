@@ -840,6 +840,7 @@ def _cross_domain_moves(store):
     from . import external as external_mod
     from . import cloud_iam as cloud_mod
     from . import k8s as k8s_mod
+    from . import saas as saas_mod
     groups = []
 
     ext = []
@@ -858,6 +859,11 @@ def _cross_domain_moves(store):
          for p in k8s_mod.escalation_paths(store)]
     if k:
         groups.append(("kubernetes RBAC (owned → admin)", k))
+
+    sa = [f"[{p['priority']}] {p['evidence']}"
+          for p in saas_mod.escalation_paths(store)]
+    if sa:
+        groups.append(("SaaS / identity provider (owned → admin)", sa))
 
     order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
     web = sorted((f for f in store.findings() if f["vector_type"] == "web_vuln"),
@@ -4826,6 +4832,54 @@ def cmd_k8s_paths(args, store):
     return _print_paths(k8s_mod.escalation_paths(store), "k8s RBAC", "k8s")
 
 
+@needs_engagement
+def cmd_ingest_saas(args, store):
+    """Fold a normalized SaaS/IdP graph (JSON) into state and record owned→admin
+    escalation paths as findings. With ``--from entra-roles``, first adapt Microsoft
+    Graph directory role-assignment JSON into that graph."""
+    from . import adapters
+    from . import saas as saas_mod
+    text, rc = _read_file_or_stdin(args, "SaaS/IdP graph")
+    if text is None:
+        return rc
+    src = getattr(args, "src_format", "fieldkit")
+    if src != "fieldkit":
+        try:
+            graph = adapters.SAAS_FORMATS[src](
+                text, owned=getattr(args, "owned", []) or [])
+        except adapters.AdapterError as exc:
+            _err(f"adapt {src}: {exc}")
+            return 2
+        text = json.dumps(graph)
+    try:
+        rep = saas_mod.apply_saas(store, text)
+    except saas_mod.SaasError as exc:
+        _err(f"SaaS/IdP: {exc}")
+        return 2
+    print(f"ingested {rep.principals_added} principal(s), {rep.edges_added} edge(s); "
+          f"{rep.findings_added} escalation path(s) recorded")
+    return 0
+
+
+@needs_engagement
+def cmd_saas_paths(args, store):
+    """Print owned→admin SaaS/IdP escalation paths from the ingested graph."""
+    from . import saas as saas_mod
+    return _print_paths(saas_mod.escalation_paths(store), "SaaS/IdP", "saas")
+
+
+def cmd_saas_rules(args):
+    """List the SaaS/IdP (Entra ID / Okta) privilege-escalation primitives the
+    role-derivation recognizes (holding one lets a principal reach tenant admin)."""
+    from . import saas as saas_mod
+    r = saas_mod.rules()
+    print(f"{len(r)} SaaS/IdP privesc primitives recognized by `ingest saas` "
+          "(a principal holding one reaches global-admin-equivalent):\n")
+    for label, required in r:
+        print(f"  {label:44} requires: {', '.join(required)}")
+    return 0
+
+
 def _print_paths(paths, what, ingest_cmd):
     if not paths:
         print(f"no owned→admin escalation paths — ingest a {what} graph first: "
@@ -5110,6 +5164,26 @@ the spec is missing that field. `--from-file` reads one credential per line.
         help="name for the subject when using `--from kubectl` (default: self).")
     i_k8s.set_defaults(func=cmd_ingest_k8s)
 
+    i_saas = ingest_sub.add_parser(
+        "saas", help="record a normalized SaaS/IdP graph (principals + escalation edges)",
+        description="Reads a normalized SaaS / identity-provider graph (JSON: principals "
+                    "with owned/admin flags + held directory roles / Graph permissions, "
+                    "or explicit escalation edges) produced by your enumerator "
+                    "(AzureHound / ROADtools / an `az rest` or Okta API dump), folds it "
+                    "into `saas_principal` assets + the asset graph, and records each "
+                    "owned→admin escalation path as a `saas_privesc` finding. Idempotent.")
+    i_saas.add_argument("file", nargs="?", help="SaaS/IdP graph JSON (or `-` / stdin)")
+    i_saas.add_argument(
+        "--from", dest="src_format", choices=["fieldkit", "entra-roles"],
+        default="fieldkit",
+        help="input format (default: fieldkit's normalized graph). `entra-roles` adapts "
+             "Microsoft Graph `roleManagement/directory/roleAssignments` JSON.")
+    i_saas.add_argument(
+        "--owned", action="append", default=[], metavar="ID_OR_NAME",
+        help="mark this principal (by id, displayName or UPN) as owned — your foothold; "
+             "repeatable. Only meaningful with `--from`.")
+    i_saas.set_defaults(func=cmd_ingest_saas)
+
     p_ingest.set_defaults(func=lambda a: _missing(p_ingest))
 
     p_k8s = sub.add_parser(
@@ -5126,6 +5200,21 @@ the spec is missing that field. `--from-file` reads one credential per line.
         "rules", help="list the Kubernetes RBAC privesc primitives `ingest k8s` derives from")
     k_rules.set_defaults(func=cmd_k8s_rules)
     p_k8s.set_defaults(func=lambda a: _missing(p_k8s))
+
+    p_saas = sub.add_parser(
+        "saas", help="SaaS / identity-provider escalation pathing (owned identity → tenant admin)")
+    saas_sub = p_saas.add_subparsers(dest="saas_command", metavar="<action>")
+    s_paths = saas_sub.add_parser(
+        "paths", help="owned→admin escalation paths from the ingested SaaS/IdP graph",
+        description="Runs the owned→high-value pathfinder over the ingested SaaS/IdP "
+                    "graph (`ingest saas`) and prints every shortest path from a "
+                    "principal you control to a tenant-admin-equivalent role — the same "
+                    "BFS the AD, cloud and k8s sides use, over the asset graph.")
+    s_paths.set_defaults(func=cmd_saas_paths)
+    s_rules = saas_sub.add_parser(
+        "rules", help="list the SaaS/IdP (Entra/Okta) privesc primitives `ingest saas` derives from")
+    s_rules.set_defaults(func=cmd_saas_rules)
+    p_saas.set_defaults(func=lambda a: _missing(p_saas))
 
     p_web = sub.add_parser(
         "web", help="web-app surface — probe live endpoints + scan with nuclei")

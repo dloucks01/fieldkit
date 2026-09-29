@@ -46,10 +46,12 @@ add cred/hosts → spray (loop: loot → promote → re-spray) → enum → anal
 ## Domains
 
 The AD credential loop is the spine, but the same store → capture → anti-fabrication-report
-core drives four more domains. Each is a thin driver over shared machinery — the **asset
-model** (`host` / `endpoint` / `cloud_principal` / `k8s_subject` / … are all assets), the
-**asset graph** (directed escalation edges), and the same owned→high-value **BloodHound
-BFS** — so a web/cloud/k8s finding flows through `report --check` exactly like an AD one.
+core drives five more domains. Each is a thin driver over shared machinery — the **asset
+model** (`host` / `endpoint` / `cloud_principal` / `k8s_subject` / `saas_principal` / … are
+all assets), the **asset graph** (directed escalation edges), and the same owned→high-value
+**BloodHound BFS** — so a web/cloud/k8s/SaaS finding flows through `report --check` exactly
+like an AD one. Every graph domain's escalation paths are **ranked worst-first** by blast
+radius.
 
 | Domain | Drive it with | What it finds |
 |---|---|---|
@@ -58,12 +60,15 @@ BFS** — so a web/cloud/k8s finding flows through `report --check` exactly like
 | **External services** | `ingest nmap -sV` → `external` | discovered services matched to the CVE-TTP library (`exposed_service_cve`) |
 | **Cloud IAM** | `ingest cloud <graph>` → `cloud paths` | owned→admin IAM escalation paths (`cloud_privesc`) |
 | **Kubernetes RBAC** | `ingest k8s <graph>` → `k8s paths` | owned→cluster-admin RBAC paths (`k8s_privesc`) |
+| **SaaS / identity provider** | `ingest saas <graph>` → `saas paths` | owned→tenant-admin Entra/Okta role paths (`saas_privesc`) |
 
 `fieldkit status` shows the whole picture — assets by kind and findings by domain — in one
 board; `fieldkit report` renders every domain's findings through the one anti-fabrication
-gate. fieldkit calls no cloud/cluster APIs itself: the cloud and k8s domains ingest a
-normalized graph your own enumerator produces (prowler / ScoutSuite / `kubectl auth can-i`
-/ rbac-tool), the same tool-agnostic handoff as everything else it drives.
+gate, grouped by domain with a cross-domain executive summary. fieldkit calls no
+cloud/cluster/IdP APIs itself: the graph domains ingest a normalized graph your own
+enumerator produces, the same tool-agnostic handoff as everything else it drives — and
+`ingest … --from` adapts native output directly (`aws iam get-account-authorization-details`,
+`kubectl auth can-i --list`, Microsoft Graph role assignments), so you pipe what you have.
 
 ## Install
 

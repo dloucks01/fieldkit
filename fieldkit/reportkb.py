@@ -66,6 +66,20 @@ KB = {
             "permissions boundary, deny `iam:CreatePolicyVersion` on privileged "
             "policies); apply least-privilege and re-run the path analysis to confirm "
             "the chain is broken."),
+    "saas_privesc": dict(sev="High", cwe="CWE-269", os="",
+        name="SaaS / identity-provider privilege-escalation path",
+        desc="A principal the assessment controls (a user, group or service principal) "
+             "can reach a tenant-admin-equivalent role through the identity provider "
+             "(Entra ID / Azure AD or Okta) — by holding a role such as Privileged Role "
+             "Administrator or Application Administrator, a Microsoft Graph app "
+             "permission like RoleManagement.ReadWrite.Directory, or by controlling an "
+             "app/service principal that does. The path makes a low-privileged identity "
+             "effectively tenant admin.",
+        rem="Break the chain on each hop: remove the offending directory role or Graph "
+            "app permission, put privileged roles behind PIM / just-in-time activation "
+            "with approval, restrict who can manage app credentials and role "
+            "assignments, and review high-privilege service principals; re-run the path "
+            "analysis to confirm the chain is broken."),
     "web_vuln": dict(sev="Medium", cwe="CWE-1035", os="",
         name="Web application vulnerability (nuclei)",
         desc="A nuclei template matched against a web endpoint, indicating a known "
@@ -649,16 +663,18 @@ _DOMAIN_BY_VECTOR = {
     "exposed_service_cve": "external",
     "cloud_privesc": "cloud",
     "k8s_privesc": "k8s",
+    "saas_privesc": "saas",
 }
 
 #: Display order (AD first — it's the core and usually the bulk) and human labels.
-DOMAIN_ORDER = ["ad", "external", "web", "cloud", "k8s"]
+DOMAIN_ORDER = ["ad", "external", "web", "cloud", "k8s", "saas"]
 _DOMAIN_LABELS = {
     "ad": "Active Directory & hosts",
     "external": "External network services",
     "web": "Web applications",
     "cloud": "Cloud IAM",
     "k8s": "Kubernetes RBAC",
+    "saas": "SaaS / identity provider",
 }
 
 def domain_of(vt):
@@ -686,6 +702,7 @@ RISK = {
     "postgres_unauth": "read-only",         # the connection itself proves it
     "cloud_privesc": "read-only",           # a reachable IAM path — enumerated, not walked
     "k8s_privesc": "read-only",             # a reachable RBAC path — enumerated, not walked
+    "saas_privesc": "read-only",            # a reachable IdP role path — enumerated, not walked
     "web_vuln": "read-only",                # a nuclei match is an observation, not exploited
     "mongodb_unauth": "read-only",          # the connection itself proves it
     "mongodb_admin": "read-only",
