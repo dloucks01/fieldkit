@@ -175,6 +175,64 @@ def kubectl_can_i(text, *, subject="self", cluster="cluster", owned=True):
                           "owned": bool(owned), "permissions": sorted(set(perms))}]}
 
 
+# --------------------------------------------------------------------------- SaaS / IdP
+
+_ENTRA_KIND = {
+    "#microsoft.graph.user": "user",
+    "#microsoft.graph.group": "group",
+    "#microsoft.graph.serviceprincipal": "serviceprincipal",
+}
+
+
+def entra_role_assignments(text, *, owned=()):
+    """Adapt Microsoft Graph directory role assignments into a SaaS/IdP graph.
+
+    Expects the JSON from::
+
+        az rest --method GET --url "https://graph.microsoft.com/v1.0/roleManagement/\
+directory/roleAssignments?$expand=principal,roleDefinition"
+
+    (an object with a ``value`` list of ``{principal, roleDefinition}`` entries). Groups
+    the assignments by principal, so each principal carries the directory-role names it
+    holds as ``permissions`` — from which the SaaS privesc ruleset derives the paths.
+    A principal holding *Global Administrator* is marked ``admin``; ``owned`` marks a
+    principal (by id, displayName or userPrincipalName). Raises :class:`AdapterError`
+    on invalid JSON / shape."""
+    try:
+        doc = json.loads(text) if isinstance(text, str) else text
+    except (ValueError, TypeError) as exc:
+        raise AdapterError(f"not valid JSON: {exc}") from None
+    if not isinstance(doc, dict) or "value" not in doc:
+        raise AdapterError(
+            "expected Microsoft Graph roleAssignments JSON (an object with a 'value' "
+            "list of {principal, roleDefinition} entries)")
+    owned_set = {o.strip() for o in owned if o and o.strip()}
+    by_id = {}
+    for a in doc.get("value") or []:
+        princ = a.get("principal") or {}
+        pid = (princ.get("id") or "").strip()
+        role = ((a.get("roleDefinition") or {}).get("displayName") or "").strip()
+        if not pid or not role:
+            continue
+        name = (princ.get("displayName") or princ.get("userPrincipalName")
+                or pid).strip()
+        upn = (princ.get("userPrincipalName") or "").strip()
+        p = by_id.setdefault(pid, {
+            "id": pid, "name": name,
+            "type": _ENTRA_KIND.get(str(princ.get("@odata.type", "")).lower(), "user"),
+            "owned": bool(owned_set & {pid, name, upn}),
+            "roles": set()})
+        p["roles"].add(role)
+    principals = []
+    for p in by_id.values():
+        roles = sorted(p.pop("roles"))
+        p["permissions"] = roles
+        p["admin"] = any(r.lower() == "global administrator" for r in roles)
+        principals.append(p)
+    return {"tenant": "entra", "principals": principals}
+
+
 #: Native formats each ingest command understands, mapped to their adapter.
 CLOUD_FORMATS = {"aws-authdetails": aws_authorization_details}
 K8S_FORMATS = {"kubectl": kubectl_can_i}
+SAAS_FORMATS = {"entra-roles": entra_role_assignments}

@@ -18,7 +18,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fieldkit import adapters, cloud_iam, k8s  # noqa: E402
+from fieldkit import adapters, cloud_iam, k8s, saas  # noqa: E402
 from fieldkit.state import Store  # noqa: E402
 
 # `aws iam get-account-authorization-details` (trimmed to the fields adapters read).
@@ -155,6 +155,49 @@ class KubectlAdapterTest(unittest.TestCase):
         paths = k8s.escalation_paths(store)
         self.assertTrue(paths)                          # create pods -> cluster-admin
         self.assertEqual(paths[0]["start"], "app")
+
+
+ENTRA = {"value": [
+    {"principal": {"@odata.type": "#microsoft.graph.user", "id": "u1",
+                   "displayName": "Helga", "userPrincipalName": "helga@contoso.com"},
+     "roleDefinition": {"displayName": "Application Administrator"}},
+    {"principal": {"@odata.type": "#microsoft.graph.user", "id": "u1",
+                   "displayName": "Helga", "userPrincipalName": "helga@contoso.com"},
+     "roleDefinition": {"displayName": "Reports Reader"}},
+    {"principal": {"@odata.type": "#microsoft.graph.servicePrincipal", "id": "sp1",
+                   "displayName": "ci-app"},
+     "roleDefinition": {"displayName": "Global Administrator"}},
+]}
+
+
+class EntraAdapterTest(unittest.TestCase):
+    def test_groups_roles_per_principal(self):
+        g = adapters.entra_role_assignments(json.dumps(ENTRA), owned=["helga@contoso.com"])
+        self.assertEqual(g["tenant"], "entra")
+        by = {p["name"]: p for p in g["principals"]}
+        self.assertEqual(set(by), {"Helga", "ci-app"})
+        self.assertEqual(set(by["Helga"]["permissions"]),
+                         {"Application Administrator", "Reports Reader"})
+        self.assertTrue(by["Helga"]["owned"])          # matched by UPN
+        self.assertFalse(by["Helga"]["admin"])
+        self.assertEqual(by["ci-app"]["type"], "serviceprincipal")
+        self.assertTrue(by["ci-app"]["admin"])         # Global Administrator
+
+    def test_bad_shape_raises(self):
+        with self.assertRaises(adapters.AdapterError):
+            adapters.entra_role_assignments('{"no":"value"}')
+
+    def test_end_to_end_reaches_admin(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = Store.create(os.path.join(tmp.name, "e.db"))
+        self.addCleanup(store.close)
+        store.init_engagement("ENTRA")
+        g = adapters.entra_role_assignments(json.dumps(ENTRA), owned=["Helga"])
+        saas.apply_saas(store, json.dumps(g))
+        paths = saas.escalation_paths(store)
+        self.assertTrue(paths)                          # Application Administrator → admin
+        self.assertEqual(paths[0]["start"], "Helga")
 
 
 if __name__ == "__main__":  # pragma: no cover
