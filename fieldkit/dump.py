@@ -128,7 +128,9 @@ def _from_cleartext(section, body, m):
         not _NOT_A_PASSWORD.match(secret)
         and not user.endswith("$")           # machine account, not a login we reuse
         and "$" not in secret
-        and user)
+        and user
+        and not any(c.isspace() for c in user))  # a real account name has no spaces;
+                                                  # "Impacket note: ..." etc. is not a login
     if promotable:
         cred = _safe_credential(username=user, secret=secret, secret_type="password",
                                 domain=domain, local_auth=False)

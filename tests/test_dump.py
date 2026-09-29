@@ -96,6 +96,19 @@ class RawPasteTest(unittest.TestCase):
         self.assertEqual(e.credential.secret_type, "lm:nt")  # non-empty LM kept
 
 
+class CleartextAnnotationTest(unittest.TestCase):
+    """A stray `key: value` annotation line in captured LSA output must not be
+    promoted as a credential (its 'user' has a space); a real secret name is kept."""
+
+    def test_annotation_line_is_not_promoted_but_real_secret_is(self):
+        dump = ("[*] Dumping LSA secrets\n"
+                "Impacket note: something happened\n"
+                "DefaultPassword: Hunter2\n")
+        by_principal = {e.principal: e for e in parse_dump(dump)}
+        self.assertFalse(by_principal["Impacket note"].promotable)   # space in name → junk
+        self.assertTrue(by_principal["DefaultPassword"].promotable)  # real autologon secret
+
+
 class UserStatusSuffixTest(unittest.TestCase):
     """secretsdump `-user-status` appends `(status=Enabled)` to the pwdump line. The
     NT hash must still be recovered as a hash — not have the whole tail misread as a

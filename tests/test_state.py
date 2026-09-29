@@ -9,6 +9,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -256,6 +257,42 @@ class MigrationAtomicityTest(unittest.TestCase):
             st.MIGRATIONS, st.SCHEMA_VERSION = orig, orig_ver
         # with the good migration list the database still opens cleanly (not bricked)
         Store.open(self.path).close()
+
+
+class ConcurrentUpsertTest(unittest.TestCase):
+    """Parallel writers hammering the SAME unique keys must not crash on the
+    SELECT-then-INSERT race (each thread its own connection, WAL). The upserts
+    catch the IntegrityError and converge to one row per key."""
+
+    def test_parallel_writers_do_not_crash_and_dedupe(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "e.db")
+        Store.create(path).close()
+        errors = []
+
+        def worker():
+            try:
+                s = Store.open(path)
+                for _ in range(40):
+                    hid, _c = s.add_host("10.9.9.9")               # shared host key
+                    cid, _c = s.add_credential(
+                        Credential(username="shared", secret="pw"))  # shared cred key
+                    s.add_access(hid, cid, "smb")                    # shared access key
+                s.close()
+            except Exception as exc:                                 # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}")
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+
+        self.assertEqual(errors, [], "concurrent upserts raised")
+        s = Store.open(path)
+        self.addCleanup(s.close)
+        c = s.counts()
+        self.assertEqual(c["hosts"], 1)         # one row per unique key, no dupes
+        self.assertEqual(c["credentials"], 1)
+        self.assertEqual(c["access"], 1)
 
 
 class AccessIntegrityTest(unittest.TestCase):
