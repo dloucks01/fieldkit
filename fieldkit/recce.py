@@ -40,6 +40,8 @@ loudly with a clear operator error rather than half-parsing.
 import json
 from dataclasses import dataclass, field
 
+from .errors import FieldkitError
+
 BRIDGE_MAJOR = 1
 
 #: fieldkit vector_type for a recce-confirmed vulnerability. The KB predicate in
@@ -122,8 +124,12 @@ class RecceIngestReport:
     out_of_scope: list = field(default_factory=list)
 
 
-class RecceBridgeError(ValueError):
-    """Raised when the bridge is malformed or an unsupported major version."""
+class RecceBridgeError(FieldkitError, ValueError):
+    """Raised when the bridge is malformed or an unsupported major version.
+
+    A :class:`~fieldkit.errors.FieldkitError` so an uncaught bridge parse surfaces as a
+    clean operator message (main() catches the error family) rather than a traceback;
+    still a ``ValueError`` for back-compat with existing ``except ValueError`` callers."""
 
 
 def _coerce_severity(sev):

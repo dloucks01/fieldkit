@@ -70,6 +70,13 @@ class ParseTest(unittest.TestCase):
             recce.parse(payload)
         self.assertIn("_recce_bridge", str(cm.exception))
 
+    def test_bridge_error_is_a_fieldkit_error(self):
+        # so an uncaught bridge parse surfaces as a clean operator message (main()
+        # catches the FieldkitError family), while staying a ValueError for back-compat.
+        from fieldkit.errors import FieldkitError
+        self.assertTrue(issubclass(recce.RecceBridgeError, FieldkitError))
+        self.assertTrue(issubclass(recce.RecceBridgeError, ValueError))
+
     def test_unsupported_bridge_version_raises_clear_error(self):
         payload = json.dumps({"_recce_bridge": 999, "hosts": []})
         with self.assertRaises(recce.RecceBridgeError) as cm:
