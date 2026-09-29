@@ -849,11 +849,13 @@ def _cross_domain_moves(store):
     if ext:
         groups.append(("external services (CVE)", ext))
 
-    cloud = [p["evidence"] for p in cloud_mod.escalation_paths(store)]
+    cloud = [f"[{p['priority']}] {p['evidence']}"
+             for p in cloud_mod.escalation_paths(store)]
     if cloud:
         groups.append(("cloud IAM (owned → admin)", cloud))
 
-    k = [p["evidence"] for p in k8s_mod.escalation_paths(store)]
+    k = [f"[{p['priority']}] {p['evidence']}"
+         for p in k8s_mod.escalation_paths(store)]
     if k:
         groups.append(("kubernetes RBAC (owned → admin)", k))
 
@@ -4807,9 +4809,12 @@ def _print_paths(paths, what, ingest_cmd):
         print(f"no owned→admin escalation paths — ingest a {what} graph first: "
               f"`fieldkit ingest {ingest_cmd} <graph.json>`.")
         return 0
-    print(f"{_plural(len(paths), 'escalation path')} (owned → admin):\n")
+    print(f"{_plural(len(paths), 'escalation path')} (owned → admin), "
+          f"highest-priority first:\n")
     for p in paths:
-        print(f"  {p['evidence']}")
+        print(f"  [{p['priority']:<8}] {p['evidence']}")
+        print(f"      {_plural(p['hop_count'], 'hop')}, blast radius "
+              f"{p['blast_radius']} (score {p['score']})")
     return 0
 
 
