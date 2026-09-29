@@ -256,5 +256,53 @@ class WordlistSprayTest(LoopTestCase):
         self.assertIn("--continue-on-success", cmd)
 
 
+class WordlistSprayUnknownPolicyTest(unittest.TestCase):
+    """No stored credential -> `--pass-pol` can't be read, so a large wordlist spray
+    must refuse (assume-caught) unless the operator opts into the lockout risk."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = Store.create(os.path.join(self.tmp.name, "e.db"))
+        self.addCleanup(self.store.close)
+        self.store.init_engagement("ACME")
+        self.store.add_host("10.0.0.7", hostname="WS02")   # host but NO credential
+        self.cfg = load_config(self.store)
+
+    def _lists(self, n_pw):
+        u = os.path.join(self.tmp.name, "u.txt")
+        p = os.path.join(self.tmp.name, "p.txt")
+        open(u, "w").write("alice\nbob\n")
+        open(p, "w").write("\n".join(f"pw{i}" for i in range(n_pw)) + "\n")
+        return u, p
+
+    def test_big_passlist_refused_and_nothing_sprayed(self):
+        u, p = self._lists(50)
+        calls = []
+
+        def run(argv, env=None):
+            calls.append(argv)
+            return RunResult(argv, exit_code=0, stdout="")
+        rep = spray_mod.wordlist_spray(self.store, self.cfg, userlist=u, passlist=p, run=run)
+        self.assertIsNotNone(rep.aborted)
+        self.assertIn("lockout policy unknown", rep.aborted)
+        self.assertEqual(calls, [])   # refused before touching a host
+
+    def test_opt_in_overrides_the_unknown_policy_guard(self):
+        u, p = self._lists(50)
+        rep = spray_mod.wordlist_spray(
+            self.store, self.cfg, userlist=u, passlist=p,
+            run=lambda argv, env=None: RunResult(argv, exit_code=0, stdout=""),
+            allow_lockout_risk=True)
+        self.assertIsNone(rep.aborted)
+
+    def test_small_passlist_proceeds_without_opt_in(self):
+        u, p = self._lists(2)
+        rep = spray_mod.wordlist_spray(
+            self.store, self.cfg, userlist=u, passlist=p,
+            run=lambda argv, env=None: RunResult(argv, exit_code=0, stdout=""))
+        self.assertIsNone(rep.aborted)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

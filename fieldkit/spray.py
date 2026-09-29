@@ -35,6 +35,11 @@ MAX_ROUNDS = 12
 #: Protocols nxc can spray/validate that fieldkit renders auth for.
 PROTOCOLS = ("smb", "winrm", "ssh", "rdp", "mssql", "ldap", "ftp")
 
+#: Conservative per-user attempt floor for a wordlist spray when the lockout policy
+#: cannot be read (no stored credential to authenticate `--pass-pol`). Above this,
+#: the spray refuses unless the operator passes ``allow_lockout_risk``.
+UNKNOWN_POLICY_SAFE_ATTEMPTS = 3
+
 
 @dataclass
 class SprayReport:
@@ -309,7 +314,20 @@ def wordlist_spray(store, config, *, proto="smb", subnet=None, userlist=None,
                     "of locking accounts), or trim the passlist.")
                 return rep
     else:
-        rep.policy_note = "no stored credentials — cannot read lockout policy first"
+        # No stored credential means `--pass-pol` can't be read (it needs an auth).
+        # Assume-caught: don't blindly spray a large password list against an unknown
+        # policy — cap at a conservative floor unless the operator opts into the risk.
+        rep.policy_note = ("no stored credentials — lockout policy could not be read; "
+                           f"capped at {UNKNOWN_POLICY_SAFE_ATTEMPTS} attempts/user")
+        per_user_attempts = _count_lines(passlist)
+        if per_user_attempts > UNKNOWN_POLICY_SAFE_ATTEMPTS and not allow_lockout_risk:
+            rep.aborted = (
+                f"lockout policy unknown (no credential to read `--pass-pol`) — "
+                f"{per_user_attempts} passwords per user exceeds the conservative "
+                f"{UNKNOWN_POLICY_SAFE_ATTEMPTS}-attempt floor. Seed a credential so "
+                "the policy can be read first, pass `--allow-lockout-risk` to accept "
+                "the risk of locking accounts, or trim the passlist.")
+            return rep
 
     if on_event:
         on_event(f"wordlist spray {proto}: {rep.combinations} combos across "

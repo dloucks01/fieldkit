@@ -96,5 +96,21 @@ class RawPasteTest(unittest.TestCase):
         self.assertEqual(e.credential.secret_type, "lm:nt")  # non-empty LM kept
 
 
+class UserStatusSuffixTest(unittest.TestCase):
+    """secretsdump `-user-status` appends `(status=Enabled)` to the pwdump line. The
+    NT hash must still be recovered as a hash — not have the whole tail misread as a
+    cleartext 'password' (which would lose the hash and poison the spray)."""
+
+    def test_status_suffix_line_is_still_a_pwdump_hash(self):
+        dump = ("[+] Dumping SAM hashes\n"
+                f"Administrator:500:aad3b435b51404eeaad3b435b51404ee:{NT}::: (status=Enabled)\n")
+        entries = parse_dump(dump)
+        self.assertEqual(len(entries), 1)
+        e = entries[0]
+        self.assertEqual(e.kind, "sam_hash")
+        self.assertEqual(e.credential.secret_type, "nt")
+        self.assertEqual(e.credential.secret, NT)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
