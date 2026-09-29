@@ -2,10 +2,14 @@
 
 The field kit for the hours between first contact and full compromise.
 
-fieldkit is a **stateful internal-AD execution engine** for **authorized** penetration
-testing. From a credential or a foothold it ingests what you know (creds, hosts, tool
-output), drives your proven tools (netexec, impacket, evil-winrm, certipy) against the
-scope, runs the credential loop, escalates to SYSTEM/root, and reports only what it
+fieldkit is a **stateful, multi-domain execution engine** for **authorized** penetration
+testing. It began as an internal-AD engine — the credential loop is still its spine —
+and the same core (one SQLite engagement store, an injected-runner execution layer that
+captures everything, and an anti-fabrication report) now carries **web**,
+**external-service**, **cloud-IAM** and **Kubernetes-RBAC** domains too. From a
+credential, a foothold, or just a scan it ingests what you know (creds, hosts, tool
+output, IAM/RBAC graphs), drives your proven tools (netexec, impacket, certipy, httpx,
+nuclei, …) against the scope, finds the paths to compromise, and reports only what it
 actually proved. **Standalone — clones to a base Kali box and runs with no install**
 (Python 3 stdlib only for the engine; the tools it drives are your existing kit.
 Optional `bin/fieldkit tui` uses vendored Textual — no `pip install` needed.)
@@ -38,6 +42,28 @@ add cred/hosts → spray (loop: loot → promote → re-spray) → enum → anal
   construction — a finding can't render without the command + output that proved it.
 - **Assume-caught.** Evasion is a ranking axis: every technique is red until a Defender lab
   proves it clean; a live catch marks it red and the loop falls back.
+
+## Domains
+
+The AD credential loop is the spine, but the same store → capture → anti-fabrication-report
+core drives four more domains. Each is a thin driver over shared machinery — the **asset
+model** (`host` / `endpoint` / `cloud_principal` / `k8s_subject` / … are all assets), the
+**asset graph** (directed escalation edges), and the same owned→high-value **BloodHound
+BFS** — so a web/cloud/k8s finding flows through `report --check` exactly like an AD one.
+
+| Domain | Drive it with | What it finds |
+|---|---|---|
+| **Active Directory** | `spray` → `escalate` → `roast`/`delegation`/`adcs`/`bloodhound` | credential loop → SYSTEM/root → DA paths |
+| **Web** | `web probe`/`web scan` · `ingest httpx`/`nuclei` | live endpoints + `web_vuln` findings |
+| **External services** | `ingest nmap -sV` → `external` | discovered services matched to the CVE-TTP library (`exposed_service_cve`) |
+| **Cloud IAM** | `ingest cloud <graph>` → `cloud paths` | owned→admin IAM escalation paths (`cloud_privesc`) |
+| **Kubernetes RBAC** | `ingest k8s <graph>` → `k8s paths` | owned→cluster-admin RBAC paths (`k8s_privesc`) |
+
+`fieldkit status` shows the whole picture — assets by kind and findings by domain — in one
+board; `fieldkit report` renders every domain's findings through the one anti-fabrication
+gate. fieldkit calls no cloud/cluster APIs itself: the cloud and k8s domains ingest a
+normalized graph your own enumerator produces (prowler / ScoutSuite / `kubectl auth can-i`
+/ rbac-tool), the same tool-agnostic handoff as everything else it drives.
 
 ## Install
 

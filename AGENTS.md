@@ -8,11 +8,18 @@ need to know before touching anything substantial.
 ## What fieldkit is
 
 An offensive security CLI + TUI tool for **authorized** penetration
-testing. From a credential or foothold it drives the operator's
-existing tools (netexec, impacket, evil-winrm, certipy, bloodhound)
-against an in-scope AD, walks the credential loop, escalates
-proven access to SYSTEM/root, and delivers a report built from
-captured evidence (not fabricated writeups).
+testing. From a credential, foothold, or scan it drives the operator's
+existing tools (netexec, impacket, certipy, bloodhound, httpx, nuclei,
+…) against the scope, finds the paths to compromise, and delivers a
+report built from captured evidence (not fabricated writeups).
+
+AD is the spine (the credential loop → escalate → SYSTEM/root → DA
+paths), but the same store → capture → anti-fabrication-report core is
+**multi-domain**: web, external-service (CVE-TTP matching), cloud-IAM
+and Kubernetes-RBAC domains ride the shared **asset model** (`asset` /
+`asset_edge`) and the shared `assetgraph` pathfinder. A non-AD finding
+flows through `report --check` exactly like an AD one. When adding a
+domain, add a thin driver that reuses the spine — don't fork it.
 
 The stance is:
 
