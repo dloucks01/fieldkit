@@ -78,6 +78,38 @@ runs analyze in one command — the returning-operator flow after a break.
 **`fieldkit ttps list`** browses the 148-TTP catalog; **`fieldkit ttps show <key>`**
 pretty-prints one.
 
+## Beyond AD — the other domains
+
+The credential loop above is the AD spine. The same engine (state → captured evidence
+→ anti-fabrication report) drives four more domains; each records findings that show up
+in `fieldkit analyze` (cross-domain section), `fieldkit status`, and `fieldkit report`
+exactly like AD ones. Findings are **observations** until you prove them.
+
+```bash
+# External services → match discovered service versions against the CVE-TTP library
+nmap -sV -oX - <targets> | fieldkit ingest nmap -       # -sV populates product+version
+fieldkit external                                        # ranked CVE matches + exploit next-step
+
+# Web → live endpoints + template scan (drives your httpx / nuclei)
+fieldkit web probe https://app.corp.local               # → endpoint assets
+fieldkit web scan  https://app.corp.local               # → web_vuln findings
+fieldkit ingest nuclei nuclei.jsonl                     # or fold a saved scan
+
+# Cloud IAM → owned→admin escalation paths ("BloodHound for cloud")
+fieldkit ingest cloud iam-graph.json                    # principals + escalation edges
+fieldkit cloud paths                                     # e.g. dev -sts:AssumeRole-> admin
+
+# Kubernetes RBAC → owned→cluster-admin paths
+fieldkit ingest k8s rbac-graph.json                     # subjects + escalation edges
+fieldkit k8s paths                                       # e.g. app -bind-> cluster-admin
+
+fieldkit assets --kind endpoint                          # list assets of any kind
+```
+
+Cloud/k8s ingest a **normalized graph** your own enumerator produces (prowler /
+ScoutSuite / `kubectl auth can-i` / rbac-tool) — fieldkit calls no cloud/cluster APIs
+itself, the same tool-agnostic handoff as everything else it drives.
+
 ## If…
 
 - **No credential yet?** Two paths:

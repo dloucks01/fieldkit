@@ -127,6 +127,30 @@ Enum auto-picks Windows / Linux (SSH access infers Linux). Different OS ⇒ diff
 - `roast` → crack offline → `add cred` the cracked secret → `spray` again.
 - `bloodhound import` finds owned→DA paths; `delegation` / `adcs` surface more routes. All land in `analyze`.
 
+## Beyond AD — the other domains
+
+AD is the spine; the same store → capture → anti-fabrication-report core carries four
+more domains. Each is a thin driver over shared machinery — the **asset model**
+(`host` / `endpoint` / `cloud_principal` / `k8s_subject` are all assets), the **asset
+graph** (escalation edges), and the same owned→high-value **BFS** BloodHound uses — so
+their findings flow through `analyze` (cross-domain section), `status`, and
+`report --check` exactly like AD's.
+
+```
+External services   nmap -sV → ingest nmap → external      → CVE-TTP match (exposed_service_cve)
+Web                 web probe / web scan / ingest nuclei    → endpoints + web_vuln
+Cloud IAM           ingest cloud <graph> → cloud paths      → owned→admin path (cloud_privesc)
+Kubernetes RBAC     ingest k8s <graph>   → k8s paths        → owned→admin path (k8s_privesc)
+```
+
+- **Findings are observations** (a matched CVE / reachable path, not yet exploited); prove
+  one via its playbook and it renders as a proven finding through the normal path.
+- **Cloud/k8s are tool-agnostic**: fieldkit ingests a normalized graph your own enumerator
+  produces (prowler / ScoutSuite / `kubectl auth can-i` / rbac-tool), it calls no
+  cloud/cluster APIs itself.
+- `fieldkit analyze` ranks AD moves first, then a **cross-domain** block with the top
+  opportunity per domain; `fieldkit status` shows assets-by-kind + findings-by-domain.
+
 ## Findings vs Observations (in the report)
 
 The report separates two deliberately distinct results:
