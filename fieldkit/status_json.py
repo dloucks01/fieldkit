@@ -37,6 +37,9 @@ def status_dict(store, cfg=None, top_moves=None, phase=None):
 
     os_breakdown = {(r["os"] or "unknown"): r["n"] for r in store.host_os_breakdown()}
     cred_types = {r["secret_type"]: r["n"] for r in store.credential_type_breakdown()}
+    asset_kinds = {r["kind"]: r["n"] for r in store.asset_kind_breakdown()}
+    findings_by_type = {r["vector_type"]: {"total": r["n"], "proven": r["proven"] or 0}
+                        for r in store.finding_type_breakdown()}
 
     admin_hosts = [
         {"ip": h["ip"], "hostname": h["hostname"], "is_dc": bool(h["is_dc"])}
@@ -94,9 +97,12 @@ def status_dict(store, cfg=None, top_moves=None, phase=None):
             "findings": counts["findings"],
             "proven_findings": counts["proven_findings"],
             "loot": counts["loot"],
+            "assets": counts.get("assets", 0),
         },
         "os_breakdown": os_breakdown,
         "credential_types": cred_types,
+        "asset_kinds": asset_kinds,
+        "findings_by_type": findings_by_type,
         "pwned_hosts": admin_hosts,
         "top_moves": top_moves_out,
         "preflight_missing": pf_missing,

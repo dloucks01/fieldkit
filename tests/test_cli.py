@@ -553,7 +553,7 @@ class WorkflowTest(CliTestCase):
         store = self.store()
         self.assertEqual(store.counts(), {
             "hosts": 7, "services": 0, "credentials": 2, "access": 0, "admin_access": 0,
-            "admin_hosts": 0, "findings": 0, "proven_findings": 0, "loot": 0})
+            "admin_hosts": 0, "findings": 0, "proven_findings": 0, "loot": 0, "assets": 0})
         from fieldkit.config import load as load_config
         cfg = load_config(store)
         self.assertEqual(cfg.lhost_for("10.0.5.3"), "192.168.56.10")
