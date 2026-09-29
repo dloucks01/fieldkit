@@ -44,6 +44,9 @@ _MARKERS = ("[*]", "[+]", "[-]", "[!]")
 #: nxc marks admin with a literal ``(Pwn3d!)``; on some modules it is preceded by a
 #: reason (``Pwn3d!`` for admin, or e.g. ``(Guest)``). We treat the token as boolean.
 _PWNED = "(Pwn3d!)"
+#: Some nxc modules annotate the admin marker, e.g. ``(Pwn3d! via SeImpersonate)``.
+#: Match the token with an optional trailing reason so those still register as admin.
+_PWNED_RE = re.compile(r"\(Pwn3d!.*?\)")
 
 #: A trailing failure reason nxc appends after ``[-] dom\\user:secret`` —
 #: STATUS_LOGON_FAILURE, KDC_ERR_PREAUTH_FAILED, LOGON_FAILURE, and friends. Matched
@@ -158,9 +161,9 @@ def _parse_host_info(proto, ip, port, host, message):
 
 
 def _parse_auth(proto, ip, port, host, mark, message):
-    admin = _PWNED in message
+    admin = bool(_PWNED_RE.search(message))
     if admin:
-        message = message.replace(_PWNED, "").strip()
+        message = _PWNED_RE.sub("", message).strip()
     status = None
     if mark == "[-]":
         m = _STATUS.search(message)

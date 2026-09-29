@@ -532,10 +532,19 @@ class Store:
             if row is None:
                 cols = ["ip", "added"] + [k for k, _ in present]
                 vals = [ip, utcnow()] + [v for _, v in present]
-                cur = self.conn.execute(
-                    f"INSERT INTO host ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
-                    vals)
-                return cur.lastrowid, True
+                try:
+                    cur = self.conn.execute(
+                        f"INSERT INTO host ({', '.join(cols)}) "
+                        f"VALUES ({', '.join('?' * len(cols))})", vals)
+                    return cur.lastrowid, True
+                except sqlite3.IntegrityError:
+                    # A concurrent writer inserted this ip between our SELECT and
+                    # INSERT (WAL allows parallel writers). Fetch its row and enrich
+                    # it below rather than crashing the batch.
+                    row = self.conn.execute(
+                        "SELECT * FROM host WHERE ip = ?", (ip,)).fetchone()
+                    if row is None:
+                        raise
             updates = {k: v for k, v in fields.items() if v is not None and row[k] != v}
             if updates:
                 self.conn.execute(
@@ -664,11 +673,20 @@ class Store:
                 "AND secret_type = ? AND local_auth = ?", key).fetchone()
             if row is not None:
                 return row["id"], False
-            cur = self.conn.execute(
-                "INSERT INTO credential (domain, username, secret, secret_type, local_auth, "
-                "source, notes, added) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                key + (source, notes, utcnow()))
-            return cur.lastrowid, True
+            try:
+                cur = self.conn.execute(
+                    "INSERT INTO credential (domain, username, secret, secret_type, "
+                    "local_auth, source, notes, added) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    key + (source, notes, utcnow()))
+                return cur.lastrowid, True
+            except sqlite3.IntegrityError:
+                # concurrent writer stored the same credential first — return its row
+                row = self.conn.execute(
+                    "SELECT id FROM credential WHERE domain = ? AND username = ? AND "
+                    "secret = ? AND secret_type = ? AND local_auth = ?", key).fetchone()
+                if row is None:
+                    raise
+                return row["id"], False
 
     def credentials(self):
         return self.conn.execute(
@@ -718,11 +736,20 @@ class Store:
                 "WHERE host_id = ? AND cred_id IS ? AND method = ?",
                 (host_id, cred_id, method)).fetchone()
             if row is None:
-                cur = self.conn.execute(
-                    "INSERT INTO access (host_id, cred_id, method, admin, integrity, "
-                    "proven_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (host_id, cred_id, method, admin, integrity, utcnow()))
-                return cur.lastrowid, True
+                try:
+                    cur = self.conn.execute(
+                        "INSERT INTO access (host_id, cred_id, method, admin, integrity, "
+                        "proven_at) VALUES (?, ?, ?, ?, ?, ?)",
+                        (host_id, cred_id, method, admin, integrity, utcnow()))
+                    return cur.lastrowid, True
+                except sqlite3.IntegrityError:
+                    # concurrent writer proved the same access first — upgrade its row
+                    row = self.conn.execute(
+                        "SELECT id, admin, integrity FROM access "
+                        "WHERE host_id = ? AND cred_id IS ? AND method = ?",
+                        (host_id, cred_id, method)).fetchone()
+                    if row is None:
+                        raise
             updates = {}
             if admin and not row["admin"]:
                 updates["admin"] = admin

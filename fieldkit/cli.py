@@ -370,6 +370,11 @@ def cmd_ingest_nxc(args, store):
           + f"; {rep.access_added} new access {_word(rep.access_added, 'record')}"
           + (f" ({rep.admin_added} admin)" if rep.admin_added else "")
           + f"; {rep.hosts_added} hosts added, {rep.hosts_enriched} enriched")
+    if rep.out_of_scope:
+        preview = ", ".join(rep.out_of_scope[:5]) + (
+            f" (+{len(rep.out_of_scope) - 5} more)" if len(rep.out_of_scope) > 5 else "")
+        _err(f"{len(rep.out_of_scope)} host(s) skipped — outside engagement scope: "
+             f"{preview}")
     return 0
 
 

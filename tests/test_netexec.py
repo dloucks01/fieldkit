@@ -41,6 +41,13 @@ class AuthLineTest(unittest.TestCase):
         self.assertEqual(r.username, "Administrator")
         self.assertEqual(r.secret, "Winter2025!")  # (Pwn3d!) stripped, not folded into the secret
 
+    def test_reason_annotated_pwned_is_still_admin(self):
+        # some nxc modules print e.g. "(Pwn3d! via SeImpersonate)" — still admin,
+        # and the annotation must not leak into the secret.
+        r = parse_line("SMB 10.0.0.6 445 DC01 [+] corp.local\\svc:Winter2025! (Pwn3d! via SeImpersonate)")
+        self.assertTrue(r.admin)
+        self.assertEqual(r.secret, "Winter2025!")
+
     def test_failure_carries_status(self):
         r = parse_line("SMB   10.0.0.7   445   WS02   [-] corp.local\\jdoe:Winter2025! STATUS_LOGON_FAILURE")
         self.assertFalse(r.success)

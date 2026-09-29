@@ -803,6 +803,21 @@ class PostureCliTest(CliTestCase):
         self.assertIn("no lab host", out)
 
 
+class IngestScopeTest(CliTestCase):
+    def test_nxc_ingest_reports_out_of_scope_drop(self):
+        self.init()
+        self.run_cli("scope", "allow", "10.0.0.0/24")
+        cap = self.write("nxc.log",
+                         "SMB 10.0.0.7 445 WS02 [+] corp\\svc:pw (Pwn3d!)\n"
+                         "SMB 8.8.8.8 445 EXT [+] corp\\svc:pw (Pwn3d!)\n")
+        out = self.run_cli("ingest", "nxc", cap, "--yes")
+        self.assertIn("outside engagement scope", out)
+        self.assertIn("8.8.8.8", out)
+        s = self.store()
+        self.assertIsNotNone(s.host_by_ip("10.0.0.7"))
+        self.assertIsNone(s.host_by_ip("8.8.8.8"))   # dropped, not a live target
+
+
 class TuiGuardTest(CliTestCase):
     def test_tui_refuses_without_a_tty(self):
         # run_cli captures stdout into a StringIO (not a TTY), so the guard must fire
