@@ -120,5 +120,60 @@ class CrossDomainStitchTest(AdBridgeTestCase):
         self.assertEqual(assetgraph.cross_domain_paths(self.store), [])
 
 
+class EndpointLinkTest(AdBridgeTestCase):
+    def test_endpoint_linked_to_host_by_host_id(self):
+        hid, _ = self.store.add_host("10.0.0.9", hostname="WEB01")
+        self.store.add_asset("endpoint", "https://web01/app", host_id=hid)
+        adbridge.bridge(self.store)
+        ep = self.store.asset_by_key("endpoint", "https://web01/app")["id"]
+        host = self.store.asset_by_key("ad_host", "10.0.0.9")["id"]
+        self.assertTrue(any(e["src_id"] == ep and e["dst_id"] == host
+                            and e["kind"] == "hosted on"
+                            for e in self.store.asset_edges()))
+
+    def test_endpoint_linked_by_ip_literal_without_host_id(self):
+        hid, _ = self.store.add_host("10.0.0.20")
+        self.store.add_asset("endpoint", "http://10.0.0.20:8080")   # no host_id
+        adbridge.bridge(self.store)
+        ep = self.store.asset_by_key("endpoint", "http://10.0.0.20:8080")["id"]
+        host = self.store.asset_by_key("ad_host", "10.0.0.20")["id"]
+        self.assertTrue(any(e["src_id"] == ep and e["dst_id"] == host
+                            for e in self.store.asset_edges()))
+
+    def test_proven_rce_owns_endpoint_but_plain_web_vuln_does_not(self):
+        hid, _ = self.store.add_host("10.0.0.9", hostname="WEB01")
+        shell_ep, _ = self.store.add_asset("endpoint", "https://web01/shell", host_id=hid)
+        info_ep, _ = self.store.add_asset("endpoint", "https://web01/info", host_id=hid)
+        self.store.add_finding("rce_web", "RCE", asset_id=shell_ep, proven=True,
+                               evidence="id=www-data")
+        self.store.add_finding("web_vuln", "info leak", asset_id=info_ep, proven=True,
+                               evidence="nuclei match")
+        adbridge.bridge(self.store)
+        shell = json.loads(self.store.asset_by_id(shell_ep)["props_json"])
+        info = json.loads(self.store.asset_by_id(info_ep)["props_json"])
+        self.assertTrue(shell["owned"])            # code-exec ⇒ foothold
+        self.assertFalse(info.get("owned", False))  # a nuclei match is not a shell
+
+    def test_web_rce_to_dc_is_a_cross_domain_path(self):
+        # a proven RCE on a web app hosted on a domain controller = web → AD escalation
+        dc, _ = self.store.add_host("10.0.0.1", hostname="DC01", is_dc=True)
+        ep, _ = self.store.add_asset("endpoint", "https://dc01/app", host_id=dc)
+        self.store.add_finding("webshell", "uploaded shell", asset_id=ep, proven=True,
+                               evidence="whoami")
+        adbridge.bridge(self.store)
+        paths = assetgraph.cross_domain_paths(self.store)
+        self.assertEqual(len(paths), 1)
+        self.assertEqual(paths[0]["domains"], ["web", "ad"])
+        self.assertIn("hosted on", paths[0]["evidence"])
+
+    def test_idempotent(self):
+        hid, _ = self.store.add_host("10.0.0.9", hostname="WEB01")
+        ep, _ = self.store.add_asset("endpoint", "https://web01/app", host_id=hid)
+        self.store.add_finding("rce_web", "RCE", asset_id=ep, proven=True, evidence="id")
+        adbridge.bridge(self.store)
+        edges, owned = adbridge.link_endpoints(self.store)
+        self.assertEqual((edges, owned), (0, 0))   # nothing new the second time
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

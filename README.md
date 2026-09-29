@@ -64,12 +64,13 @@ radius.
 
 **Cross-domain stitching** is the payoff of one asset model: `fieldkit paths` bridges the
 AD/host core into the asset graph (recovered credentials become owned identities, hosts we
-admin become owned nodes), links the per-domain graphs through shared identity (a recovered
-domain account whose UPN matches a cloud role, a SaaS user federated to a cloud role, a
-declared `aliases`, or an explicit `ingest pivots` edge), and runs the owned→admin BFS over
-the *whole* graph — surfacing escalation that crosses a boundary a defender assumed
-contained it (`AD → cloud`, `SaaS → cloud`, `web → cloud`, `cloud → k8s`), stepping over any
-nearer in-domain admin. Each stitched path is a ranked `cross_domain_privesc` observation.
+admin become owned nodes), links web endpoints to the hosts
+they run on (a proven web RCE becomes an owned foothold) and links the per-domain graphs
+through shared identity (a recovered domain account whose UPN matches a cloud role, a SaaS
+user federated to a cloud role, a declared `aliases`, or an explicit `ingest pivots` edge),
+then runs the owned→admin BFS over the *whole* graph — surfacing escalation that crosses a
+boundary a defender assumed contained it (`web → host/AD`, `AD → cloud`, `SaaS → cloud`,
+`cloud → k8s`), stepping over any nearer in-domain admin. Each stitched path is a ranked `cross_domain_privesc` observation.
 
 `fieldkit status` shows the whole picture — assets by kind and findings by domain — in one
 board; `fieldkit report` renders every domain's findings through the one anti-fabrication

@@ -25,10 +25,18 @@ lateral moves (own host → dump cred → cred admits elsewhere) become graph ed
 This does not replace the BloodHound ACL pathing — it reflects the credential/access
 loop fieldkit itself tracks.
 """
+import json
 from dataclasses import dataclass
 
 AD_HOST = "ad_host"
 AD_PRINCIPAL = "ad_principal"
+ENDPOINT = "endpoint"
+
+#: Web finding vector types that mean code execution on the endpoint — a proven one
+#: makes the endpoint an OWNED foothold (compromising the web app lands you on its host).
+#: A generic `web_vuln` (a nuclei match) does NOT own the endpoint on its own.
+CODE_EXEC_VECTORS = {"rce_web", "webshell", "command_injection", "ssti",
+                     "deserialization"}
 
 
 @dataclass
@@ -36,6 +44,8 @@ class BridgeReport:
     hosts_added: int = 0
     principals_added: int = 0
     edges_added: int = 0
+    endpoints_linked: int = 0
+    endpoints_owned: int = 0
 
 
 def _principal_key(domain, username):
@@ -95,4 +105,48 @@ def bridge_ad(store):
             if h["id"] in admin_host_ids:             # own the host ⇒ dump its creds
                 _, c2 = store.add_asset_edge(h_aid, p_aid, "dumps credential")
                 rep.edges_added += int(c2)
+    return rep
+
+
+def link_endpoints(store):
+    """Link web ``endpoint`` assets to the ``ad_host`` they run on and mark an endpoint
+    ``owned`` when a code-execution web finding is proven against it.
+
+    A ``endpoint -hosted on-> ad_host`` edge means *compromising the web app lands you on
+    its host* — so an owned endpoint (a proven RCE / webshell / command-injection / SSTI
+    / deserialization) originates a cross-domain path web → host → …. The host is matched
+    by the endpoint's ``host_id`` (set when httpx saw its IP as a known host) or, failing
+    that, by an IP literal in the endpoint. Idempotent. Returns
+    ``(edges_added, endpoints_owned)``. Run after :func:`bridge_ad` (it needs the
+    ``ad_host`` assets)."""
+    from .web import _url_ip                              # stdlib-cheap, no cycle
+    host_by_hostid, host_by_ip = {}, {}
+    for a in store.assets(AD_HOST):
+        if a["host_id"] is not None:
+            host_by_hostid[a["host_id"]] = a["id"]
+        host_by_ip[a["key"]] = a["id"]
+    owned_ids = {f["asset_id"] for f in store.findings()
+                 if f["asset_id"] is not None and f["proven"]
+                 and f["vector_type"] in CODE_EXEC_VECTORS}
+    edges = owned = 0
+    for ep in store.assets(ENDPOINT):
+        props = json.loads(ep["props_json"] or "{}")
+        h_aid = host_by_hostid.get(ep["host_id"])
+        if h_aid is None:
+            ip = props.get("ip") or _url_ip(ep["key"])
+            h_aid = host_by_ip.get(ip) if ip else None
+        if h_aid is not None:
+            _, created = store.add_asset_edge(ep["id"], h_aid, "hosted on")
+            edges += int(created)
+        if ep["id"] in owned_ids and not props.get("owned"):
+            store.add_asset(ENDPOINT, ep["key"], props={"owned": True})  # merge-enrich
+            owned += 1
+    return edges, owned
+
+
+def bridge(store):
+    """Reflect the AD/host core AND link web endpoints to their hosts — the full bridge
+    `fieldkit paths` / `analyze` run before cross-domain stitching. Idempotent."""
+    rep = bridge_ad(store)
+    rep.endpoints_linked, rep.endpoints_owned = link_endpoints(store)
     return rep

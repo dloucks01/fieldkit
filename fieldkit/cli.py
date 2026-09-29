@@ -867,7 +867,7 @@ def _cross_domain_moves(store):
 
     # cross-domain stitched paths — the highest-value moves, so lead with them
     from . import adbridge, assetgraph
-    adbridge.bridge_ad(store)
+    adbridge.bridge(store)
     assetgraph.derive_pivots(store)
     cross = [f"[{p['priority']}] {p['evidence']}"
              for p in assetgraph.cross_domain_paths(store)]
@@ -4910,7 +4910,7 @@ def cmd_paths(args, store):
     asset graph and record each stitched (multi-domain) path as a `cross_domain_privesc`
     observation."""
     from . import adbridge, assetgraph
-    adbridge.bridge_ad(store)     # reflect AD hosts/creds into the graph first
+    adbridge.bridge(store)        # reflect AD hosts/creds + web endpoints into the graph
     pivots, added, paths = assetgraph.record_cross_domain(store)
     if not paths:
         print("no cross-domain escalation paths found.\n"
