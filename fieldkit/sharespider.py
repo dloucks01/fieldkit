@@ -107,6 +107,17 @@ _GPP_CPASSWORD = re.compile(r'cpassword="([^"]+)"')
 _GPP_USER = re.compile(r'(?:userName|newName)="([^"]+)"', re.I)
 
 
+def _enclosing_tag(text, pos):
+    """The ``<...>`` tag containing character offset ``pos`` (e.g. the ``<Properties>``
+    element that holds a cpassword), so a partnered attribute is read from the same
+    element rather than the whole document."""
+    start = text.rfind("<", 0, pos)
+    end = text.find(">", pos)
+    if start == -1 or end == -1:
+        return text
+    return text[start:end + 1]
+
+
 def _gpp_decrypt(cpassword, *, run=None):
     """Decrypt a Groups.xml cpassword (base64 → AES-256-CBC, zero IV, PKCS#7).
 
@@ -148,7 +159,11 @@ def scrub_gpp(local, share_path, text):
     for m in _GPP_CPASSWORD.finditer(text):
         cpw = m.group(1)
         secret = _gpp_decrypt(cpw)
-        user_m = _GPP_USER.search(text)
+        # userName and cpassword are attributes of the same <Properties> element;
+        # a Groups.xml with several <User> blocks otherwise attributes every
+        # password to the FIRST userName. Search only the enclosing tag.
+        tag = _enclosing_tag(text, m.start())
+        user_m = _GPP_USER.search(tag) or _GPP_USER.search(text)
         user = user_m.group(1) if user_m else None
         cred = None
         if user and secret:

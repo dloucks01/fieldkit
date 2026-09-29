@@ -155,5 +155,28 @@ class ApplyTest(unittest.TestCase):
         self.assertEqual(self.store.host_by_ip("10.0.0.11")["os"], "windows")
 
 
+class ScopeEnforcementTest(unittest.TestCase):
+    """apply_nxc must not turn an out-of-scope IP into a live host, matching
+    apply_nmap — scope is a rule-of-engagement boundary, not caller convention."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = Store.create(os.path.join(self.tmp.name, "e.db"))
+        self.addCleanup(self.store.close)
+        self.store.init_engagement("ACME")
+        self.store.scope_add("10.0.0.0/24", "allow")
+
+    def test_out_of_scope_hosts_are_dropped_and_reported(self):
+        out = ("SMB   10.0.0.7   445   WS02   [*] Windows 10\n"
+               "SMB   8.8.8.8     445   EXT    [*] Windows 10\n"
+               "SMB   10.0.0.7   445   WS02   [+] corp\\svc:pw (Pwn3d!)\n"
+               "SMB   8.8.8.8     445   EXT    [+] corp\\svc:pw (Pwn3d!)\n")
+        rep = apply_nxc(self.store, classify_nxc(out))
+        self.assertIn("8.8.8.8", rep.out_of_scope)
+        self.assertEqual(sorted(h["ip"] for h in self.store.hosts()), ["10.0.0.7"])
+        self.assertIsNone(self.store.host_by_ip("8.8.8.8"))
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

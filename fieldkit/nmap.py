@@ -301,7 +301,10 @@ def parse(text):
     """
     if not text:
         return NmapIntent()
-    head = text.lstrip()[:200]
+    # A leading UTF-8 BOM is not whitespace, so strip it before sniffing the format —
+    # otherwise an editor-touched XML export fails the <?xml/<nmaprun check and every
+    # host is silently dropped.
+    head = text.lstrip("﻿").lstrip()[:200]
     if head.startswith("<?xml") or head.startswith("<nmaprun"):
         return parse_xml(text)
     # grepable is unambiguous — "Host:" followed by "Status:" on the same line

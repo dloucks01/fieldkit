@@ -8,12 +8,27 @@ import json
 import os
 import sys
 import unittest
+import urllib.error
 from contextlib import redirect_stdout, redirect_stderr
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-class ImdsProbeTest(unittest.TestCase):
+class _OfflineImds:
+    """Make IMDS probes hermetic: patch the HTTP call to fail fast so no test ever
+    reaches out to a real 169.254.169.254 (which either times out for seconds or, on
+    a cloud CI box, returns real metadata and flakes)."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch("urllib.request.urlopen",
+                             side_effect=urllib.error.URLError("offline (test)"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class ImdsProbeTest(_OfflineImds, unittest.TestCase):
     """Every probe path — unreachable IMDS returns
     reachable=False + an error string. On a normal test box
     169.254.169.254 doesn't respond, so probes should fail
@@ -47,7 +62,7 @@ class ImdsProbeTest(unittest.TestCase):
         self.assertEqual(providers, {"aws", "azure", "gcp"})
 
 
-class CLITest(unittest.TestCase):
+class CLITest(_OfflineImds, unittest.TestCase):
 
     def _run(self, argv):
         from fieldkit.cli import build_parser

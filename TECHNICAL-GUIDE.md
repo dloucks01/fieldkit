@@ -121,7 +121,7 @@ What `spray` does, per round:
    round finds nothing new (**until dry**).
 
 `ingest nxc` is the same fold without spraying — feed it a capture you already have.
-`ingest nmap` folds hosts + open services into state (schema v5 `service` rows), and
+`ingest nmap` folds hosts + open services into state (`service` rows), and
 `ingest hashcat` promotes plaintext-cracked NT / LM:NT hashes to first-class credentials
 that immediately re-enter the spray loop.
 

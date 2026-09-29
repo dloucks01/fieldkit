@@ -60,6 +60,13 @@ class GateTest(unittest.TestCase):
         self.assertTrue(gate("crash-risk", {"read-only", "crash-risk"}))
         self.assertFalse(gate("config-change", {"read-only", "crash-risk"}))
 
+    def test_unknown_allow_level_fails_safe(self):
+        # a bad allow string must not raise (ValueError out of .index) nor over-grant;
+        # it admits only read-only.
+        self.assertTrue(gate("read-only", "bogus"))
+        self.assertFalse(gate("config-change", "bogus"))
+        self.assertFalse(gate("crash-risk", "bogus"))
+
 
 class ExecuteTest(ExecutorTestCase):
     def test_read_only_runs_and_captures(self):

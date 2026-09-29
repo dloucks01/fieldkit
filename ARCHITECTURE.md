@@ -73,7 +73,7 @@ fallback axis; `report` renders the captured evidence.
 9. **Canonical `vector_type`.** Privesc `Vector.report_type` and all AD findings use
    `reportkb.KB` keys, so a finding records → renders → bridges with no hand-mapping.
 
-## Data model (schema v4, `PRAGMA user_version`)
+## Data model (schema v8, `PRAGMA user_version`)
 
 `engagement` (1 row: name + config JSON) · `host` · `service` · `credential` · `access`
 (who-is-admin-where) · `finding` · `step` (captured evidence, optional `finding_id`) ·

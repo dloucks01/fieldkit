@@ -74,7 +74,12 @@ def gate(safety, allow):
     """True when an action of this ``safety`` is permitted by ``allow`` (a level name
     or an iterable of them). ``read-only`` is always in-bounds; the rest are opt-in."""
     if isinstance(allow, str):
-        allow = SAFETY_LEVELS[: SAFETY_LEVELS.index(allow) + 1]
+        if allow not in SAFETY_LEVELS:
+            # Unknown level — fail safe: admit only read-only rather than raising a
+            # ValueError out of .index() (or, worse, over-granting).
+            allow = ("read-only",)
+        else:
+            allow = SAFETY_LEVELS[: SAFETY_LEVELS.index(allow) + 1]
     return safety in set(allow)
 
 

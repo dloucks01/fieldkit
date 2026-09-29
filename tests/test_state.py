@@ -225,6 +225,7 @@ class DbPathTest(unittest.TestCase):
         self.assertTrue(default_db_path("/srv/eng").endswith("/srv/eng/engagement.db"))
 
 
+
 class MigrationAtomicityTest(unittest.TestCase):
     """A migration that fails partway must roll back entirely, leaving the database
     at its prior version — not a half-built schema whose committed DDL bricks the
@@ -255,6 +256,34 @@ class MigrationAtomicityTest(unittest.TestCase):
             st.MIGRATIONS, st.SCHEMA_VERSION = orig, orig_ver
         # with the good migration list the database still opens cleanly (not bricked)
         Store.open(self.path).close()
+
+
+class AccessIntegrityTest(unittest.TestCase):
+    """add_access learns more, never less — integrity is raised on the ladder but
+    never downgraded (matching the admin upgrade), and busy_timeout is set so
+    concurrent WAL writers wait instead of failing with 'database is locked'."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = Store.create(os.path.join(self.tmp.name, "e.db"))
+        self.addCleanup(self.store.close)
+        self.store.init_engagement("ACME")
+        self.hid, _ = self.store.add_host("10.0.0.5")
+        self.cid, _ = self.store.add_credential(Credential(username="a", secret="b"))
+
+    def _integrity(self):
+        return self.store.access_on(self.hid)[0]["integrity"]
+
+    def test_integrity_is_never_downgraded(self):
+        self.store.add_access(self.hid, self.cid, "smb", integrity="high")
+        self.store.add_access(self.hid, self.cid, "smb", integrity="medium")
+        self.assertEqual(self._integrity(), "high")          # not lowered
+        self.store.add_access(self.hid, self.cid, "smb", integrity="system")
+        self.assertEqual(self._integrity(), "system")        # upgrade applied
+
+    def test_busy_timeout_is_configured(self):
+        self.assertGreater(self.store.conn.execute("PRAGMA busy_timeout").fetchone()[0], 0)
 
 
 if __name__ == "__main__":
