@@ -82,6 +82,9 @@ class IngestReport:
     creds_reused: int = 0
     access_added: int = 0
     admin_added: int = 0
+    #: IPs a nxc result named that fall outside the engagement scope — dropped as
+    #: targets (never turned into host rows) and surfaced so the CLI can warn.
+    out_of_scope: list = field(default_factory=list)
 
 
 def apply_nxc(store, intent, source="spray"):
@@ -90,6 +93,13 @@ def apply_nxc(store, intent, source="spray"):
     rep = IngestReport()
     with store.transaction():
         for info in intent.hosts:
+            # Scope is a rule-of-engagement boundary: an out-of-scope IP must never
+            # become a live target, matching ingest.apply_nmap. Recovered credentials
+            # (below) are still kept — they're knowledge, not targets.
+            if not store.in_scope(info.ip):
+                if info.ip not in rep.out_of_scope:
+                    rep.out_of_scope.append(info.ip)
+                continue
             _, created = store.add_host(
                 info.ip, hostname=info.hostname, os_name=_os_from_banner(info),
                 is_dc=True if info.is_dc else None)
@@ -100,6 +110,10 @@ def apply_nxc(store, intent, source="spray"):
             cred_id, created = store.add_credential(cred, source=source)
             rep.creds_added += created
             rep.creds_reused += not created
+            if not store.in_scope(result.ip):
+                if result.ip not in rep.out_of_scope:
+                    rep.out_of_scope.append(result.ip)
+                continue
             # A valid result may name a host no banner covered — ensure it exists, and
             # infer the OS family from the proto that authed (ssh→linux, smb/winrm→windows)
             # so a banner-less host (e.g. an ssh foothold) is still enum-plannable.

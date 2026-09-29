@@ -343,6 +343,11 @@ MIGRATIONS = [(1, _V1), (2, _V2), (3, _V3), (4, _V4), (5, _V5),
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
+#: Windows process-integrity ladder, low → high. add_access only ever raises the
+#: recorded integrity (the loop "learns more, never less"); an unknown value is
+#: recorded only when nothing is stored yet.
+_INTEGRITY_RANK = {"untrusted": 0, "low": 1, "medium": 2, "high": 3, "system": 4}
+
 
 # ----------------------------------------------------------------------- db location
 
@@ -387,6 +392,10 @@ class Store:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
+        # WAL allows concurrent writers (bulk multi-source ingest); without a busy
+        # timeout a second writer fails immediately with "database is locked". Wait
+        # a few seconds for the lock instead of erroring out under contention.
+        conn.execute("PRAGMA busy_timeout = 5000")
         store = cls(conn, path)
         store.migrate()
         return store
@@ -718,7 +727,12 @@ class Store:
             if admin and not row["admin"]:
                 updates["admin"] = admin
             if integrity is not None and row["integrity"] != integrity:
-                updates["integrity"] = integrity
+                # Only raise integrity, never lower it (matches the admin upgrade
+                # above). An unknown level is accepted only over an empty slot.
+                have_rank = _INTEGRITY_RANK.get(row["integrity"], -1)
+                new_rank = _INTEGRITY_RANK.get(integrity, -1)
+                if row["integrity"] is None or new_rank > have_rank:
+                    updates["integrity"] = integrity
             if updates:
                 updates["proven_at"] = utcnow()
                 self.conn.execute(

@@ -12,6 +12,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -53,6 +54,16 @@ class CliTestCase(unittest.TestCase):
         self.addCleanup(store.close)
         return store
 
+    def hide_tools(self):
+        """Pin an empty $PATH so external tools (nxc, ...) appear ABSENT regardless of
+        what the host has installed. Keeps tool-presence-sensitive tests hermetic on
+        both a bare CI box and a Kali box where netexec is installed."""
+        empty = os.path.join(self.tmp.name, "nobin")
+        os.makedirs(empty, exist_ok=True)
+        patcher = mock.patch.dict(os.environ, {"PATH": empty})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
 
 class InitTest(CliTestCase):
 
@@ -84,9 +95,9 @@ class InitTest(CliTestCase):
         self.assertIn("database error", out)
 
     def test_init_runs_preflight_inline(self):
-        # nxc is not installed in the CI env, so the preflight warning must
-        # appear right at init — a tester should learn about the missing spine
-        # tool now, not five commands later.
+        # With nxc absent, the preflight warning must appear right at init — a tester
+        # should learn about the missing spine tool now, not five commands later.
+        self.hide_tools()
         out = self.init("ACME")
         self.assertIn("required tools missing", out)
         self.assertIn("netexec", out)                # tool NAME, not the wordy label
@@ -733,6 +744,10 @@ class OneShotSprayTest(CliTestCase):
     """`spray --tmp` / `--hosts` — one-shot ergonomics that skip the init +
     add-hosts ceremony for a quick sweep."""
 
+    def setUp(self):
+        super().setUp()
+        self.hide_tools()   # these assert the nxc-missing path; pin it hermetically
+
     def test_hosts_flag_scopes_in_before_spraying(self):
         # a real spray needs nxc; we're just checking `--hosts` registered them
         self.init()
@@ -786,6 +801,14 @@ class PostureCliTest(CliTestCase):
         self.init()
         out = self.run_cli("lab", "test", "--yes", expect=2)
         self.assertIn("no lab host", out)
+
+
+class TuiGuardTest(CliTestCase):
+    def test_tui_refuses_without_a_tty(self):
+        # run_cli captures stdout into a StringIO (not a TTY), so the guard must fire
+        # with a clean exit-2 instead of launching the full-screen app and hanging.
+        out = self.run_cli("tui", expect=2)
+        self.assertIn("interactive terminal", out)
 
 
 if __name__ == "__main__":

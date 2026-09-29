@@ -689,7 +689,7 @@ def _stage_dirs(cfg):
                 stage_lin=_first_dir(cfg.get("stage_lin")))
 
 
-def _refresh_from_recce(bridge_path, store):
+def _refresh_from_recce(bridge_path, store, label="--refresh"):
     """Read a recce-bridge.json and apply it against ``store``. Returns
     0 on success, non-zero on any parse/read failure. Failures are
     non-fatal for the caller — ``analyze`` and ``escalate`` continue
@@ -705,20 +705,20 @@ def _refresh_from_recce(bridge_path, store):
         with open(bridge_path, "r", errors="replace") as fh:
             text = fh.read()
     except OSError as exc:
-        _err(f"--refresh: cannot read {bridge_path}: {exc}")
+        _err(f"{label}: cannot read {bridge_path}: {exc}")
         return 2
     try:
         intent = recce_mod.parse(text)
     except recce_mod.RecceBridgeError as exc:
-        _err(f"--refresh: {exc}")
+        _err(f"{label}: {exc}")
         return 2
     if not intent.hosts:
-        _err(f"--refresh: {bridge_path} has no hosts to ingest")
+        _err(f"{label}: {bridge_path} has no hosts to ingest")
         return 2
     try:
         recce_mod.apply(store, intent)
     except Exception as exc:                                  # noqa: BLE001
-        _err(f"--refresh: apply failed: {exc}")
+        _err(f"{label}: apply failed: {exc}")
         return 2
     return 0
 
@@ -1918,7 +1918,7 @@ def cmd_refresh(args, store):
     before = store.counts()
     ingest_ok = True
     if args.bridge:
-        rc = _refresh_from_recce(args.bridge, store)
+        rc = _refresh_from_recce(args.bridge, store, label="refresh")
         ingest_ok = (rc == 0)
         if ingest_ok:
             print(f"[refresh] re-ingested {args.bridge}")
@@ -1929,7 +1929,7 @@ def cmd_refresh(args, store):
         cfg = config_mod.load(store)
         bridge = cfg.get("recce_bridge") or ""
         if bridge:
-            rc = _refresh_from_recce(bridge, store)
+            rc = _refresh_from_recce(bridge, store, label="refresh")
             ingest_ok = (rc == 0)
             if ingest_ok:
                 print(f"[refresh] re-ingested {bridge}  (from "
@@ -3251,7 +3251,8 @@ def cmd_chain_resume(args, store):
     try:
         ch = chain_mod.resume(store, args.chain_id)
     except KeyError as exc:
-        _err(str(exc))
+        # str(KeyError("msg")) wraps the message in quotes; unwrap for a clean line.
+        _err(exc.args[0] if exc.args else str(exc))
         return 2
     except ValueError as exc:
         _err(str(exc))
@@ -4082,6 +4083,11 @@ def cmd_tui(args):
     """Launch the Textual TUI. The app opens the engagement DB itself so it
     can render "(no engagement)" instead of crashing on a fresh clone.
     """
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        _err("the TUI needs an interactive terminal — stdin/stdout is not a TTY "
+             "(piped, redirected, or running in CI). Use the non-interactive "
+             f"commands (`{PROG} status`, `{PROG} watch --json`) instead.")
+        return 2
     from .tui.app import run           # lazy — vendor shim + textual are heavy
     db = args.db if getattr(args, "db", None) else None
     run(db_path=db)

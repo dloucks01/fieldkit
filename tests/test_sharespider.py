@@ -168,6 +168,22 @@ class ScrubGppTest(unittest.TestCase):
         self.assertIsNone(h.credential)
         self.assertEqual(h.kind, "gpp-cpassword")   # still recorded as loot
 
+    def test_multiple_users_each_get_their_own_password(self):
+        # a Groups.xml with two <User> blocks must NOT attribute both passwords to
+        # the first userName (the whole-document search bug).
+        xml = ('<Groups>'
+               '<User><Properties cpassword="AAAA" userName="svc_a"/></User>'
+               '<User><Properties cpassword="BBBB" userName="svc_b"/></User>'
+               '</Groups>')
+        old = sharespider._gpp_decrypt
+        sharespider._gpp_decrypt = lambda cpw, run=None: {"AAAA": "PwA", "BBBB": "PwB"}[cpw]
+        try:
+            hits = sharespider.scrub_gpp("/t/G.xml", "SYSVOL\\G.xml", xml)
+        finally:
+            sharespider._gpp_decrypt = old
+        pairs = {(h.credential.username, h.credential.secret) for h in hits}
+        self.assertEqual(pairs, {("svc_a", "PwA"), ("svc_b", "PwB")})
+
 
 class ScrubWebconfigTest(unittest.TestCase):
     def test_extracts_db_creds_but_does_not_promote(self):

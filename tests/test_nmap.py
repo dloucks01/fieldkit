@@ -211,6 +211,13 @@ class AutoDetectTest(unittest.TestCase):
         self.assertEqual(nmap.parse("").hosts, [])
         self.assertEqual(nmap.parse("hello world").hosts, [])
 
+    def test_utf8_bom_prefixed_xml_still_routes_to_xml(self):
+        # an editor-saved export can carry a leading BOM; it must not silently drop
+        # every host by failing the <?xml/<nmaprun sniff.
+        bom_xml = "﻿" + BASIC_XML
+        self.assertEqual(len(nmap.parse(bom_xml).hosts), len(nmap.parse(BASIC_XML).hosts))
+        self.assertGreater(len(nmap.parse(bom_xml).hosts), 0)
+
 
 class ApplyTest(unittest.TestCase):
     def setUp(self):
