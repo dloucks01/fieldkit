@@ -404,6 +404,24 @@ privesc-primitive ruleset (`iam:CreatePolicyVersion`, `iam:PassRole`+launcher, R
 what's recognized. Supply `edges` directly for chains the ruleset doesn't model (e.g. a
 specific `sts:AssumeRole` trust). Both combine.
 
+**Native-format adapters** (`--from`) skip the hand-shaping — pipe raw tool output in
+and fieldkit converts it to the graph above:
+
+```bash
+aws iam get-account-authorization-details > authdetails.json
+fieldkit ingest cloud authdetails.json --from aws-authdetails --owned <your-arn-or-name>
+kubectl auth can-i --list | fieldkit ingest k8s - --from kubectl --subject <foothold-sa>
+```
+
+The AWS adapter resolves each user's/role's effective **Allow** actions (inline +
+attached-managed + group policies) and emits `sts:AssumeRole` edges from role trust
+policies; it does **not** evaluate `Deny`/`NotAction`/conditions/resource scoping — a
+deliberately over-approximate *candidate-permission* view, so the ruleset surfaces every
+potential path to confirm. `--owned` marks your foothold (by ARN or name); `*`
+(AdministratorAccess) marks a principal as a high-value target. The kubectl adapter turns
+one `can-i --list` (your foothold SA's grants) into a single owned subject. Escalation
+paths are then **ranked worst-first** by blast radius (see §on prioritization).
+
 ## 16. arsenal
 
 ```bash
