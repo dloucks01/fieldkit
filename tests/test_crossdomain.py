@@ -114,10 +114,10 @@ class StitchingTest(CrossDomainTestCase):
         self.assertEqual(len(paths), 1)
         p = paths[0]
         self.assertTrue(p["cross_domain"])
-        self.assertEqual(p["domains"], ["saas_principal", "cloud_principal"])
+        self.assertEqual(p["domains"], ["saas", "cloud"])
         self.assertIn("federated identity", p["evidence"])
-        self.assertIn("[saas_principal]", p["evidence"])
-        self.assertIn("[cloud_principal]", p["evidence"])
+        self.assertIn("[saas]", p["evidence"])
+        self.assertIn("[cloud]", p["evidence"])
 
     def test_single_domain_only_yields_nothing(self):
         # cloud graph alone, no pivot to another domain

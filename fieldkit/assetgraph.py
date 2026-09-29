@@ -180,6 +180,28 @@ PIVOT_PREFIX = "pivot:"
 #: chain outranks a single-domain one (it defeats a domain boundary a defender assumed).
 _W_CROSS = 75
 
+#: Which assessment domain each asset kind belongs to. AD has two kinds (`ad_host` and
+#: `ad_principal`) that are the SAME domain, so cross-domain detection keys on domain,
+#: not raw kind. An unlisted kind is treated as its own domain.
+_KIND_DOMAIN = {
+    "ad_host": "ad", "ad_principal": "ad",
+    "endpoint": "web",
+    "cloud_principal": "cloud",
+    "k8s_subject": "k8s",
+    "saas_principal": "saas",
+}
+
+#: Federation flows: an identity in a SOURCE domain that shares an email/UPN with a
+#: principal in a TARGET domain can pivot to it (on-prem AD / IdP federate up into cloud
+#: & clusters). Directed source→target only, to avoid reverse-direction noise.
+_FED_SOURCE_KINDS = {"ad_principal", "saas_principal"}
+_FED_TARGET_KINDS = {"saas_principal", "cloud_principal", "k8s_subject"}
+
+
+def _domain_of_kind(kind):
+    """The assessment domain an asset kind belongs to (see :data:`_KIND_DOMAIN`)."""
+    return _KIND_DOMAIN.get(kind, kind)
+
 
 def _identity_tokens(row):
     """(props, identity-token-set) for an asset: its key, label, name and any declared
@@ -205,30 +227,33 @@ def derive_pivots(store):
     * **alias** — a principal carrying an ``aliases`` prop that names an identity in
       another domain gets a directed ``pivot:alias`` edge to it (operator-declared,
       zero-heuristic);
-    * **federated identity** — a ``saas_principal`` whose email/UPN (an ``@`` token)
-      also names a cloud/k8s principal gets a directed ``pivot:federated identity`` edge
-      to it (owning the IdP identity yields the federated one).
+    * **federated identity** — a source-domain identity (on-prem ``ad_principal`` or a
+      ``saas_principal``) whose email/UPN (an ``@`` token) also names a principal in a
+      federation target domain (SaaS / cloud / k8s) gets a directed ``pivot:federated
+      identity`` edge to it (owning the ground identity yields the federated one — AD↔
+      Entra sync, SaaS→cloud SSO/OIDC).
 
-    Directed from the identity you would own first (the IdP / alias holder) into the
-    linked principal. Synthetic admin-equivalent nodes are skipped. Idempotent. Returns
-    the number of pivot edges added."""
+    Directed from the identity you would own first into the linked principal, and only
+    across a DOMAIN boundary. Synthetic admin-equivalent nodes are skipped. Idempotent.
+    Returns the number of pivot edges added."""
     meta = {}
     for a in store.assets():
         props, toks = _identity_tokens(a)
         if props.get("type") == "synthetic":
             continue
         meta[a["id"]] = {
-            "kind": a["kind"], "toks": toks,
+            "kind": a["kind"], "domain": _domain_of_kind(a["kind"]), "toks": toks,
             "emails": {t for t in toks if "@" in t},
             "aliases": {str(x).strip().lower() for x in (props.get("aliases") or []) if x}}
     added = 0
     for i, mi in meta.items():
         for j, mj in meta.items():
-            if i == j or mi["kind"] == mj["kind"]:
-                continue                                   # cross-KIND edges only
+            if i == j or mi["domain"] == mj["domain"]:
+                continue                                   # cross-DOMAIN edges only
             if mi["aliases"] & mj["toks"]:
                 link = PIVOT_PREFIX + "alias"
-            elif mi["kind"] == "saas_principal" and mi["emails"] & mj["emails"]:
+            elif (mi["kind"] in _FED_SOURCE_KINDS and mj["kind"] in _FED_TARGET_KINDS
+                  and mi["emails"] & mj["emails"]):
                 link = PIVOT_PREFIX + "federated identity"
             else:
                 continue
@@ -253,8 +278,8 @@ def add_pivot(store, src_kind, src_key, dst_kind, dst_key, label="manual"):
     return created, None
 
 
-def _bfs_to_other_domain(start, start_kind, adj, nodes, max_depth):
-    """Shortest path from ``start`` to a high-value node in a DIFFERENT domain (kind).
+def _bfs_to_other_domain(start, start_domain, adj, nodes, max_depth):
+    """Shortest path from ``start`` to a high-value node in a DIFFERENT domain.
     Unlike :func:`fieldkit.bloodhound._bfs`, it steps over a nearer in-domain admin —
     the cross-domain question is 'from this foothold, can I reach admin in another
     domain?', so an in-domain admin is not a valid target. Returns ``(target, hops)``
@@ -264,7 +289,7 @@ def _bfs_to_other_domain(start, start_kind, adj, nodes, max_depth):
     while q:
         sid, path = q.popleft()
         node = nodes.get(sid)
-        if node and node["high_value"] and node["kind"] != start_kind and path:
+        if node and node["high_value"] and node["domain"] != start_domain and path:
             return sid, path
         if len(path) >= max_depth:
             continue
@@ -291,6 +316,7 @@ def cross_domain_paths(store, *, max_depth=10):
         nodes[a["id"]] = {"high_value": bool(props.get("admin")),
                           "name": a["label"] or a["key"],
                           "kind": a["kind"],
+                          "domain": _domain_of_kind(a["kind"]),
                           "owned": bool(props.get("owned"))}
     for e in store.asset_edges():
         if e["src_id"] in nodes and e["dst_id"] in nodes:
@@ -301,14 +327,14 @@ def cross_domain_paths(store, *, max_depth=10):
         if not nodes[nid]["owned"]:
             continue
         target, hops = _bfs_to_other_domain(
-            nid, nodes[nid]["kind"], adj, nodes, max_depth)
+            nid, nodes[nid]["domain"], adj, nodes, max_depth)
         if target is None:
             continue
-        kinds = [nodes[nid]["kind"]] + [nodes[d]["kind"] for _, d in hops]
+        seq = [nodes[nid]["domain"]] + [nodes[d]["domain"] for _, d in hops]
         domains = []
-        for k in kinds:
-            if k not in domains:
-                domains.append(k)
+        for d in seq:
+            if d not in domains:
+                domains.append(d)
         if len(domains) < 2:
             continue                                       # single-domain — skip
         blast = _downstream_reach(adj, target)
@@ -348,8 +374,9 @@ def record_cross_domain(store):
 
 
 def _render_cross_chain(nodes, start_id, hops):
-    """`helga [saas] -pivot:federated identity-> helga-aws [cloud] -iam:*-> admin [cloud]`."""
-    parts = [f"{nodes[start_id]['name']} [{nodes[start_id]['kind']}]"]
+    """`helga [saas] -pivot:federated identity-> helga-aws [cloud] -iam:*-> admin [cloud]`
+    — each node tagged with its domain so the boundary crossings are legible."""
+    parts = [f"{nodes[start_id]['name']} [{nodes[start_id]['domain']}]"]
     for kind, dst in hops:
-        parts.append(f"-{kind}-> {nodes[dst]['name']} [{nodes[dst]['kind']}]")
+        parts.append(f"-{kind}-> {nodes[dst]['name']} [{nodes[dst]['domain']}]")
     return " ".join(parts)
