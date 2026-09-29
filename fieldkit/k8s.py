@@ -126,6 +126,7 @@ def parse_rbac(text):
             "type": (s.get("kind") or "serviceaccount").strip(),
             "admin": bool(s.get("admin")),
             "owned": bool(s.get("owned")),
+            "props": s.get("props") or {},
             "permissions": [str(x) for x in (s.get("permissions") or [])]})
     for e in doc.get("edges") or []:
         src, dst = (e.get("src") or "").strip(), (e.get("dst") or "").strip()

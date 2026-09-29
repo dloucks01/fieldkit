@@ -865,6 +865,14 @@ def _cross_domain_moves(store):
     if sa:
         groups.append(("SaaS / identity provider (owned → admin)", sa))
 
+    # cross-domain stitched paths — the highest-value moves, so lead with them
+    from . import assetgraph
+    assetgraph.derive_pivots(store)
+    cross = [f"[{p['priority']}] {p['evidence']}"
+             for p in assetgraph.cross_domain_paths(store)]
+    if cross:
+        groups.insert(0, ("cross-domain (owned → admin, spans domains)", cross))
+
     order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
     web = sorted((f for f in store.findings() if f["vector_type"] == "web_vuln"),
                  key=lambda f: order.get(f["severity"] or "Info", 4))
@@ -4895,6 +4903,72 @@ def _print_paths(paths, what, ingest_cmd):
 
 
 @needs_engagement
+def cmd_paths(args, store):
+    """Cross-domain escalation pathing: derive identity pivots between domains, then run
+    the owned→admin pathfinder over the WHOLE asset graph and record each stitched
+    (multi-domain) path as a `cross_domain_privesc` observation."""
+    from . import assetgraph
+    pivots, added, paths = assetgraph.record_cross_domain(store)
+    if not paths:
+        print("no cross-domain escalation paths found.\n"
+              "Cross-domain stitching links per-domain graphs (cloud / k8s / SaaS / web) "
+              "through shared identity. Ingest at least two domains, then either declare "
+              "the link (an `aliases` prop, or `fieldkit ingest pivots <file>`) or rely "
+              "on the auto-derived federated-identity match (a SaaS email that also names "
+              "a cloud/k8s principal).")
+        if pivots:
+            print(f"\n({pivots} pivot edge(s) derived, but no owned→admin path crosses "
+                  "a domain boundary yet.)")
+        return 0
+    note = f" ({pivots} pivot edge(s) derived)" if pivots else ""
+    print(f"{_plural(len(paths), 'cross-domain escalation path')}{note}, "
+          f"{added} newly recorded — highest-priority first:\n")
+    for p in paths:
+        print(f"  [{p['priority']:<8}] {p['evidence']}")
+        print(f"      spans {', '.join(p['domains'])}  ·  "
+              f"{_plural(p['hop_count'], 'hop')}, blast radius {p['blast_radius']} "
+              f"(score {p['score']})")
+    print("\nrecorded as observations — the pivot points are the fix: sever the "
+          "cross-domain link and re-run to confirm the chain no longer connects.")
+    return 0
+
+
+@needs_engagement
+def cmd_ingest_pivots(args, store):
+    """Record explicit cross-domain pivot edges (JSON) between existing assets, for
+    links the auto-derivation can't infer (e.g. a web app whose compromise yields a
+    specific cloud role)."""
+    from . import assetgraph
+    text, rc = _read_file_or_stdin(args, "pivots")
+    if text is None:
+        return rc
+    try:
+        doc = json.loads(text)
+        pivots = doc.get("pivots") if isinstance(doc, dict) else doc
+        if not isinstance(pivots, list):
+            raise ValueError("expected {\"pivots\": [...]} or a JSON list")
+    except (ValueError, TypeError) as exc:
+        _err(f"pivots: not valid JSON: {exc}")
+        return 2
+    added, skipped = 0, []
+    for p in pivots:
+        src, dst = (p.get("src") or {}), (p.get("dst") or {})
+        created, err = assetgraph.add_pivot(
+            store, src.get("kind"), src.get("key"), dst.get("kind"), dst.get("key"),
+            label=p.get("kind") or "manual")
+        if err:
+            skipped.append(err)
+        else:
+            added += int(created)
+    print(f"recorded {added} pivot edge(s)" + (f"; {len(skipped)} skipped" if skipped
+                                               else ""))
+    for s in skipped:
+        _err(f"  skipped: {s}")
+    print("run `fieldkit paths` to search for cross-domain escalation.")
+    return 0
+
+
+@needs_engagement
 def cmd_external(args, store):
     """The external-exploit loop: match discovered services against the CVE TTP
     library, record each match as an (unproven) finding, and print the ranked
@@ -5184,7 +5258,29 @@ the spec is missing that field. `--from-file` reads one credential per line.
              "repeatable. Only meaningful with `--from`.")
     i_saas.set_defaults(func=cmd_ingest_saas)
 
+    i_pivots = ingest_sub.add_parser(
+        "pivots", help="record explicit cross-domain pivot edges between existing assets",
+        description="Reads a JSON list of cross-domain pivot edges "
+                    "({\"pivots\":[{\"src\":{\"kind\",\"key\"},\"dst\":{\"kind\",\"key\"},"
+                    "\"kind\":\"label\"}]}) linking assets in different domains — for "
+                    "links the auto-derivation can't infer (a web app whose compromise "
+                    "yields a specific cloud role, a stolen host credential that is a "
+                    "SaaS identity). `fieldkit paths` then stitches escalation across "
+                    "them. Idempotent.")
+    i_pivots.add_argument("file", nargs="?", help="pivots JSON (or `-` / stdin)")
+    i_pivots.set_defaults(func=cmd_ingest_pivots)
+
     p_ingest.set_defaults(func=lambda a: _missing(p_ingest))
+
+    p_paths = sub.add_parser(
+        "paths", help="cross-domain escalation pathing (stitch owned→admin across all domains)",
+        description="Derives identity pivots between domains (federated SaaS→cloud "
+                    "identities, declared `aliases`, and explicit `ingest pivots` edges), "
+                    "then runs the owned→high-value pathfinder over the WHOLE asset graph "
+                    "so a single escalation path can traverse several domains "
+                    "(SaaS→cloud, web→cloud, cloud→k8s, …). Records each stitched path as "
+                    "a `cross_domain_privesc` observation, ranked worst-first.")
+    p_paths.set_defaults(func=cmd_paths)
 
     p_k8s = sub.add_parser(
         "k8s", help="Kubernetes RBAC escalation pathing (owned service account → cluster-admin)")
