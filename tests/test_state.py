@@ -295,6 +295,63 @@ class ConcurrentUpsertTest(unittest.TestCase):
         self.assertEqual(c["access"], 1)
 
 
+class NullCredAccessTest(unittest.TestCase):
+    """v11: NULL-cred (null-session) access dedups — one row per (host, method) even
+    across concurrent writers, and existing duplicates collapse on upgrade."""
+
+    def test_parallel_null_cred_writers_converge_to_one_row(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "e.db")
+        s0 = Store.create(path)
+        s0.init_engagement("ACME")
+        hid, _ = s0.add_host("10.0.0.5")
+        s0.close()
+        errors = []
+
+        def worker():
+            try:
+                s = Store.open(path)
+                for _ in range(40):
+                    s.add_access(hid, None, "smb-null")   # NULL cred_id, same key
+                s.close()
+            except Exception as exc:                          # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}")
+
+        threads = [threading.Thread(target=worker) for _ in range(6)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        self.assertEqual(errors, [])
+        s = Store.open(path)
+        self.addCleanup(s.close)
+        n = s.conn.execute(
+            "SELECT COUNT(*) FROM access WHERE cred_id IS NULL").fetchone()[0]
+        self.assertEqual(n, 1)
+
+    def test_v10_duplicates_collapse_on_upgrade(self):
+        import fieldkit.state as st
+        orig, ov = st.MIGRATIONS[:], st.SCHEMA_VERSION
+        st.MIGRATIONS = [m for m in orig if m[0] <= 10]
+        st.SCHEMA_VERSION = 10
+        path = os.path.join(tempfile.mkdtemp(), "v10.db")
+        try:
+            s = Store.create(path)
+            s.init_engagement("X")
+            hid, _ = s.add_host("10.0.0.9")
+            for _ in range(3):    # inject dups directly, bypassing add_access dedup
+                s.conn.execute(
+                    "INSERT INTO access (host_id, cred_id, method, admin, proven_at) "
+                    "VALUES (?, NULL, 'smb', 0, 't')", (hid,))
+            s.conn.commit()
+            s.close()
+        finally:
+            st.MIGRATIONS, st.SCHEMA_VERSION = orig, ov
+        s2 = Store.open(path)
+        self.addCleanup(s2.close)
+        self.assertEqual(s2.schema_version(), st.SCHEMA_VERSION)
+        self.assertEqual(s2.conn.execute(
+            "SELECT COUNT(*) FROM access WHERE cred_id IS NULL").fetchone()[0], 1)
+
+
 class AccessIntegrityTest(unittest.TestCase):
     """add_access learns more, never less — integrity is raised on the ladder but
     never downgraded (matching the admin upgrade), and busy_timeout is set so

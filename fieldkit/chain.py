@@ -1836,9 +1836,9 @@ def _nopac_s4u2self_action(chain, ctx):
     if "KDC_ERR_S_PRINCIPAL_UNKNOWN" in output:
         return Outcome(
             kind="fail",
-            evidence=(f"KDC refused the S4U2self — DC likely patched for "
-                      f"CVE-2021-42287 (Nov 2021 rollup KB5008380). "
-                      f"NoPac chain aborts here."),
+            evidence=("KDC refused the S4U2self — DC likely patched for "
+                      "CVE-2021-42287 (Nov 2021 rollup KB5008380). "
+                      "NoPac chain aborts here."),
             data={"detail": output[-1024:]})
     ccache = f"{impersonate}.ccache"
     if _os.path.exists(ccache):

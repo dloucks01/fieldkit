@@ -382,8 +382,28 @@ _V10 = [
     "CREATE INDEX ix_asset_edge_src ON asset_edge(src_id)",
 ]
 
+#: v11 closes the NULL-cred access dedup gap. `UNIQUE (host_id, cred_id, method)`
+#: doesn't dedup rows where cred_id IS NULL (SQLite treats NULLs as distinct), so a
+#: null-session / cred-less proof could duplicate under concurrent writers. A partial
+#: unique index enforces one row per (host_id, method) for NULL-cred access, and
+#: add_access's existing IntegrityError-catch then converges the race. Existing
+#: duplicates are collapsed first (keep the admin-most, then oldest row) so the index
+#: can be created on a database that already accumulated some.
+_V11 = [
+    """
+    DELETE FROM access WHERE cred_id IS NULL AND id NOT IN (
+        SELECT id FROM (
+            SELECT id, ROW_NUMBER() OVER (
+                PARTITION BY host_id, method ORDER BY admin DESC, id ASC) AS rn
+            FROM access WHERE cred_id IS NULL)
+        WHERE rn = 1)
+    """,
+    "CREATE UNIQUE INDEX ux_access_null_cred ON access(host_id, method) "
+    "WHERE cred_id IS NULL",
+]
+
 MIGRATIONS = [(1, _V1), (2, _V2), (3, _V3), (4, _V4), (5, _V5),
-              (6, _V6), (7, _V7), (8, _V8), (9, _V9), (10, _V10)]
+              (6, _V6), (7, _V7), (8, _V8), (9, _V9), (10, _V10), (11, _V11)]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
