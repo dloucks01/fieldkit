@@ -336,10 +336,34 @@ _V8 = [
     """,
 ]
 
+#: v9 generalizes the target model beyond the host. An ``asset`` is any thing an
+#: engagement touches — a host, a web endpoint, a cloud principal, a k8s object —
+#: keyed by (kind, key). `host` stays the canonical host entity (the AD path is
+#: unchanged); an asset may link back to a host when it lives on one (a web endpoint
+#: served by a scanned host) or stand alone (a cloud identity). Findings can attach to
+#: an asset via ``finding.asset_id``, so non-host domains (web/cloud/k8s) flow through
+#: the same finding → step (anti-fabrication) → report spine as AD does.
+_V9 = [
+    """
+    CREATE TABLE asset (
+        id         INTEGER PRIMARY KEY,
+        kind       TEXT NOT NULL,               -- host | endpoint | cloud_principal | ...
+        key        TEXT NOT NULL,               -- identity within kind (URL, ARN, ...)
+        label      TEXT,                         -- human display
+        host_id    INTEGER REFERENCES host(id) ON DELETE SET NULL,
+        props_json TEXT NOT NULL DEFAULT '{}',   -- kind-specific attributes
+        added      TEXT NOT NULL,
+        UNIQUE (kind, key)
+    )
+    """,
+    "ALTER TABLE finding ADD COLUMN asset_id INTEGER REFERENCES asset(id) ON DELETE CASCADE",
+    "CREATE INDEX ix_asset_kind ON asset(kind)",
+]
+
 #: (version, [statements]) applied in order; a database records the last applied
 #: version in PRAGMA user_version. Append to migrate; never edit a shipped entry.
 MIGRATIONS = [(1, _V1), (2, _V2), (3, _V3), (4, _V4), (5, _V5),
-              (6, _V6), (7, _V7), (8, _V8)]
+              (6, _V6), (7, _V7), (8, _V8), (9, _V9)]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -601,6 +625,62 @@ class Store:
                 (host_id,)).fetchall()
         return self.conn.execute("SELECT * FROM service ORDER BY host_id, port").fetchall()
 
+    # -- assets (the general target model: host / endpoint / cloud / k8s / ...) ---
+
+    def add_asset(self, kind, key, label=None, host_id=None, props=None):
+        """Insert or enrich an asset, keyed on ``(kind, key)``. Returns ``(asset_id,
+        created)``. Enrichment never overwrites a known label/host_id with None and
+        merges ``props`` into the stored JSON, so a later, richer scan fills gaps
+        without erasing what an earlier pass learned — the same idempotent contract
+        as add_host/add_service."""
+        props = props or {}
+        with self._write():
+            row = self.conn.execute(
+                "SELECT * FROM asset WHERE kind = ? AND key = ?", (kind, key)).fetchone()
+            if row is None:
+                try:
+                    cur = self.conn.execute(
+                        "INSERT INTO asset (kind, key, label, host_id, props_json, added) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (kind, key, label, host_id, json.dumps(props, sort_keys=True),
+                         utcnow()))
+                    return cur.lastrowid, True
+                except sqlite3.IntegrityError:
+                    row = self.conn.execute(
+                        "SELECT * FROM asset WHERE kind = ? AND key = ?",
+                        (kind, key)).fetchone()
+                    if row is None:
+                        raise
+            merged = json.loads(row["props_json"] or "{}")
+            merged.update({k: v for k, v in props.items() if v is not None})
+            updates = {}
+            if label is not None and row["label"] != label:
+                updates["label"] = label
+            if host_id is not None and row["host_id"] != host_id:
+                updates["host_id"] = host_id
+            new_props = json.dumps(merged, sort_keys=True)
+            if new_props != (row["props_json"] or "{}"):
+                updates["props_json"] = new_props
+            if updates:
+                self.conn.execute(
+                    "UPDATE asset SET " + ", ".join(f"{k} = ?" for k in updates)
+                    + " WHERE id = ?", list(updates.values()) + [row["id"]])
+            return row["id"], False
+
+    def assets(self, kind=None):
+        if kind is not None:
+            return self.conn.execute(
+                "SELECT * FROM asset WHERE kind = ? ORDER BY id", (kind,)).fetchall()
+        return self.conn.execute("SELECT * FROM asset ORDER BY kind, id").fetchall()
+
+    def asset_by_key(self, kind, key):
+        return self.conn.execute(
+            "SELECT * FROM asset WHERE kind = ? AND key = ?", (kind, key)).fetchone()
+
+    def asset_by_id(self, asset_id):
+        return self.conn.execute(
+            "SELECT * FROM asset WHERE id = ?", (asset_id,)).fetchone()
+
     # -- scope enforcement --------------------------------------------------
 
     def scope_add(self, cidr, kind="allow", notes=None):
@@ -827,21 +907,25 @@ class Store:
     # -- findings / evidence / cleanup --------------------------------------
 
     def add_finding(self, vector_type, title, host_id=None, evidence=None,
-                    severity=None, risk=None, proven=None):
-        """Insert or update a finding, keyed on ``(host_id, vector_type, title)``.
+                    severity=None, risk=None, proven=None, asset_id=None):
+        """Insert or update a finding, keyed on ``(host_id, asset_id, vector_type,
+        title)``. ``asset_id`` attaches a finding to a non-host asset (a web endpoint,
+        a cloud principal) so web/cloud/k8s findings flow through the same
+        finding → step → report path as AD ones.
 
         Idempotent so re-running a vector does not fan out duplicate findings; a later
         proof upgrades ``proven`` to 1 in place. Returns ``(finding_id, created)``.
         """
         with self._write():
             row = self.conn.execute(
-                "SELECT id, proven FROM finding WHERE host_id IS ? AND vector_type = ? "
-                "AND title = ?", (host_id, vector_type, title)).fetchone()
+                "SELECT id, proven FROM finding WHERE host_id IS ? AND asset_id IS ? "
+                "AND vector_type = ? AND title = ?",
+                (host_id, asset_id, vector_type, title)).fetchone()
             if row is None:
                 cur = self.conn.execute(
-                    "INSERT INTO finding (host_id, vector_type, title, evidence, severity, "
-                    "risk, proven, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (host_id, vector_type, title, evidence, severity, risk,
+                    "INSERT INTO finding (host_id, asset_id, vector_type, title, evidence, "
+                    "severity, risk, proven, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (host_id, asset_id, vector_type, title, evidence, severity, risk,
                      int(bool(proven)), utcnow()))
                 return cur.lastrowid, True
             updates = {}

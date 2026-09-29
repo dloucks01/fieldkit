@@ -43,6 +43,13 @@ KB = {
              "low-privileged user or earlier in the search order than the legitimate DLL.",
         rem="Load DLLs by absolute path; enable SafeDllSearchMode and process-level mitigations "
             "(no user/remote directories in the search path); restrict ACLs on the affected directory."),
+    "web_vuln": dict(sev="Medium", cwe="CWE-1035", os="",
+        name="Web application vulnerability (nuclei)",
+        desc="A nuclei template matched against a web endpoint, indicating a known "
+             "vulnerability, misconfiguration or exposure. The specific severity and "
+             "detail come from the matched template and are carried on the finding.",
+        rem="Triage the matched template; patch or upgrade the affected component, or "
+            "apply the vendor mitigation; re-scan the endpoint to confirm the fix."),
     "seimpersonate": dict(sev="High", cwe="CWE-250", os="win",
         name="SeImpersonatePrivilege abused to obtain SYSTEM (Potato)",
         desc="A service account holds SeImpersonatePrivilege/SeAssignPrimaryTokenPrivilege. A 'Potato'-class "
@@ -623,6 +630,7 @@ RISK = {
     "postgres_role_grant": "reversible",   # SET ROLE lives inside the session only
     "postgres_read_server_files": "read-only",
     "postgres_unauth": "read-only",         # the connection itself proves it
+    "web_vuln": "read-only",                # a nuclei match is an observation, not exploited
     "mongodb_unauth": "read-only",          # the connection itself proves it
     "mongodb_admin": "read-only",
     "mongodb_data_extract": "read-only",
