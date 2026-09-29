@@ -4207,6 +4207,16 @@ def cmd_status(args, store):
           f"{counts['admin_access']} admin on {_plural(counts['admin_hosts'], 'host')}")
     print(f"findings     {counts['findings']:>5}   {counts['proven_findings']} proven")
     print(f"loot         {counts['loot']:>5}")
+    # Multi-domain picture: assets by kind (host / endpoint / cloud / k8s / …) and,
+    # when the engagement spans more than one finding domain, the per-type split.
+    if counts.get("assets"):
+        asset_mix = "  ".join(f"{r['kind']} {r['n']}"
+                              for r in store.asset_kind_breakdown())
+        print(f"assets       {counts['assets']:>5}   {asset_mix}")
+    ftypes = store.finding_type_breakdown()
+    if len(ftypes) > 1:
+        fmix = "  ".join(f"{r['vector_type']}×{r['n']}" for r in ftypes[:8])
+        print(f"  by type:   {fmix}")
 
     # --- situational board: phase, top-3 next moves, preflight, blockers -----
     phase, phase_hint = _current_phase(counts)

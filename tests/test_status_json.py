@@ -57,7 +57,8 @@ class StatusDictTest(unittest.TestCase):
         # required keys
         for key in ("_projection", "engagement", "config", "scope", "counts",
                     "os_breakdown", "credential_types", "pwned_hosts",
-                    "top_moves", "preflight_missing"):
+                    "top_moves", "preflight_missing", "asset_kinds",
+                    "findings_by_type"):
             self.assertIn(key, payload, key)
         self.assertEqual(payload["_projection"], status_json.PROJECTION_VERSION)
         self.assertEqual(payload["engagement"]["name"], "ACME")
@@ -84,6 +85,21 @@ class StatusDictTest(unittest.TestCase):
         self.assertEqual(payload["counts"]["hosts"], 1)
         self.assertEqual(payload["counts"]["services"], 2)
         self.assertEqual(payload["os_breakdown"], {"windows": 1})
+
+    def test_multidomain_assets_and_findings_surface(self):
+        # the status board must reflect non-host domains: assets by kind + the
+        # per-vector_type finding split across AD/web/cloud/k8s.
+        aid, _ = self.store.add_asset("endpoint", "https://x/")
+        self.store.add_asset("cloud_principal", "arn:role/admin")
+        self.store.add_finding("web_vuln", "CVE on x", asset_id=aid, proven=True)
+        self.store.add_finding("cloud_privesc", "u -> admin", proven=False)
+        payload = status_json.status_dict(self.store)
+        self.assertEqual(payload["counts"]["assets"], 2)
+        self.assertEqual(payload["asset_kinds"], {"endpoint": 1, "cloud_principal": 1})
+        self.assertEqual(payload["findings_by_type"]["web_vuln"],
+                         {"total": 1, "proven": 1})
+        self.assertEqual(payload["findings_by_type"]["cloud_privesc"],
+                         {"total": 1, "proven": 0})
 
     def test_scope_rules_split_by_kind(self):
         self.store.scope_add("10.0.0.0/24", kind="allow")

@@ -1380,7 +1380,23 @@ class Store:
             "findings": one("SELECT COUNT(*) FROM finding"),
             "proven_findings": one("SELECT COUNT(*) FROM finding WHERE proven = 1"),
             "loot": one("SELECT COUNT(*) FROM loot"),
+            "assets": one("SELECT COUNT(*) FROM asset"),
         }
+
+    def asset_kind_breakdown(self):
+        """Asset count per kind (host / endpoint / cloud_principal / k8s_subject / …) —
+        the multi-domain picture for the status board."""
+        return self.conn.execute(
+            "SELECT kind, COUNT(*) AS n FROM asset GROUP BY kind "
+            "ORDER BY n DESC, kind").fetchall()
+
+    def finding_type_breakdown(self):
+        """Finding count (and proven subtotal) per vector_type — surfaces which domains
+        (AD / web / external-CVE / cloud / k8s) an engagement has findings in."""
+        return self.conn.execute(
+            "SELECT vector_type, COUNT(*) AS n, "
+            "SUM(CASE WHEN proven = 1 THEN 1 ELSE 0 END) AS proven "
+            "FROM finding GROUP BY vector_type ORDER BY n DESC, vector_type").fetchall()
 
     def host_os_breakdown(self):
         """``os`` is NULL for hosts nothing has fingerprinted yet — the caller labels it."""
