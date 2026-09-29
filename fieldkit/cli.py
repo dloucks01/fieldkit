@@ -4752,6 +4752,31 @@ def cmd_cloud_paths(args, store):
     return _print_paths(cloud_mod.escalation_paths(store), "cloud-IAM", "cloud")
 
 
+def cmd_cloud_rules(args):
+    """List the AWS IAM privilege-escalation primitives the permission-derivation
+    recognizes (holding these lets a principal reach admin)."""
+    from . import cloud_iam as cloud_mod
+    r = cloud_mod.rules()
+    print(f"{len(r)} AWS IAM privesc primitives recognized by `ingest cloud` "
+          "(a principal holding one reaches admin-equivalent):\n")
+    for label, required in r:
+        print(f"  {label:42} requires: {', '.join(required)}")
+    return 0
+
+
+def cmd_k8s_rules(args):
+    """List the Kubernetes RBAC privilege-escalation primitives the grant-derivation
+    recognizes (holding these lets a subject reach cluster-admin)."""
+    from . import k8s as k8s_mod
+    r = k8s_mod.rules()
+    print(f"{len(r)} Kubernetes RBAC privesc primitives recognized by `ingest k8s` "
+          "(a subject holding one reaches cluster-admin-equivalent):\n")
+    for label, required in r:
+        req = ", ".join(f"{v} {res}" for v, res in required)
+        print(f"  {label:42} requires: {req}")
+    return 0
+
+
 @needs_engagement
 def cmd_ingest_k8s(args, store):
     """Fold a normalized k8s RBAC graph (JSON) into state and record owned→admin
@@ -5052,6 +5077,9 @@ the spec is missing that field. `--from-file` reads one credential per line.
                     "you control to a cluster-admin-equivalent subject — the same BFS "
                     "the AD and cloud sides use, over the asset graph.")
     k_paths.set_defaults(func=cmd_k8s_paths)
+    k_rules = k8s_sub.add_parser(
+        "rules", help="list the Kubernetes RBAC privesc primitives `ingest k8s` derives from")
+    k_rules.set_defaults(func=cmd_k8s_rules)
     p_k8s.set_defaults(func=lambda a: _missing(p_k8s))
 
     p_web = sub.add_parser(
@@ -5507,6 +5535,9 @@ the spec is missing that field. `--from-file` reads one credential per line.
                     "principal you own to an admin principal — 'BloodHound for cloud' "
                     "on the same BFS the AD side uses.")
     c_paths.set_defaults(func=cmd_cloud_paths)
+    c_rules = cloud_sub.add_parser(
+        "rules", help="list the AWS IAM privesc primitives `ingest cloud` derives from")
+    c_rules.set_defaults(func=cmd_cloud_rules)
     p_cloud.set_defaults(func=lambda a: _missing(p_cloud))
 
     p_pivot = sub.add_parser(
