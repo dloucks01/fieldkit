@@ -4669,6 +4669,32 @@ def cmd_ingest_httpx(args, store):
 
 
 @needs_engagement
+def cmd_external(args, store):
+    """The external-exploit loop: match discovered services against the CVE TTP
+    library, record each match as an (unproven) finding, and print the ranked
+    opportunities with the exploit next-step. Read + record; drives no exploit."""
+    from . import external as external_mod
+    opps = external_mod.match(store)
+    if not opps:
+        print("no service-CVE matches. Ingest a version scan first: "
+              "`nmap -sV -oX - <targets> | fieldkit ingest nmap -`, then re-run.")
+        return 0
+    rep = external_mod.apply(store)
+    hosts = len({h["id"] for h, _ in opps})
+    print(f"matched {len(opps)} service CVE(s) across {_plural(hosts, 'host')} "
+          f"({rep.findings_added} newly recorded) — best-ranked first:\n")
+    for host, v in opps:
+        print(f"  [{v.axes}]  {host['ip']}  {v.title}")
+        if v.evidence:
+            print(f"      {v.evidence}")
+        if v.playbook and v.playbook.place:
+            print(f"      exploit: {v.playbook.place}")
+    print("\nrecorded as observations — run the playbook to prove one, then it "
+          "renders as a proven finding.")
+    return 0
+
+
+@needs_engagement
 def cmd_assets(args, store):
     """List engagement assets (host / endpoint / …), optionally filtered by --kind."""
     rows = store.assets(kind=getattr(args, "kind", None))
@@ -4893,6 +4919,16 @@ the spec is missing that field. `--from-file` reads one credential per line.
                         help="URLs or hosts to scan")
     w_scan.set_defaults(func=cmd_web_scan)
     p_web.set_defaults(func=lambda a: _missing(p_web))
+
+    p_external = sub.add_parser(
+        "external", help="external-exploit loop — match services against the CVE TTP library",
+        description="Matches every discovered service (from `ingest nmap -sV`) against "
+                    "fieldkit's service-CVE TTP library (T1190), ranks the matches on "
+                    "the exploitability/safety/detection axes, records each as an "
+                    "(unproven) finding, and prints the ranked opportunities with the "
+                    "exploit next-step. The external twin of the credential loop — it "
+                    "drives no exploit itself; the playbook points at your own kit.")
+    p_external.set_defaults(func=cmd_external)
 
     p_assets = sub.add_parser(
         "assets", help="list engagement assets (host / endpoint / …)")
