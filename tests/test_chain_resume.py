@@ -210,5 +210,49 @@ class ArgparseTest(unittest.TestCase):
         self.assertEqual(args.chain_id, 3)
 
 
+
+class StopResumeEndToEndTest(unittest.TestCase):
+    """The REAL stop->resume path: a step paused with 'stop' must RUN when the chain
+    is resumed, not be skipped. Regression for the phantom-outcome desync (the paused
+    step recorded an outcome, so resume's current=len(outcomes) jumped past it)."""
+
+    def test_paused_step_runs_on_resume(self):
+        import fieldkit.chain as cm
+        from fieldkit.chain import Chain, Step, Outcome, walk, resume
+        ran = []
+        def _act(name):
+            def a(chain, ctx):
+                ran.append(name)
+                return Outcome(kind="ok", evidence=f"ran {name}")
+            return a
+
+        @cm.register("_probe_stopresume")
+        def _factory(target, **kw):
+            return Chain(profile="_probe_stopresume", target=target, steps=tuple(
+                Step(name=f"s{i}", kind="preflight", detection_cost=0, action=_act(f"s{i}"))
+                for i in range(4)))
+        self.addCleanup(lambda: cm._PROFILES.pop("_probe_stopresume", None))
+
+        s = _make_store(self)
+        ch = _factory("10.0.0.5")
+        cid = s.reserve_chain_id(ch)
+        ch._persisted_id = cid
+        # stop BEFORE s2 -> only s0, s1 run
+        walk(ch, {}, before_step=lambda c, st: "stop" if st.name == "s2" else "go")
+        s.finalize_chain(cid, ch)
+        self.assertEqual(ran, ["s0", "s1"])
+        self.assertEqual(s.chain_by_id(cid)["status"], "in_progress")
+
+        # resume and finish — s2 (the paused step) MUST run, not be skipped
+        ran.clear()
+        ch2 = resume(s, cid)
+        walk(ch2, {})
+        s.finalize_chain(cid, ch2)
+        self.assertEqual(ran, ["s2", "s3"])
+        trail = [t["step_name"] for t in s.chain_step_trail(cid)]
+        self.assertEqual(trail, ["s0", "s1", "s2", "s3"])
+        self.assertEqual(s.chain_by_id(cid)["status"], "proven")
+
+
 if __name__ == "__main__":
     unittest.main()
