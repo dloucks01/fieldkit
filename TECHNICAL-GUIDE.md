@@ -389,6 +389,8 @@ fieldkit ingest k8s <graph.json> ; fieldkit k8s paths ; fieldkit k8s rules
 fieldkit ingest saas <graph.json> ; fieldkit saas paths ; fieldkit saas rules
 # cross-domain — stitch owned→admin across ALL domains through shared identity
 fieldkit ingest pivots <pivots.json> ; fieldkit paths
+# visualize the whole stitched graph
+fieldkit graph --format dot -o graph.dot ; dot -Tsvg graph.dot -o graph.svg
 ```
 
 **Cross-domain stitching.** The per-domain pathfinders search only their own `kind`
@@ -423,6 +425,12 @@ code-execution web finding is *proven* against it (`rce_web` / `webshell` /
 `command_injection` / `ssti` / `deserialization` — a generic `web_vuln` nuclei match does
 not own it), so a proven web RCE originates `web → host → …` (e.g. a shell on a DC's web
 app is a `web → AD` escalation to the domain controller).
+
+`fieldkit graph` exports the whole unified graph for visualization (`graphexport`):
+`--format json` is a tool-agnostic `{nodes, edges}` document; `--format dot` is a
+Graphviz digraph coloured by domain, with owned footholds bordered, high-value targets as
+double-octagons and pivot edges dashed (`dot -Tsvg graph.dot -o graph.svg`). It bridges
+and derives pivots first, so the picture is the full stitched graph.
 
 The customer report renders a **Cross-domain attack narrative** in the executive
 summary: `report.build` attaches the live `cross_domain_paths` to the engagement

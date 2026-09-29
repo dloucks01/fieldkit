@@ -4937,6 +4937,37 @@ def cmd_paths(args, store):
 
 
 @needs_engagement
+def cmd_graph(args, store):
+    """Export the unified asset graph (all domains + cross-domain pivots) as DOT or JSON
+    for visualization. Bridges AD/host + web and derives pivots first, so the export
+    shows the full stitched graph."""
+    from . import adbridge, assetgraph, graphexport
+    adbridge.bridge(store)
+    assetgraph.derive_pivots(store)
+    fmt = getattr(args, "format", "dot")
+    if fmt == "json":
+        payload = json.dumps(graphexport.to_json(store), indent=2)
+    else:
+        payload = graphexport.to_dot(store)
+    doc = graphexport.to_json(store)
+    n, e = len(doc["nodes"]), len(doc["edges"])
+    out = getattr(args, "output", None)
+    if out:
+        try:
+            with open(out, "w") as fh:
+                fh.write(payload + "\n")
+        except OSError as exc:
+            _err(f"graph: {exc}")
+            return 2
+        print(f"wrote {out} ({fmt}) — {_plural(n, 'node')}, {_plural(e, 'edge')}")
+        if fmt == "dot":
+            print(f"render: dot -Tsvg {out} -o graph.svg")
+    else:
+        print(payload)
+    return 0
+
+
+@needs_engagement
 def cmd_ingest_pivots(args, store):
     """Record explicit cross-domain pivot edges (JSON) between existing assets, for
     links the auto-derivation can't infer (e.g. a web app whose compromise yields a
@@ -5284,6 +5315,19 @@ the spec is missing that field. `--from-file` reads one credential per line.
                     "(SaaS→cloud, web→cloud, cloud→k8s, …). Records each stitched path as "
                     "a `cross_domain_privesc` observation, ranked worst-first.")
     p_paths.set_defaults(func=cmd_paths)
+
+    p_graph = sub.add_parser(
+        "graph", help="export the unified asset graph (all domains + pivots) as DOT or JSON",
+        description="Bridges AD/host + web and derives cross-domain pivots, then exports "
+                    "the whole stitched asset graph for visualization. DOT is coloured by "
+                    "domain, with owned footholds bordered and high-value targets as "
+                    "double-octagons and pivot edges dashed (`dot -Tsvg`); JSON is a "
+                    "tool-agnostic {nodes, edges} document.")
+    p_graph.add_argument("--format", choices=["dot", "json"], default="dot",
+                         help="output format (default: dot)")
+    p_graph.add_argument("-o", "--output", metavar="PATH",
+                         help="write to a file instead of stdout")
+    p_graph.set_defaults(func=cmd_graph)
 
     p_k8s = sub.add_parser(
         "k8s", help="Kubernetes RBAC escalation pathing (owned service account → cluster-admin)")
