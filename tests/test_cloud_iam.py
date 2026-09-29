@@ -108,5 +108,51 @@ class ApplyTest(CloudTestCase):
         self.assertEqual(len(self.store.findings()), 1)
 
 
+class PrivescRuleTest(CloudTestCase):
+    """Edges are DERIVED from raw permissions via the AWS IAM privesc-primitive ruleset,
+    so an operator can feed a permissions dump instead of pre-computing the graph."""
+
+    def _apply(self, principals, edges=None):
+        cloud_iam.apply_iam(self.store, json.dumps(
+            {"provider": "aws", "principals": principals, "edges": edges or []}))
+
+    def test_self_escalation_permission_reaches_admin(self):
+        self._apply([{"arn": "u/dev", "name": "dev", "owned": True,
+                      "permissions": ["s3:GetObject", "iam:CreatePolicyVersion"]}])
+        paths = cloud_iam.escalation_paths(self.store)
+        self.assertEqual(len(paths), 1)
+        self.assertIn("iam:CreatePolicyVersion", paths[0]["evidence"])
+        self.assertIn("admin-equivalent", paths[0]["evidence"])
+
+    def test_wildcard_permission_matches(self):
+        self._apply([{"arn": "u/dev", "name": "dev", "owned": True,
+                      "permissions": ["iam:*"]}])
+        self.assertEqual(len(cloud_iam.escalation_paths(self.store)), 1)
+
+    def test_multi_hop_assume_then_self_escalation(self):
+        # explicit AssumeRole edge + a derived self-escalation on the assumed role
+        self._apply(
+            [{"arn": "u/dev", "name": "dev", "owned": True},
+             {"arn": "r/ci", "name": "ci", "permissions": ["iam:AttachUserPolicy"]}],
+            edges=[{"src": "u/dev", "dst": "r/ci", "kind": "sts:AssumeRole"}])
+        ev = cloud_iam.escalation_paths(self.store)[0]["evidence"]
+        self.assertIn("sts:AssumeRole", ev)
+        self.assertIn("iam:AttachUserPolicy", ev)
+
+    def test_passrole_needs_a_launcher(self):
+        # iam:PassRole alone is not enough; PassRole + a compute launch is.
+        self._apply([{"arn": "u/dev", "name": "dev", "owned": True,
+                      "permissions": ["iam:PassRole"]}])
+        self.assertEqual(cloud_iam.escalation_paths(self.store), [])
+        self._apply([{"arn": "u/dev2", "name": "dev2", "owned": True,
+                      "permissions": ["iam:PassRole", "ec2:RunInstances"]}])
+        self.assertTrue(cloud_iam.escalation_paths(self.store))
+
+    def test_benign_permissions_yield_no_path(self):
+        self._apply([{"arn": "u/dev", "name": "dev", "owned": True,
+                      "permissions": ["s3:GetObject", "ec2:DescribeInstances"]}])
+        self.assertEqual(cloud_iam.escalation_paths(self.store), [])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
