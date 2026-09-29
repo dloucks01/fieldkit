@@ -46,11 +46,11 @@ add cred/hosts → spray (loop: loot → promote → re-spray) → enum → anal
 ## Domains
 
 The AD credential loop is the spine, but the same store → capture → anti-fabrication-report
-core drives five more domains. Each is a thin driver over shared machinery — the **asset
-model** (`host` / `endpoint` / `cloud_principal` / `k8s_subject` / `saas_principal` / … are
-all assets), the **asset graph** (directed escalation edges), and the same owned→high-value
-**BloodHound BFS** — so a web/cloud/k8s/SaaS finding flows through `report --check` exactly
-like an AD one. Every graph domain's escalation paths are **ranked worst-first** by blast
+core drives six more domains. Each is a thin driver over shared machinery — the **asset
+model** (`host` / `endpoint` / `cloud_principal` / `k8s_subject` / `saas_principal` /
+`cicd_principal` / … are all assets), the **asset graph** (directed escalation edges), and
+the same owned→high-value **BloodHound BFS** — so a web/cloud/k8s/SaaS/CI-CD finding flows
+through `report --check` exactly like an AD one. Every graph domain's escalation paths are **ranked worst-first** by blast
 radius.
 
 | Domain | Drive it with | What it finds |
@@ -61,6 +61,7 @@ radius.
 | **Cloud IAM** | `ingest cloud <graph>` → `cloud paths` | owned→admin IAM escalation paths (`cloud_privesc`) |
 | **Kubernetes RBAC** | `ingest k8s <graph>` → `k8s paths` | owned→cluster-admin RBAC paths (`k8s_privesc`) |
 | **SaaS / identity provider** | `ingest saas <graph>` → `saas paths` | owned→tenant-admin Entra/Okta role paths (`saas_privesc`) |
+| **CI/CD pipelines** | `ingest cicd <graph>` → `cicd paths` | repo-write/runner → deploy-admin paths (`cicd_privesc`) |
 
 **Cross-domain stitching** is the payoff of one asset model: `fieldkit paths` bridges the
 AD/host core into the asset graph (recovered credentials become owned identities, hosts we

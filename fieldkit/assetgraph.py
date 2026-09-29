@@ -189,6 +189,7 @@ _KIND_DOMAIN = {
     "cloud_principal": "cloud",
     "k8s_subject": "k8s",
     "saas_principal": "saas",
+    "cicd_principal": "cicd",
 }
 
 #: Federation flows: an identity in a SOURCE domain that shares an email/UPN with a

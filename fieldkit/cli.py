@@ -865,6 +865,12 @@ def _cross_domain_moves(store):
     if sa:
         groups.append(("SaaS / identity provider (owned → admin)", sa))
 
+    from . import cicd as cicd_mod
+    ci = [f"[{p['priority']}] {p['evidence']}"
+          for p in cicd_mod.escalation_paths(store)]
+    if ci:
+        groups.append(("CI/CD pipelines (owned → deploy admin)", ci))
+
     # cross-domain stitched paths — the highest-value moves, so lead with them
     from . import adbridge, assetgraph
     adbridge.bridge(store)
@@ -4889,6 +4895,54 @@ def cmd_saas_rules(args):
     return 0
 
 
+@needs_engagement
+def cmd_ingest_cicd(args, store):
+    """Fold a normalized CI/CD graph (JSON) into state and record owned→admin escalation
+    paths as findings. With ``--from github-collaborators``, first adapt a
+    `gh api repos/{owner}/{repo}/collaborators` dump into that graph."""
+    from . import adapters
+    from . import cicd as cicd_mod
+    text, rc = _read_file_or_stdin(args, "CI/CD graph")
+    if text is None:
+        return rc
+    src = getattr(args, "src_format", "fieldkit")
+    if src != "fieldkit":
+        try:
+            graph = adapters.CICD_FORMATS[src](
+                text, owned=getattr(args, "owned", []) or [])
+        except adapters.AdapterError as exc:
+            _err(f"adapt {src}: {exc}")
+            return 2
+        text = json.dumps(graph)
+    try:
+        rep = cicd_mod.apply_cicd(store, text)
+    except cicd_mod.CicdError as exc:
+        _err(f"CI/CD: {exc}")
+        return 2
+    print(f"ingested {rep.principals_added} principal(s), {rep.edges_added} edge(s); "
+          f"{rep.findings_added} escalation path(s) recorded")
+    return 0
+
+
+@needs_engagement
+def cmd_cicd_paths(args, store):
+    """Print owned→admin CI/CD escalation paths from the ingested graph."""
+    from . import cicd as cicd_mod
+    return _print_paths(cicd_mod.escalation_paths(store), "CI/CD", "cicd")
+
+
+def cmd_cicd_rules(args):
+    """List the CI/CD privilege-escalation primitives the capability-derivation
+    recognizes (holding one lets a principal reach the deploy-admin identity)."""
+    from . import cicd as cicd_mod
+    r = cicd_mod.rules()
+    print(f"{len(r)} CI/CD privesc primitives recognized by `ingest cicd` "
+          "(a principal holding one reaches deploy-admin-equivalent):\n")
+    for label, required in r:
+        print(f"  {label:44} requires: {', '.join(required)}")
+    return 0
+
+
 def _print_paths(paths, what, ingest_cmd):
     if not paths:
         print(f"no owned→admin escalation paths — ingest a {what} graph first: "
@@ -5292,6 +5346,28 @@ the spec is missing that field. `--from-file` reads one credential per line.
              "repeatable. Only meaningful with `--from`.")
     i_saas.set_defaults(func=cmd_ingest_saas)
 
+    i_cicd = ingest_sub.add_parser(
+        "cicd", help="record a normalized CI/CD graph (principals + escalation edges)",
+        description="Reads a normalized CI/CD graph (JSON: principals — repos, "
+                    "pipelines, runners, service connections — with owned/admin flags + "
+                    "held capabilities like `write workflow` / `read secrets` / `deploy`, "
+                    "or explicit edges) produced by your enumerator (a `gh api` dump / a "
+                    "GitLab export / a workflow audit), folds it into `cicd_principal` "
+                    "assets + the asset graph, and records each owned→admin escalation "
+                    "path as a `cicd_privesc` finding. Idempotent.")
+    i_cicd.add_argument("file", nargs="?", help="CI/CD graph JSON (or `-` / stdin)")
+    i_cicd.add_argument(
+        "--from", dest="src_format", choices=["fieldkit", "github-collaborators"],
+        default="fieldkit",
+        help="input format (default: fieldkit's normalized graph). "
+             "`github-collaborators` adapts a `gh api repos/{owner}/{repo}/collaborators` "
+             "dump (write access ⇒ workflow injection).")
+    i_cicd.add_argument(
+        "--owned", action="append", default=[], metavar="LOGIN",
+        help="mark this principal (by login) as owned — your foothold; repeatable. "
+             "Only meaningful with `--from`.")
+    i_cicd.set_defaults(func=cmd_ingest_cicd)
+
     i_pivots = ingest_sub.add_parser(
         "pivots", help="record explicit cross-domain pivot edges between existing assets",
         description="Reads a JSON list of cross-domain pivot edges "
@@ -5358,6 +5434,21 @@ the spec is missing that field. `--from-file` reads one credential per line.
         "rules", help="list the SaaS/IdP (Entra/Okta) privesc primitives `ingest saas` derives from")
     s_rules.set_defaults(func=cmd_saas_rules)
     p_saas.set_defaults(func=lambda a: _missing(p_saas))
+
+    p_cicd = sub.add_parser(
+        "cicd", help="CI/CD pipeline escalation pathing (repo write / runner → deploy admin)")
+    cicd_sub = p_cicd.add_subparsers(dest="cicd_command", metavar="<action>")
+    ci_paths = cicd_sub.add_parser(
+        "paths", help="owned→admin escalation paths from the ingested CI/CD graph",
+        description="Runs the owned→high-value pathfinder over the ingested CI/CD graph "
+                    "(`ingest cicd`) and prints every shortest path from a principal you "
+                    "control (a repo writer, runner, service connection) to the "
+                    "deploy-admin identity — the same BFS the other domains use.")
+    ci_paths.set_defaults(func=cmd_cicd_paths)
+    ci_rules = cicd_sub.add_parser(
+        "rules", help="list the CI/CD privesc primitives `ingest cicd` derives from")
+    ci_rules.set_defaults(func=cmd_cicd_rules)
+    p_cicd.set_defaults(func=lambda a: _missing(p_cicd))
 
     p_web = sub.add_parser(
         "web", help="web-app surface — probe live endpoints + scan with nuclei")

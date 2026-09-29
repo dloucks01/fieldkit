@@ -367,9 +367,10 @@ Each records findings/loot and feeds `analyze`. The loop closes: `roast` → cra
 
 ### Non-AD domains & the asset model
 
-AD is the spine; the same store → capture → anti-fabrication-report core carries five
+AD is the spine; the same store → capture → anti-fabrication-report core carries six
 more domains, each a thin driver over shared machinery — the **asset** table
-(`host` / `endpoint` / `cloud_principal` / `k8s_subject` / `saas_principal`), the
+(`host` / `endpoint` / `cloud_principal` / `k8s_subject` / `saas_principal` /
+`cicd_principal`), the
 **asset_edge** graph, and the shared owned→high-value BFS (`assetgraph`, reusing
 `bloodhound._bfs`), which **ranks every path worst-first by blast radius**. Findings from
 every domain flow through `analyze` (cross-domain block), `status`, and `report --check`
@@ -387,6 +388,8 @@ fieldkit ingest cloud <graph.json> ; fieldkit cloud paths ; fieldkit cloud rules
 fieldkit ingest k8s <graph.json> ; fieldkit k8s paths ; fieldkit k8s rules
 # SaaS / identity provider (Entra ID / Okta) — owned identity → tenant admin
 fieldkit ingest saas <graph.json> ; fieldkit saas paths ; fieldkit saas rules
+# CI/CD pipelines (GitHub/GitLab) — repo write / runner → deploy admin (→ cloud via OIDC)
+fieldkit ingest cicd <graph.json> ; fieldkit cicd paths ; fieldkit cicd rules
 # cross-domain — stitch owned→admin across ALL domains through shared identity
 fieldkit ingest pivots <pivots.json> ; fieldkit paths
 # visualize the whole stitched graph

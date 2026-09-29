@@ -27,6 +27,7 @@ _DOMAIN_COLOR = {
     "cloud": "#f0e6c9",     # amber
     "k8s": "#c9f0ec",       # teal
     "saas": "#f0c9e6",      # pink
+    "cicd": "#e6d7f0",      # violet
     "cross": "#eeeeee",
 }
 _DEFAULT_COLOR = "#e8e8e8"
