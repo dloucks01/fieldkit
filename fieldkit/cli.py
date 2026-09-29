@@ -4627,6 +4627,9 @@ def cmd_web_probe(args, store):
         return 1
     print(f"probed {_plural(len(args.targets), 'target')}: "
           f"{rep.endpoints_added} endpoint(s) added, {rep.endpoints_enriched} enriched")
+    if rep.out_of_scope:
+        _err(f"{len(rep.out_of_scope)} endpoint(s) skipped — outside engagement scope: "
+             f"{', '.join(rep.out_of_scope[:5])}")
     return 0
 
 
@@ -4640,6 +4643,9 @@ def cmd_web_scan(args, store):
         return 1
     print(f"scanned {_plural(len(args.targets), 'target')}: "
           f"{rep.findings_added} finding(s) across {rep.endpoints_added} endpoint(s)")
+    if rep.out_of_scope:
+        _err(f"{len(rep.out_of_scope)} match(es) skipped — outside engagement scope: "
+             f"{', '.join(rep.out_of_scope[:5])}")
     return 0
 
 

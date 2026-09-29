@@ -13,8 +13,10 @@ A web endpoint is an ``asset(kind="endpoint")`` (keyed by URL); a nuclei match i
 finding. The subprocess runner is injected (``run=``) so the whole path is testable
 against canned httpx/nuclei output without a packet.
 """
+import ipaddress
 import json
 from dataclasses import dataclass
+from urllib.parse import urlsplit, urlunsplit
 
 from . import runner as runner_mod
 
@@ -51,6 +53,38 @@ class WebReport:
     endpoints_enriched: int = 0
     findings_added: int = 0
     aborted: str = None
+    out_of_scope: list = None
+
+    def __post_init__(self):
+        if self.out_of_scope is None:
+            self.out_of_scope = []
+
+
+def norm_url(url):
+    """Canonicalize an endpoint URL so httpx (``https://app/``) and nuclei
+    (``https://app``) map to ONE asset: lowercase scheme+host, drop the default port,
+    strip a bare trailing slash. Any real path/query is preserved. A non-URL string is
+    returned stripped, unchanged."""
+    s = urlsplit((url or "").strip())
+    if not s.scheme or not s.netloc:
+        return (url or "").strip()
+    host = (s.hostname or "").lower()
+    default = (s.scheme.lower() == "http" and s.port == 80) or \
+              (s.scheme.lower() == "https" and s.port == 443)
+    netloc = host if (s.port is None or default) else f"{host}:{s.port}"
+    path = "" if s.path == "/" else s.path
+    return urlunsplit((s.scheme.lower(), netloc, path, s.query, ""))
+
+
+def _url_ip(url):
+    """The endpoint's IP when its host is an IP literal, else None (a hostname needs
+    resolution we don't do)."""
+    host = (urlsplit((url or "").strip()).hostname or "")
+    try:
+        ipaddress.ip_address(host)
+        return host
+    except ValueError:
+        return None
 
 
 def _int(v):
@@ -122,13 +156,21 @@ def apply_httpx(store, endpoints):
     rep = WebReport()
     with store.transaction():
         for e in endpoints:
+            # Scope (best-effort): drop an endpoint whose IP is out of scope. Its IP is
+            # httpx's `host` field, or the URL host when that's an IP literal; a
+            # hostname endpoint can't be scope-checked without resolution, so it's kept.
+            ip = e.host_ip or _url_ip(e.url)
+            if ip and not store.in_scope(ip):
+                if ip not in rep.out_of_scope:
+                    rep.out_of_scope.append(ip)
+                continue
             host_id = None
             if e.host_ip:
                 h = store.host_by_ip(e.host_ip)
                 if h:
                     host_id = h["id"]
             _, created = store.add_asset(
-                ENDPOINT, e.url, label=e.title or e.url, host_id=host_id,
+                ENDPOINT, norm_url(e.url), label=e.title or e.url, host_id=host_id,
                 props={"status": e.status, "tech": list(e.tech), "port": e.port})
             rep.endpoints_added += created
             rep.endpoints_enriched += (not created)
@@ -141,7 +183,12 @@ def apply_nuclei(store, vulns):
     rep = WebReport()
     with store.transaction():
         for v in vulns:
-            key = v.url or v.matched_at
+            key = norm_url(v.url or v.matched_at)
+            ip = _url_ip(key)
+            if ip and not store.in_scope(ip):
+                if ip not in rep.out_of_scope:
+                    rep.out_of_scope.append(ip)
+                continue
             asset_id = None
             if key:
                 asset_id, created = store.add_asset(ENDPOINT, key, label=key)

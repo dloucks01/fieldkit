@@ -63,7 +63,7 @@ class ApplyTest(unittest.TestCase):
         hid, _ = self.store.add_host("10.0.0.20", hostname="WEB01")
         rep = web.apply_httpx(self.store, web.parse_httpx(HTTPX))
         self.assertEqual(rep.endpoints_added, 2)
-        self.assertEqual(self.store.asset_by_key("endpoint", "https://app/")["host_id"], hid)
+        self.assertEqual(self.store.asset_by_key("endpoint", "https://app")["host_id"], hid)
 
     def test_apply_nuclei_records_proven_findings_with_evidence(self):
         rep = web.apply_nuclei(self.store, web.parse_nuclei(NUCLEI))
@@ -108,6 +108,40 @@ class DriverTest(unittest.TestCase):
                        run=lambda a, e=None: RunResult(a, error="nuclei: not found"))
         self.assertIn("not found", rep.aborted)
         self.assertEqual(rep.findings_added, 0)
+
+
+class NormAndScopeTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = Store.create(os.path.join(self.tmp.name, "e.db"))
+        self.addCleanup(self.store.close)
+        self.store.init_engagement("ACME")
+
+    def test_norm_url_canonicalizes(self):
+        self.assertEqual(web.norm_url("https://app/"), web.norm_url("https://app"))
+        self.assertEqual(web.norm_url("https://APP:443/x"), "https://app/x")
+        self.assertEqual(web.norm_url("http://x:8080/"), "http://x:8080")
+        self.assertEqual(web.norm_url("not a url"), "not a url")
+
+    def test_httpx_and_nuclei_dedupe_to_one_endpoint(self):
+        # httpx sees the trailing-slash form, nuclei the bare host — one asset, not two.
+        web.apply_httpx(self.store, web.parse_httpx('{"url":"https://app/","port":"443"}'))
+        web.apply_nuclei(self.store, web.parse_nuclei(
+            '{"template-id":"t","info":{"name":"x","severity":"low"},'
+            '"host":"https://app","matched-at":"https://app/a"}'))
+        self.assertEqual([a["key"] for a in self.store.assets("endpoint")],
+                         ["https://app"])
+
+    def test_out_of_scope_ip_endpoint_dropped(self):
+        self.store.scope_add("10.0.0.0/24", "allow")
+        rep = web.apply_httpx(self.store, web.parse_httpx(
+            '{"url":"https://10.0.0.7/","host":"10.0.0.7"}\n'
+            '{"url":"https://8.8.8.8/","host":"8.8.8.8"}'))
+        self.assertIn("8.8.8.8", rep.out_of_scope)
+        keys = [a["key"] for a in self.store.assets("endpoint")]
+        self.assertIn("https://10.0.0.7", keys)
+        self.assertNotIn("https://8.8.8.8", keys)
 
 
 if __name__ == "__main__":  # pragma: no cover
