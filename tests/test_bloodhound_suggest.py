@@ -227,5 +227,19 @@ class CLITest(unittest.TestCase):
         self.assertIn("no shipped chain profile fits", out)
 
 
+
+class RbcdTargetTest(unittest.TestCase):
+    """rbcd is a Computer-targeted primitive; never suggest it against a Group even
+    when the winning ACE edge is on the path."""
+
+    def test_rbcd_not_suggested_against_a_group(self):
+        from fieldkit.bloodhound import suggest_chain
+        nodes = {"S-1": {"name": "JDOE@C", "ntype": "User", "high_value": 0},
+                 "S-3": {"name": "DOMAIN ADMINS@C", "ntype": "Group", "high_value": 1}}
+        pe = {"path": "JDOE@C -GenericAll-> DOMAIN ADMINS@C", "target": "DOMAIN ADMINS@C"}
+        s = suggest_chain(pe, nodes_by_sid=nodes)
+        self.assertTrue(s is None or s["profile"] != "rbcd")
+
+
 if __name__ == "__main__":
     unittest.main()

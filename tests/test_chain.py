@@ -338,5 +338,23 @@ class ChainStorePersistenceTest(unittest.TestCase):
                          ["test-filter-profile"])
 
 
+
+class TerminalWalkGuardTest(unittest.TestCase):
+    """Re-walking a terminal (aborted) chain must be a no-op, not re-run the failed
+    step and grow outcomes past len(steps) (which later IndexErrors add_chain)."""
+
+    def test_rewalking_aborted_chain_is_noop(self):
+        from fieldkit.chain import Chain, Step, Outcome, walk
+        def ok(c, x): return Outcome(kind="ok", evidence="")
+        def bad(c, x): return Outcome(kind="fail", evidence="boom")
+        steps = (Step(name="s0", kind="preflight", detection_cost=0, action=ok),
+                 Step(name="s1", kind="preflight", detection_cost=0, action=bad),
+                 Step(name="s2", kind="preflight", detection_cost=0, action=ok))
+        ch = Chain(profile="t", target="h", steps=steps)
+        walk(ch, {}); walk(ch, {}); walk(ch, {})
+        self.assertEqual(ch.status, "aborted")
+        self.assertLessEqual(len(ch.outcomes), len(steps))
+
+
 if __name__ == "__main__":
     unittest.main()

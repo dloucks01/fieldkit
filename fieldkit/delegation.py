@@ -31,7 +31,8 @@ _TYPE = {
 # a --find-delegation row: AccountName AccountType DelegationType [DelegationRightsTo]
 _ROW = re.compile(
     r"(?P<account>\S+)\s+(?P<atype>User|Computer)\s+"
-    r"(?P<dtype>Unconstrained|Constrained|Resource-Based(?:\s+Constrained)?|RBCD)\b"
+    r"(?P<dtype>Unconstrained|Constrained(?:\s+w/\s+Protocol\s+Transition)?"
+    r"|Resource-Based(?:\s+Constrained)?|RBCD)\b"
     r"\s*(?P<rights>.*?)\s*$", re.I)
 
 

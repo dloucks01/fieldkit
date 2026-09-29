@@ -233,5 +233,17 @@ class CLIRegisterTest(unittest.TestCase):
             self.assertIn(p, out)
 
 
+
+class NameSafetyTest(unittest.TestCase):
+    """A path-bearing profile `name` would escape USER_CHAINS_DIR on install; reject it."""
+
+    def test_path_bearing_name_is_rejected(self):
+        from fieldkit.chain_yaml import build_profile_from_doc, ChainYamlError
+        for bad in ["../escaped", "/tmp/pwn", "a/b", ".."]:
+            with self.assertRaises(ChainYamlError):
+                build_profile_from_doc({"name": bad, "steps": [
+                    {"name": "s", "kind": "preflight", "manual": "x"}]})
+
+
 if __name__ == "__main__":
     unittest.main()

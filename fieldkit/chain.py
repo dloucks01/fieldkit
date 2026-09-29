@@ -432,6 +432,11 @@ def walk(chain, ctx, on_step=None, before_step=None):
     """
     if chain.started_at is None:
         chain.started_at = utcnow()
+    # A terminal chain must not be re-walked: an aborted chain leaves `current`
+    # pointing AT the failed step, so re-entry would re-run it and append past
+    # len(steps) (later crashing add_chain's steps[idx]); a proven chain is done.
+    if chain.status in ("aborted", "proven"):
+        return chain
     while chain.current < len(chain.steps):
         step = chain.steps[chain.current]
         # Operator confirm hook — the interactive walker uses this.

@@ -47,12 +47,18 @@ def _read_docs(path):
         for fn in sorted(os.listdir(path)):
             if fn.endswith(".json"):
                 with open(os.path.join(path, fn), errors="replace") as fh:
-                    yield json.load(fh)
+                    try:
+                        yield json.load(fh)
+                    except json.JSONDecodeError:
+                        continue   # one malformed file must not abort the import
     elif zipfile.is_zipfile(path):
         with zipfile.ZipFile(path) as z:
             for name in z.namelist():
                 if name.endswith(".json"):
-                    yield json.loads(z.read(name))
+                    try:
+                        yield json.loads(z.read(name))
+                    except json.JSONDecodeError:
+                        continue
     elif path.endswith(".json"):
         with open(path, errors="replace") as fh:
             yield json.load(fh)
@@ -295,8 +301,10 @@ def suggest_chain(path_entry, nodes_by_sid=None):
     target_name = path_entry.get("target", "")
 
     def _final_computer():
-        """Return the last Computer node name mentioned in the path,
-        or the target name as fallback."""
+        """Return the last Computer node name in the path. Falls back to the target
+        name only when node types are unavailable (nodes_by_sid is None); when types
+        ARE known and no Computer is on the path, returns None so the caller can skip
+        a computer-targeted suggestion instead of aiming rbcd at a Group."""
         if nodes_by_sid is None:
             return target_name
         # path tokens include "-EdgeKind-> NAME" pairs; strip the
@@ -309,7 +317,7 @@ def suggest_chain(path_entry, nodes_by_sid=None):
                 if n["name"] == tok and (n["ntype"] or "").lower() == "computer":
                     candidates.append(tok)
                     break
-        return candidates[-1] if candidates else target_name
+        return candidates[-1] if candidates else None
 
     # Rule 1: high-value Computer target → esc8 primary + nopac
     # alternative. DCs are the canonical case; the rationale
@@ -345,9 +353,14 @@ def suggest_chain(path_entry, nodes_by_sid=None):
     for edge_kinds, profile, rationale in _EDGE_HINTS:
         for ek in edge_kinds:
             if f"-{ek}->" in path_str:
+                comp = _final_computer()
+                if comp is None:
+                    # computer-targeted profile (rbcd / smb-relay-exec) but no
+                    # Computer on the path — don't suggest aiming it at a Group.
+                    continue
                 return {
                     "profile": profile,
-                    "target": _final_computer(),
+                    "target": comp,
                     "rationale": rationale,
                 }
     return None

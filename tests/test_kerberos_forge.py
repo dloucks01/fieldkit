@@ -122,5 +122,19 @@ class CLITest(unittest.TestCase):
         self.assertIn("--spn is required", err)
 
 
+
+class NtHashNormalizationTest(unittest.TestCase):
+    """A pasted LM:NT pair (secretsdump/dcsync format) is reduced to the bare NT the
+    ticketer wants; a bare hash passes through unchanged."""
+
+    def test_lm_nt_pair_reduced_to_nt(self):
+        from fieldkit.kerberos_forge import _nt_only
+        self.assertEqual(
+            _nt_only("aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0"),
+            "31d6cfe0d16ae931b73c59d7e0c089c0")
+        self.assertEqual(_nt_only("31d6cfe0d16ae931b73c59d7e0c089c0"),
+                         "31d6cfe0d16ae931b73c59d7e0c089c0")
+
+
 if __name__ == "__main__":
     unittest.main()

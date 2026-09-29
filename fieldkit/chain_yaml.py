@@ -147,6 +147,14 @@ def build_profile_from_doc(doc, source_label="<yaml>"):
         raise ChainYamlError(
             f"{source_label}: missing/invalid 'name' — must be a "
             "non-empty string")
+    # The name becomes a filename under USER_CHAINS_DIR (install/uninstall), so a
+    # path-bearing name ("../x", "/abs/x", "a/b") would escape that directory and
+    # write/delete arbitrary *.yaml. Require a bare identifier.
+    if name in (".", "..") or name != os.path.basename(name) \
+            or "/" in name or "\\" in name or "\x00" in name:
+        raise ChainYamlError(
+            f"{source_label}: 'name' must be a bare identifier, not a path "
+            f"(got {name!r})")
     steps_raw = doc.get("steps")
     if not isinstance(steps_raw, list) or not steps_raw:
         raise ChainYamlError(
@@ -226,6 +234,8 @@ def uninstall(name):
     Returns True if a file was deleted, False if the name wasn't
     installed."""
     from .chain import _PROFILES
+    if not name or name != os.path.basename(name) or "/" in name or "\\" in name:
+        raise ChainYamlError(f"invalid chain name {name!r}")
     path = os.path.join(USER_CHAINS_DIR, f"{name}.yaml")
     removed = False
     if os.path.isfile(path):
