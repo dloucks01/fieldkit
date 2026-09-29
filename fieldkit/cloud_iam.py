@@ -67,6 +67,7 @@ def parse_iam(text):
             "type": (p.get("type") or "principal").strip(),
             "admin": bool(p.get("admin")),
             "owned": bool(p.get("owned")),
+            "props": p.get("props") or {},
             "permissions": [str(x) for x in (p.get("permissions") or [])]})
     for e in doc.get("edges") or []:
         src, dst = (e.get("src") or "").strip(), (e.get("dst") or "").strip()
@@ -152,7 +153,8 @@ def apply_iam(store, text):
     :mod:`fieldkit.assetgraph` engine — this module only speaks the cloud-IAM dialect."""
     provider, principals, edges = parse_iam(text)
     graph_principals = [{"key": p["arn"], "name": p["name"], "type": p["type"],
-                         "admin": p["admin"], "owned": p["owned"]} for p in principals]
+                         "admin": p["admin"], "owned": p["owned"],
+                         "props": p.get("props") or {}} for p in principals]
     # Derive self-escalation edges from raw permissions, and add the synthetic admin
     # node they target (unless the graph already defines it).
     derived, admin_needed = derive_edges(principals)

@@ -62,9 +62,16 @@ radius.
 | **Kubernetes RBAC** | `ingest k8s <graph>` → `k8s paths` | owned→cluster-admin RBAC paths (`k8s_privesc`) |
 | **SaaS / identity provider** | `ingest saas <graph>` → `saas paths` | owned→tenant-admin Entra/Okta role paths (`saas_privesc`) |
 
+**Cross-domain stitching** is the payoff of one asset model: `fieldkit paths` links the
+per-domain graphs through shared identity (a SaaS user federated to a cloud role, a
+declared `aliases`, or an explicit `ingest pivots` edge) and runs the owned→admin BFS over
+the *whole* graph — surfacing escalation that crosses a boundary a defender assumed
+contained it (`SaaS → cloud`, `web → cloud`, `cloud → k8s`), stepping over any nearer
+in-domain admin. Each stitched path is a ranked `cross_domain_privesc` observation.
+
 `fieldkit status` shows the whole picture — assets by kind and findings by domain — in one
 board; `fieldkit report` renders every domain's findings through the one anti-fabrication
-gate, grouped by domain with a cross-domain executive summary. fieldkit calls no
+gate, grouped by domain (cross-domain first) with a cross-domain executive summary. fieldkit calls no
 cloud/cluster/IdP APIs itself: the graph domains ingest a normalized graph your own
 enumerator produces, the same tool-agnostic handoff as everything else it drives — and
 `ingest … --from` adapts native output directly (`aws iam get-account-authorization-details`,

@@ -66,6 +66,20 @@ KB = {
             "permissions boundary, deny `iam:CreatePolicyVersion` on privileged "
             "policies); apply least-privilege and re-run the path analysis to confirm "
             "the chain is broken."),
+    "cross_domain_privesc": dict(sev="High", cwe="CWE-269", os="",
+        name="Cross-domain privilege-escalation path",
+        desc="A principal the assessment controls can reach an administrative identity "
+             "by traversing MORE THAN ONE domain — for example an identity-provider "
+             "role that federates into a cloud role, a compromised web app whose "
+             "instance role grants cloud access, or a cloud node-group role that maps "
+             "to a Kubernetes cluster-admin subject. Each hop may look acceptable inside "
+             "its own domain; the risk is the chain that crosses the boundary a "
+             "defender assumed contained it.",
+        rem="Treat the pivot points as the fix: sever the cross-domain link (scope the "
+            "federation / trust so an IdP role does not grant cloud admin, stop reusing "
+            "one identity across domains, and least-privilege the instance/node roles "
+            "that bridge web→cloud and cloud→cluster), then re-run the cross-domain path "
+            "analysis to confirm the chain no longer connects."),
     "saas_privesc": dict(sev="High", cwe="CWE-269", os="",
         name="SaaS / identity-provider privilege-escalation path",
         desc="A principal the assessment controls (a user, group or service principal) "
@@ -664,11 +678,14 @@ _DOMAIN_BY_VECTOR = {
     "cloud_privesc": "cloud",
     "k8s_privesc": "k8s",
     "saas_privesc": "saas",
+    "cross_domain_privesc": "cross",
 }
 
-#: Display order (AD first — it's the core and usually the bulk) and human labels.
-DOMAIN_ORDER = ["ad", "external", "web", "cloud", "k8s", "saas"]
+#: Display order (cross-domain first — a stitched path is the worst; then AD, the core)
+#: and human labels.
+DOMAIN_ORDER = ["cross", "ad", "external", "web", "cloud", "k8s", "saas"]
 _DOMAIN_LABELS = {
+    "cross": "Cross-domain",
     "ad": "Active Directory & hosts",
     "external": "External network services",
     "web": "Web applications",
@@ -703,6 +720,7 @@ RISK = {
     "cloud_privesc": "read-only",           # a reachable IAM path — enumerated, not walked
     "k8s_privesc": "read-only",             # a reachable RBAC path — enumerated, not walked
     "saas_privesc": "read-only",            # a reachable IdP role path — enumerated, not walked
+    "cross_domain_privesc": "read-only",    # a stitched multi-domain path — enumerated, not walked
     "web_vuln": "read-only",                # a nuclei match is an observation, not exploited
     "mongodb_unauth": "read-only",          # the connection itself proves it
     "mongodb_admin": "read-only",

@@ -387,7 +387,23 @@ fieldkit ingest cloud <graph.json> ; fieldkit cloud paths ; fieldkit cloud rules
 fieldkit ingest k8s <graph.json> ; fieldkit k8s paths ; fieldkit k8s rules
 # SaaS / identity provider (Entra ID / Okta) — owned identity → tenant admin
 fieldkit ingest saas <graph.json> ; fieldkit saas paths ; fieldkit saas rules
+# cross-domain — stitch owned→admin across ALL domains through shared identity
+fieldkit ingest pivots <pivots.json> ; fieldkit paths
 ```
+
+**Cross-domain stitching.** The per-domain pathfinders search only their own `kind`
+subgraph; `fieldkit paths` runs the owned→admin BFS over the *whole* asset graph, so one
+path can traverse several domains. It targets a high-value node in a domain *different*
+from the foothold's (stepping over any nearer in-domain admin — the question is "from
+here, can I reach admin in another domain?"). Cross-domain links come from three places,
+persisted as `pivot:`-prefixed `asset_edge`s: (1) **federated identity** — a
+`saas_principal` whose email/UPN also names a cloud/k8s principal (auto-derived, directed
+SaaS→cloud); (2) **`aliases`** — an `aliases` prop on any principal naming an identity in
+another domain (operator-declared); (3) **explicit** — `fieldkit ingest pivots`
+(`{"pivots":[{"src":{"kind","key"},"dst":{"kind","key"},"kind":"label"}]}`) for links the
+derivation can't infer. Stitched paths get a cross-domain score bump (an equal-length
+cross path outranks a single-domain one) and record as `cross_domain_privesc`
+observations; the report groups them first.
 
 **The cloud/k8s graph contract** (a normalized JSON your own enumerator produces —
 prowler / ScoutSuite / `aws iam get-account-authorization-details` / `kubectl auth
