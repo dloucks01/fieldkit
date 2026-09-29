@@ -406,21 +406,44 @@ class Store:
         return False
 
     def migrate(self):
-        """Apply any migrations this database has not seen. Idempotent."""
+        """Apply any migrations this database has not seen. Idempotent.
+
+        Each version is applied as one all-or-nothing transaction. SQLite's DDL is
+        transactional, but the ``sqlite3`` module's implicit transaction handling does
+        *not* roll DDL back — so a failure mid-migration (disk full, a killed process,
+        a bad statement) would otherwise leave a half-built schema with ``user_version``
+        unbumped, and the next open would re-run the migration into a ``table already
+        exists`` error and brick the database. Driving each version under an explicit
+        ``BEGIN``/``COMMIT`` (with the connection in manual-commit mode for the
+        duration) makes a failed migration leave the database exactly as it was.
+        """
         cur = self.conn.execute("PRAGMA user_version")
         have = cur.fetchone()[0]
         if have > SCHEMA_VERSION:
             raise StateError(
                 f"database schema v{have} is newer than this fieldkit (v{SCHEMA_VERSION}) "
                 "— upgrade fieldkit rather than downgrading the database")
-        for version, statements in MIGRATIONS:
-            if version <= have:
-                continue
-            with self.conn:
-                for sql in statements:
-                    self.conn.execute(sql)
-                # PRAGMA does not accept a bound parameter.
-                self.conn.execute(f"PRAGMA user_version = {int(version)}")
+        pending = [(v, s) for (v, s) in MIGRATIONS if v > have]
+        if not pending:
+            return self.schema_version()
+        prior_isolation = self.conn.isolation_level
+        self.conn.isolation_level = None   # manual transaction control, incl. DDL
+        try:
+            for version, statements in pending:
+                try:
+                    self.conn.execute("BEGIN")
+                    for sql in statements:
+                        self.conn.execute(sql)
+                    # PRAGMA does not accept a bound parameter.
+                    self.conn.execute(f"PRAGMA user_version = {int(version)}")
+                    self.conn.execute("COMMIT")
+                except Exception as exc:
+                    self.conn.execute("ROLLBACK")
+                    raise StateError(
+                        f"migration to schema v{version} failed and was rolled back "
+                        f"(database left at v{self.schema_version()}): {exc}") from exc
+        finally:
+            self.conn.isolation_level = prior_isolation
         return self.schema_version()
 
     def schema_version(self):

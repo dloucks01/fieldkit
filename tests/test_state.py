@@ -225,5 +225,37 @@ class DbPathTest(unittest.TestCase):
         self.assertTrue(default_db_path("/srv/eng").endswith("/srv/eng/engagement.db"))
 
 
+class MigrationAtomicityTest(unittest.TestCase):
+    """A migration that fails partway must roll back entirely, leaving the database
+    at its prior version — not a half-built schema whose committed DDL bricks the
+    next open with `table already exists`."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = os.path.join(self.tmp.name, "e.db")
+
+    def test_failed_migration_rolls_back_and_does_not_brick(self):
+        import fieldkit.state as st
+        Store.create(self.path).close()          # a good DB at the current schema
+        orig, orig_ver = st.MIGRATIONS[:], st.SCHEMA_VERSION
+        bad_ver = orig[-1][0] + 1
+        st.MIGRATIONS = orig + [(bad_ver, ["CREATE TABLE broken (x)", "NOT VALID SQL"])]
+        st.SCHEMA_VERSION = bad_ver
+        try:
+            with self.assertRaises(StateError):
+                Store.open(self.path)
+            # the half-applied migration was rolled back atomically
+            conn = sqlite3.connect(self.path)
+            self.addCleanup(conn.close)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], orig_ver)
+            self.assertIsNone(conn.execute(
+                "SELECT name FROM sqlite_master WHERE name='broken'").fetchone())
+        finally:
+            st.MIGRATIONS, st.SCHEMA_VERSION = orig, orig_ver
+        # with the good migration list the database still opens cleanly (not bricked)
+        Store.open(self.path).close()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -17,6 +17,8 @@ seed×seed×suffix×prefix×case unless the operator explicitly opts in.
 import re
 from dataclasses import dataclass, field
 
+from .errors import FieldkitError
+
 
 # ------------------------------------------------------------------- rule set
 
@@ -371,6 +373,15 @@ def usernames(first_names, last_names, *, patterns=None):
         "{f}{last}", "{last}{f}", "{f}.{last}",
         "{last}.{first}",
     )
+    # Validate once up front so a typo'd variable or unbalanced brace is a clean
+    # operator error, not a raw KeyError/ValueError traceback out of str.format().
+    for tmpl in patterns:
+        try:
+            tmpl.format(first="x", last="x", f="x", l="x")
+        except (KeyError, IndexError, ValueError) as exc:
+            raise FieldkitError(
+                f"bad username pattern {tmpl!r}: {exc}. Valid variables are "
+                "{first} {last} {f} {l} (write literal braces as {{ }})") from None
     seen, out = set(), []
     for first in first_names:
         for last in last_names:

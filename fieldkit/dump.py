@@ -20,9 +20,13 @@ from .netexec import strip_prefix
 _HEX32 = r"[0-9a-fA-F]{32}"
 
 #: secretsdump / pwdump:  [domain\]user:RID:LM:NT:::   (SAM, NTDS)
+#: The tail is deliberately not end-anchored: secretsdump ``-user-status`` appends
+#: ``(status=Enabled)`` and other tools add trailing annotations. rid=\d+ and the two
+#: exact-32 hex fields anchor the shape strongly enough that trailing text is safe —
+#: without this a suffixed line falls through to _CLEARTEXT and the NT hash is lost.
 _PWDUMP = re.compile(
     rf"^(?P<principal>[^:]+):(?P<rid>\d+):(?P<lm>{_HEX32}):(?P<nt>{_HEX32}):"
-    r"[^:]*:[^:]*:\s*$")
+    r"[^:]*:[^:]*:.*$")
 
 #: LSA cleartext line:  [domain\]principal:secret   (secret classified below)
 _CLEARTEXT = re.compile(r"^(?P<principal>[^:]+):(?P<secret>.+)$")

@@ -19,6 +19,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fieldkit import wordlist  # noqa: E402
+from fieldkit.errors import FieldkitError  # noqa: E402
 
 
 class GenerateTest(unittest.TestCase):
@@ -211,6 +212,23 @@ class UsernamesTest(unittest.TestCase):
         # Jane's is "jdoe" too (same first initial); dedup means one row
         # ...but Jane → j → jdoe same as John → j → jdoe. Confirm.
         self.assertEqual(users, ["jdoe"])
+
+
+class UsernamePatternValidationTest(unittest.TestCase):
+    """A typo'd pattern variable or an unbalanced brace is a clean operator error,
+    not a raw KeyError/ValueError traceback out of str.format()."""
+
+    def test_unknown_variable_raises_fieldkit_error(self):
+        with self.assertRaises(FieldkitError):
+            wordlist.usernames(["john"], ["doe"], patterns=["{First}.{last}"])
+
+    def test_unbalanced_brace_raises_fieldkit_error(self):
+        with self.assertRaises(FieldkitError):
+            wordlist.usernames(["john"], ["doe"], patterns=["{"])
+
+    def test_valid_custom_pattern_still_works(self):
+        self.assertEqual(
+            wordlist.usernames(["john"], ["doe"], patterns=["{f}{last}"]), ["jdoe"])
 
 
 if __name__ == "__main__":  # pragma: no cover
