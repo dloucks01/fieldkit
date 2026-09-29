@@ -456,12 +456,17 @@ def walk(chain, ctx, on_step=None, before_step=None):
             chain.current += 1
             continue
         if decision == "stop":
-            outcome = Outcome(
-                kind="manual",
-                evidence=f"operator stopped walk before {step.name!r}")
-            chain.outcomes.append(outcome)
+            # Operator paused BEFORE this step — it has NOT run, so record NO outcome
+            # for it. Appending one here would desync current from outcomes, and
+            # since resume() rebuilds current = len(outcomes) the phantom outcome
+            # would push the resumed walk PAST the paused step, silently skipping it.
+            # Leaving current on this step keeps the invariant (current == len(
+            # outcomes)) so resume() re-runs exactly here. The notification is
+            # display-only — finalize_chain persists from chain.outcomes, not on_step.
             if on_step:
-                on_step(chain, step, outcome)
+                on_step(chain, step, Outcome(
+                    kind="manual",
+                    evidence=f"operator stopped walk before {step.name!r}"))
             chain.finished_at = utcnow()
             return chain
         try:

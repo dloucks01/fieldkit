@@ -68,24 +68,31 @@ class WalkerBeforeStepTest(unittest.TestCase):
     def test_stop_ends_walk_without_aborting(self):
         from fieldkit.chain import walk
         ch = _mk_chain_with_stub_steps(3)
+        notified = []
         # stop before step 2
         def _before(chain, step):
             return "stop" if step.name == "s2" else "go"
-        walk(ch, None, before_step=_before)
-        kinds = [o.kind for o in ch.outcomes]
-        # s0 ran (ok), s1 ran (ok), s2 got stopped BEFORE running (manual)
-        self.assertEqual(kinds, ["ok", "ok", "manual"])
-        self.assertIn("stopped", ch.outcomes[-1].evidence)
-        # Chain is in_progress (not aborted) — resumable
-        self.assertEqual(ch.status, "in_progress")
+        def _on_step(chain, step, outcome):
+            notified.append((step.name, outcome.kind, outcome.evidence))
+        walk(ch, None, before_step=_before, on_step=_on_step)
+        # s0, s1 ran (ok). s2 was paused BEFORE running, so it records NO outcome —
+        # current stays on s2 so resume() re-runs it instead of skipping it.
+        self.assertEqual([o.kind for o in ch.outcomes], ["ok", "ok"])
+        self.assertEqual(ch.current, 2)
+        self.assertEqual(ch.status, "in_progress")   # resumable
         self.assertIsNone(ch.aborted_reason)
+        # the pause is still surfaced to the operator via on_step (display only)
+        self.assertIn("stopped", notified[-1][2])
+        self.assertEqual(notified[-1][0], "s2")
 
-    def test_stop_at_first_step_leaves_chain_in_progress(self):
+    def test_stop_at_first_step_records_nothing(self):
         from fieldkit.chain import walk
         ch = _mk_chain_with_stub_steps(3)
         walk(ch, None, before_step=lambda c, s: "stop")
-        self.assertEqual(len(ch.outcomes), 1)   # just the stop record
-        self.assertEqual(ch.status, "in_progress")
+        # nothing ran → no outcomes → planned (re-running the profile starts at s0)
+        self.assertEqual(len(ch.outcomes), 0)
+        self.assertEqual(ch.current, 0)
+        self.assertEqual(ch.status, "planned")
 
     def test_exception_in_before_step_defaults_to_go(self):
         # A UI bug in the callback shouldn't kill the chain.

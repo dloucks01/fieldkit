@@ -1824,9 +1824,9 @@ def cmd_chain_walk(args, store):
     per-step prompt: [g]o (default) / [s]kip / [q]uit.
 
     Skipping records a manual outcome and advances to the next step
-    (chain continues); quitting records a manual outcome and stops
-    the walk (chain status = in_progress, resumable via a follow-up
-    `chain run`).
+    (chain continues); quitting stops the walk BEFORE the current step
+    without recording an outcome for it, so the chain stays resumable
+    (`chain resume`) and picks up AT that step rather than skipping it.
     """
     from . import chain as chain_mod
     try:
