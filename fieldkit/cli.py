@@ -4669,6 +4669,39 @@ def cmd_ingest_httpx(args, store):
 
 
 @needs_engagement
+def cmd_ingest_cloud(args, store):
+    """Fold a normalized cloud-IAM graph (JSON) into state and record owned→admin
+    escalation paths as findings."""
+    from . import cloud_iam as cloud_mod
+    text, rc = _read_file_or_stdin(args, "cloud-IAM graph")
+    if text is None:
+        return rc
+    try:
+        rep = cloud_mod.apply_iam(store, text)
+    except cloud_mod.CloudIamError as exc:
+        _err(f"cloud IAM: {exc}")
+        return 2
+    print(f"ingested {rep.principals_added} principal(s), {rep.edges_added} edge(s); "
+          f"{rep.findings_added} escalation path(s) recorded")
+    return 0
+
+
+@needs_engagement
+def cmd_cloud_paths(args, store):
+    """Print owned→admin IAM escalation paths from the ingested cloud graph."""
+    from . import cloud_iam as cloud_mod
+    paths = cloud_mod.escalation_paths(store)
+    if not paths:
+        print("no owned→admin escalation paths — ingest a cloud-IAM graph first: "
+              "`fieldkit ingest cloud <graph.json>`.")
+        return 0
+    print(f"{_plural(len(paths), 'escalation path')} (owned → admin):\n")
+    for p in paths:
+        print(f"  {p['evidence']}")
+    return 0
+
+
+@needs_engagement
 def cmd_external(args, store):
     """The external-exploit loop: match discovered services against the CVE TTP
     library, record each match as an (unproven) finding, and print the ranked
@@ -4897,6 +4930,17 @@ the spec is missing that field. `--from-file` reads one credential per line.
                     "host when the IP matches one already in the engagement.")
     i_httpx.add_argument("file", nargs="?", help="httpx -json file (or `-` / stdin)")
     i_httpx.set_defaults(func=cmd_ingest_httpx)
+
+    i_cloud = ingest_sub.add_parser(
+        "cloud", help="record a normalized cloud-IAM graph (principals + escalation edges)",
+        description="Reads a normalized cloud-IAM graph (JSON: principals with "
+                    "owned/admin flags + escalation edges like sts:AssumeRole / "
+                    "iam:PassRole) produced by your enumerator (prowler / ScoutSuite / "
+                    "an `aws iam` dump), folds it into `cloud_principal` assets + the "
+                    "asset graph, and records each owned→admin escalation path as a "
+                    "`cloud_privesc` finding. Idempotent.")
+    i_cloud.add_argument("file", nargs="?", help="cloud-IAM graph JSON (or `-` / stdin)")
+    i_cloud.set_defaults(func=cmd_ingest_cloud)
 
     p_ingest.set_defaults(func=lambda a: _missing(p_ingest))
 
@@ -5346,6 +5390,13 @@ the spec is missing that field. `--from-file` reads one credential per line.
     c_imds.add_argument("--json", action="store_true",
                          help="emit machine-readable JSON")
     c_imds.set_defaults(func=cmd_cloud_imds)
+    c_paths = cloud_sub.add_parser(
+        "paths", help="owned→admin IAM escalation paths from the ingested cloud graph",
+        description="Runs the owned→high-value pathfinder over the ingested cloud-IAM "
+                    "graph (`ingest cloud`) and prints every shortest path from a "
+                    "principal you own to an admin principal — 'BloodHound for cloud' "
+                    "on the same BFS the AD side uses.")
+    c_paths.set_defaults(func=cmd_cloud_paths)
     p_cloud.set_defaults(func=lambda a: _missing(p_cloud))
 
     p_pivot = sub.add_parser(

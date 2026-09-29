@@ -43,6 +43,17 @@ KB = {
              "low-privileged user or earlier in the search order than the legitimate DLL.",
         rem="Load DLLs by absolute path; enable SafeDllSearchMode and process-level mitigations "
             "(no user/remote directories in the search path); restrict ACLs on the affected directory."),
+    "cloud_privesc": dict(sev="High", cwe="CWE-269", os="",
+        name="Cloud IAM privilege-escalation path",
+        desc="A principal the assessment controls can reach an administrative "
+             "principal through a chain of IAM relationships (role assumption, "
+             "PassRole, policy self-mutation, or equivalent). The escalation path "
+             "means a low-privileged foothold is effectively administrative.",
+        rem="Break the escalation chain: remove the offending permission on each hop "
+            "(scope `sts:AssumeRole` trust policies, restrict `iam:PassRole` with a "
+            "permissions boundary, deny `iam:CreatePolicyVersion` on privileged "
+            "policies); apply least-privilege and re-run the path analysis to confirm "
+            "the chain is broken."),
     "web_vuln": dict(sev="Medium", cwe="CWE-1035", os="",
         name="Web application vulnerability (nuclei)",
         desc="A nuclei template matched against a web endpoint, indicating a known "
@@ -630,6 +641,7 @@ RISK = {
     "postgres_role_grant": "reversible",   # SET ROLE lives inside the session only
     "postgres_read_server_files": "read-only",
     "postgres_unauth": "read-only",         # the connection itself proves it
+    "cloud_privesc": "read-only",           # a reachable IAM path — enumerated, not walked
     "web_vuln": "read-only",                # a nuclei match is an observation, not exploited
     "mongodb_unauth": "read-only",          # the connection itself proves it
     "mongodb_admin": "read-only",
