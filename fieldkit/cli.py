@@ -4690,10 +4690,38 @@ def cmd_ingest_cloud(args, store):
 def cmd_cloud_paths(args, store):
     """Print owned→admin IAM escalation paths from the ingested cloud graph."""
     from . import cloud_iam as cloud_mod
-    paths = cloud_mod.escalation_paths(store)
+    return _print_paths(cloud_mod.escalation_paths(store), "cloud-IAM", "cloud")
+
+
+@needs_engagement
+def cmd_ingest_k8s(args, store):
+    """Fold a normalized k8s RBAC graph (JSON) into state and record owned→admin
+    escalation paths as findings."""
+    from . import k8s as k8s_mod
+    text, rc = _read_file_or_stdin(args, "k8s RBAC graph")
+    if text is None:
+        return rc
+    try:
+        rep = k8s_mod.apply_rbac(store, text)
+    except k8s_mod.K8sRbacError as exc:
+        _err(f"k8s RBAC: {exc}")
+        return 2
+    print(f"ingested {rep.subjects_added} subject(s), {rep.edges_added} edge(s); "
+          f"{rep.findings_added} escalation path(s) recorded")
+    return 0
+
+
+@needs_engagement
+def cmd_k8s_paths(args, store):
+    """Print owned→admin RBAC escalation paths from the ingested k8s graph."""
+    from . import k8s as k8s_mod
+    return _print_paths(k8s_mod.escalation_paths(store), "k8s RBAC", "k8s")
+
+
+def _print_paths(paths, what, ingest_cmd):
     if not paths:
-        print("no owned→admin escalation paths — ingest a cloud-IAM graph first: "
-              "`fieldkit ingest cloud <graph.json>`.")
+        print(f"no owned→admin escalation paths — ingest a {what} graph first: "
+              f"`fieldkit ingest {ingest_cmd} <graph.json>`.")
         return 0
     print(f"{_plural(len(paths), 'escalation path')} (owned → admin):\n")
     for p in paths:
@@ -4942,7 +4970,30 @@ the spec is missing that field. `--from-file` reads one credential per line.
     i_cloud.add_argument("file", nargs="?", help="cloud-IAM graph JSON (or `-` / stdin)")
     i_cloud.set_defaults(func=cmd_ingest_cloud)
 
+    i_k8s = ingest_sub.add_parser(
+        "k8s", help="record a normalized Kubernetes RBAC graph (subjects + escalation edges)",
+        description="Reads a normalized k8s RBAC graph (JSON: subjects with owned/admin "
+                    "flags + escalation edges like pods/create, bind, impersonate, "
+                    "secrets/get) produced by your enumerator (kubectl auth can-i / "
+                    "rbac-tool / kubiscan), folds it into `k8s_subject` assets + the "
+                    "asset graph, and records each owned→admin escalation path as a "
+                    "`k8s_privesc` finding. Idempotent.")
+    i_k8s.add_argument("file", nargs="?", help="k8s RBAC graph JSON (or `-` / stdin)")
+    i_k8s.set_defaults(func=cmd_ingest_k8s)
+
     p_ingest.set_defaults(func=lambda a: _missing(p_ingest))
+
+    p_k8s = sub.add_parser(
+        "k8s", help="Kubernetes RBAC escalation pathing (owned service account → cluster-admin)")
+    k8s_sub = p_k8s.add_subparsers(dest="k8s_command", metavar="<action>")
+    k_paths = k8s_sub.add_parser(
+        "paths", help="owned→admin RBAC escalation paths from the ingested k8s graph",
+        description="Runs the owned→high-value pathfinder over the ingested k8s RBAC "
+                    "graph (`ingest k8s`) and prints every shortest path from a subject "
+                    "you control to a cluster-admin-equivalent subject — the same BFS "
+                    "the AD and cloud sides use, over the asset graph.")
+    k_paths.set_defaults(func=cmd_k8s_paths)
+    p_k8s.set_defaults(func=lambda a: _missing(p_k8s))
 
     p_web = sub.add_parser(
         "web", help="web-app surface — probe live endpoints + scan with nuclei")
