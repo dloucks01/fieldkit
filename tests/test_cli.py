@@ -818,6 +818,36 @@ class IngestScopeTest(CliTestCase):
         self.assertIsNone(s.host_by_ip("8.8.8.8"))   # dropped, not a live target
 
 
+class UnifiedAnalyzeTest(CliTestCase):
+    def test_analyze_surfaces_all_domains(self):
+        import json
+        from fieldkit import external, web, cloud_iam, k8s
+        self.init()
+        s = self.store()
+        h, _ = s.add_host("10.0.0.50", os_name="windows")
+        s.add_service(h, 443, product="Microsoft Exchange", version="15.1.2044")
+        external.apply(s)
+        web.apply_nuclei(s, web.parse_nuclei(
+            '{"template-id":"t","info":{"name":"SQLi","severity":"critical"},'
+            '"host":"https://shop","matched-at":"https://shop/p?id=1"}'))
+        cloud_iam.apply_iam(s, json.dumps({"provider": "aws", "principals": [
+            {"arn": "u", "name": "dev", "owned": True},
+            {"arn": "a", "name": "admin", "admin": True}],
+            "edges": [{"src": "u", "dst": "a", "kind": "sts:AssumeRole"}]}))
+        k8s.apply_rbac(s, json.dumps({"cluster": "p", "subjects": [
+            {"id": "sa", "name": "app", "owned": True},
+            {"id": "ca", "name": "cluster-admin", "admin": True}],
+            "edges": [{"src": "sa", "dst": "ca", "kind": "bind"}]}))
+        out = self.run_cli("analyze")
+        self.assertIn("cross-domain", out)
+        self.assertIn("external services (CVE)", out)
+        self.assertIn("cloud IAM", out)
+        self.assertIn("dev -sts:AssumeRole-> admin", out)
+        self.assertIn("kubernetes RBAC", out)
+        self.assertIn("app -bind-> cluster-admin", out)
+        self.assertIn("[Critical] SQLi", out)
+
+
 class TuiGuardTest(CliTestCase):
     def test_tui_refuses_without_a_tty(self):
         # run_cli captures stdout into a StringIO (not a TTY), so the guard must fire
