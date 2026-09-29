@@ -13,8 +13,52 @@ A domain module (``cloud_iam``, ``k8s``) parses its own enumerator output into a
 domain.
 """
 import json
+from collections import deque
 
 from .bloodhound import _bfs
+
+#: Priority scoring. A path's score rewards a SHORT chain (fewer hops = less that can
+#: fail, faster to execute) and a LARGE blast radius (how many further principals the
+#: admin target dominates downstream — its lateral reach once compromised), plus a
+#: target-privilege term for landing on an admin-equivalent node. The exact weights are
+#: a transparent heuristic: what matters is the *ordering* (worst-first) and the band.
+#: See :func:`_score_path` / :func:`_priority_band`.
+_EASE_FLOOR = 1
+_EASE_BASE = 6      # ease = max(FLOOR, BASE - hop_count): 1 hop → 5 … ≥5 hops → 1
+_W_EASE = 100
+_W_BLAST = 5
+_W_ADMIN = 50
+
+
+def _score_path(hop_count, blast_radius, target_admin):
+    """Blast-radius priority score for an owned→admin path (higher = act first)."""
+    ease = max(_EASE_FLOOR, _EASE_BASE - hop_count)
+    return ease * _W_EASE + blast_radius * _W_BLAST + (_W_ADMIN if target_admin else 0)
+
+
+def _priority_band(score):
+    """Map a score to an operator-facing band."""
+    if score >= 500:
+        return "Critical"
+    if score >= 350:
+        return "High"
+    if score >= 200:
+        return "Medium"
+    return "Low"
+
+
+def _downstream_reach(adj, start):
+    """Count of distinct principals reachable *from* ``start`` (its blast radius —
+    the lateral footprint an attacker inherits on compromising it). Excludes start."""
+    seen, q = set(), deque([start])
+    while q:
+        sid = q.popleft()
+        for dst, _ in adj.get(sid, []):
+            if dst not in seen:
+                seen.add(dst)
+                q.append(dst)
+    seen.discard(start)
+    return len(seen)
 
 
 def ingest_graph(store, kind, provider, principals, edges):
@@ -46,11 +90,14 @@ def ingest_graph(store, kind, provider, principals, edges):
 
 def escalation_paths(store, kind, *, label, max_depth=8):
     """Every shortest owned→admin escalation path in the ``kind`` subgraph, via the
-    shared BFS. Returns ``[{start_id, start, target, hops, title, evidence}]``.
+    shared BFS. Returns ``[{start_id, start, target, hops, hop_count, blast_radius,
+    score, priority, title, evidence}]``, ranked worst-first (highest score).
 
     "owned" = a principal flagged owned (our foothold); "admin" (high-value) = a
     principal flagged admin. ``label`` names the domain in the finding title
-    (e.g. "Cloud IAM", "Kubernetes RBAC"). Read-only."""
+    (e.g. "Cloud IAM", "Kubernetes RBAC"). Each path also carries a blast-radius
+    priority (see :func:`_score_path`): short chains onto high-reach targets rank
+    first. Read-only."""
     principals = store.assets(kind)
     if not principals:
         return []
@@ -70,15 +117,22 @@ def escalation_paths(store, kind, *, label, max_depth=8):
         target, hops = _bfs(a["id"], adj, nodes, max_depth)
         if target is None:
             continue
+        blast = _downstream_reach(adj, target)
+        score = _score_path(len(hops), blast, nodes[target]["high_value"])
         out.append({
             "start_id": a["id"],
             "start": nodes[a["id"]]["name"],
             "target": nodes[target]["name"],
             "hops": hops,
+            "hop_count": len(hops),
+            "blast_radius": blast,
+            "score": score,
+            "priority": _priority_band(score),
             "title": f"{label} escalation: {nodes[a['id']]['name']} → "
                      f"{nodes[target]['name']} (admin)",
             "evidence": _render_chain(nodes, a["id"], hops)})
-    out.sort(key=lambda p: (len(p["hops"]), p["start"]))
+    # worst-first: highest score, then shortest chain, then stable by name
+    out.sort(key=lambda p: (-p["score"], p["hop_count"], p["start"]))
     return out
 
 
