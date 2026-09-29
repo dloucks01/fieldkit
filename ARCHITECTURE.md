@@ -1,10 +1,13 @@
 # ARCHITECTURE.md — architecture & working notes for the fieldkit v2 engine
 
-fieldkit is a **stateful internal-AD execution engine** for **authorized** penetration
-testing: from one credential/foothold it drives proven external tools (netexec,
-impacket, evil-winrm, certipy) against a scope, runs the credential loop, escalates,
-and reports only what it actually proved. Standalone — Python 3 **stdlib only**; the
-tools it drives are the operator's existing kit. Authorized engagements only.
+fieldkit is a **stateful, multi-domain execution engine** for **authorized** penetration
+testing. The internal-AD credential loop is its spine, but the same core — one SQLite
+engagement store, an injected-runner execution layer that captures everything, and an
+anti-fabrication report — also carries **web**, **external-service**, **cloud-IAM** and
+**Kubernetes-RBAC** domains (see *Domains* in the module map). It drives proven external
+tools (netexec, impacket, certipy, httpx, nuclei, …) against a scope, finds the paths to
+compromise, and reports only what it actually proved. Standalone — Python 3 **stdlib
+only**; the tools it drives are the operator's existing kit. Authorized engagements only.
 
 ## Run & test
 
@@ -40,6 +43,7 @@ fallback axis; `report` renders the captured evidence.
 | Loop | `netexec.py`, `ingest.py`, `spray.py`, `dump.py`, `sharespider.py`, `wordlist.py`, `kb.py` | parse nxc `(Pwn3d!)`/`--pass-pol`; fold captures into state; the live spray loop; parse SAM/LSA/NTDS → loot→creds; **SMB share spider + secret scrub → loot → creds (nxc `-M spider_plus`, GPP cpassword / unattend / key=value / sensitive filenames)**; the opportunity KB + three-axis ranking |
 | Execution | `transport.py`, `executor.py`, `runner.py`, `hostenum.py`, `privesc.py`, `poc.py`, `classify.py`, `escalate.py`, `provision.py`, `staging.py`, `mssql.py`, `postgres.py`, `mongodb.py`, `fs_scrub.py`, `preflight.py` | run a command on a host (nxc `-x`/ssh/**mssql xp_cmdshell**) or push a file (`--put-file` smb/ssh, or **download-stage** via HTTP+certutil/curl over the exec transport); the safety gate + evidence capture; the one subprocess spawn; OS enum → `HostFacts`; privesc vectors (GTFOBins/caps/Se*/Potato-ladder/local-CVE matcher/…); the payload build layer (drive msfvenom/wixl/gcc/mingw → an artifact); the inspectable failure classifier (output→`Verdict`+fallback axis); the *pure* orchestrator that walks that axis over the ranked vectors (it takes fire/stage/build callbacks and never touches a target); the delivery half behind those callbacks — fire (incl. serve-in-memory), auto-stage, auto-build, put-file/download-stage; MSSQL low-priv→sysadmin (EXECUTE AS); PostgreSQL login→superuser→OS exec (COPY FROM PROGRAM, SET ROLE); MongoDB enum→admin/unauth+cred extraction; and a tool-presence preflight |
 | AD depth | `kerberos.py`, `delegation.py`, `adcs.py`, `bloodhound.py` | roasting → loot; `--find-delegation`; certipy ESC1-16; SharpHound graph + owned→DA pathfinding |
+| Domains (asset model) | `web.py`, `external.py`, `cloud_iam.py`, `k8s.py`, `assetgraph.py` | non-AD domains on the shared spine: web (httpx/nuclei → `endpoint` assets + `web_vuln`); external services (nmap `-sV` → CVE-TTP `version_range` match → `exposed_service_cve`); cloud IAM + k8s RBAC (ingest a normalized graph → `cloud_principal`/`k8s_subject` assets + `asset_edge` → owned→admin pathing via the shared `assetgraph` engine, which reuses `bloodhound._bfs`). Findings from all domains flow through the one `report --check` gate |
 | Evasion | `evasion.py`, `lab.py` | technique catalog + assume-caught model; Defender lab harness (EICAR-gated) |
 | Reporting | `report.py`, `reportkb.py`, `bridge.py` | build+render+`--check`+cleanup from state; the remediation KB (~80 vector_types); the recce export contract |
 | CLI | `cli.py` | thin argparse over the above — parse args, call in, print. No logic here. |
@@ -76,12 +80,21 @@ fallback axis; `report` renders the captured evidence.
 ## Data model (schema v10, `PRAGMA user_version`)
 
 `engagement` (1 row: name + config JSON) · `host` · `service` · `credential` · `access`
-(who-is-admin-where) · `finding` · `step` (captured evidence, optional `finding_id`) ·
-`artifact` (cleanup manifest) · `loot` (hashes/tickets pre-promotion) · `evasion` (lab
-green/red) · `bh_node`/`bh_edge` (BloodHound graph).
+(who-is-admin-where) · `finding` (optional `host_id` **or** `asset_id`) · `step` (captured
+evidence, optional `finding_id`) · `artifact` (cleanup manifest) · `loot` (hashes/tickets
+pre-promotion) · `evasion` (lab green/red) · `bh_node`/`bh_edge` (BloodHound graph).
+
+**Asset model (v9/v10) — the generalization beyond AD.** `asset` (`kind` + `key`: any
+target — `host` / `endpoint` / `cloud_principal` / `k8s_subject` / …, idempotent, optional
+`host_id` link) and `asset_edge` (a directed `(src, dst, kind)` escalation edge — the
+asset graph). `host` stays the canonical host entity (the AD path is unchanged); `finding`
+gained `asset_id` so non-host domains attach findings the same way. The shared `assetgraph`
+engine runs the owned→high-value BFS over any asset kind, so cloud IAM and k8s RBAC pathing
+reuse the AD BloodHound `_bfs` with zero new graph code.
 
 Schema changes = append `(version, [sql])` to `MIGRATIONS`; never edit a shipped entry.
-Older DBs upgrade in place on open. SQLite can't drop NOT NULL — rebuild the table (see
+Older DBs upgrade in place on open (each version is one atomic transaction — a failed
+migration rolls back, never bricks). SQLite can't drop NOT NULL — rebuild the table (see
 `_V2`).
 
 ## Extending
