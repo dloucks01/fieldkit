@@ -424,6 +424,12 @@ code-execution web finding is *proven* against it (`rce_web` / `webshell` /
 not own it), so a proven web RCE originates `web → host → …` (e.g. a shell on a DC's web
 app is a `web → AD` escalation to the domain controller).
 
+The customer report renders a **Cross-domain attack narrative** in the executive
+summary: `report.build` attaches the live `cross_domain_paths` to the engagement
+(read-only), and `render_markdown` walks the top chains worst-first in prose — foothold,
+pivot, target, domains crossed — with the "break it at the pivot" remediation. Each chain
+is still detailed as a *Cross-domain* observation below.
+
 **The cloud/k8s graph contract** (a normalized JSON your own enumerator produces —
 prowler / ScoutSuite / `aws iam get-account-authorization-details` / `kubectl auth
 can-i --list`; fieldkit calls no cloud/cluster APIs itself):
