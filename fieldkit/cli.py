@@ -834,6 +834,38 @@ def cmd_scrub(args, store, host, cred):
     return 0
 
 
+def _cross_domain_moves(store):
+    """Opportunities from the non-AD domains for the unified analyze view, grouped and
+    best-first. Returns ``[(domain_label, [line, ...]), …]`` for domains that have any."""
+    from . import external as external_mod
+    from . import cloud_iam as cloud_mod
+    from . import k8s as k8s_mod
+    groups = []
+
+    ext = []
+    for host, v in external_mod.match(store):
+        place = f"  → {v.playbook.place}" if (v.playbook and v.playbook.place) else ""
+        ext.append(f"[{v.axes}] {host['ip']}  {v.title}{place}")
+    if ext:
+        groups.append(("external services (CVE)", ext))
+
+    cloud = [p["evidence"] for p in cloud_mod.escalation_paths(store)]
+    if cloud:
+        groups.append(("cloud IAM (owned → admin)", cloud))
+
+    k = [p["evidence"] for p in k8s_mod.escalation_paths(store)]
+    if k:
+        groups.append(("kubernetes RBAC (owned → admin)", k))
+
+    order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
+    web = sorted((f for f in store.findings() if f["vector_type"] == "web_vuln"),
+                 key=lambda f: order.get(f["severity"] or "Info", 4))
+    if web:
+        groups.append(("web", [f"[{f['severity'] or '?'}] {f['title']}"
+                               for f in web[:10]]))
+    return groups
+
+
 @needs_engagement
 def cmd_analyze(args, store):
     cfg = config_mod.load(store)
@@ -853,17 +885,22 @@ def cmd_analyze(args, store):
     items += privesc_mod.vectors_from_state(store, **_stage_dirs(cfg))
     counts = store.counts()
     items.sort(key=lambda x: -x.score)
+    cross = _cross_domain_moves(store)
 
-    if not items:
-        if not counts["access"]:
-            print("nothing to analyze yet — no access proven. Run `fieldkit spray` first.")
+    if not items and not cross:
+        if not counts["access"] and not counts.get("assets"):
+            print("nothing to analyze yet — no access proven. Run `fieldkit spray` "
+                  "(AD) or ingest a scan/graph (web/external/cloud/k8s) first.")
         else:
             print("no ranked opportunities from the current state — "
                   "`fieldkit enum <host>` to unlock privesc vectors.")
         return 0
 
-    print(f"{_plural(len(items), 'move')}, best first "
-          "(exploitability/safety/detection):\n")
+    if not items:
+        print("no AD moves from the current state; cross-domain opportunities below.\n")
+    else:
+        print(f"{_plural(len(items), 'AD move')}, best first "
+              "(exploitability/safety/detection):\n")
     for i, item in enumerate(items, 1):
         where = f"  [{item.host}]" if item.host else ""
         print(f"{i}. {item.title}{where}")
@@ -883,6 +920,14 @@ def cmd_analyze(args, store):
             print(f"     next: {item.next_step}")
         if args.proof and item.safe_proof:
             print(f"     safe proof: {item.safe_proof}")
+        print()
+
+    if cross:
+        print("── cross-domain ─────────────────────────────────────────")
+        for label, lines in cross:
+            print(f"\n{label}  ({len(lines)}):")
+            for line in lines:
+                print(f"  {line}")
         print()
     return 0
 
