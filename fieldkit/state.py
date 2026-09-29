@@ -362,8 +362,28 @@ _V9 = [
 
 #: (version, [statements]) applied in order; a database records the last applied
 #: version in PRAGMA user_version. Append to migrate; never edit a shipped entry.
+#: v10 adds a generic directed edge between assets — the asset graph. Cloud IAM
+#: escalation (AssumeRole / PassRole / policy-write), k8s RBAC bindings, and any other
+#: "principal A can become principal B" relationship live here, so the owned→high-value
+#: pathfinder (fieldkit.bloodhound._bfs) can run over ANY asset kind, not just the AD
+#: SID graph. Keyed on (src, dst, kind); idempotent.
+_V10 = [
+    """
+    CREATE TABLE asset_edge (
+        id         INTEGER PRIMARY KEY,
+        src_id     INTEGER NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+        dst_id     INTEGER NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+        kind       TEXT NOT NULL,               -- the permission/relationship that enables it
+        props_json TEXT NOT NULL DEFAULT '{}',
+        added      TEXT NOT NULL,
+        UNIQUE (src_id, dst_id, kind)
+    )
+    """,
+    "CREATE INDEX ix_asset_edge_src ON asset_edge(src_id)",
+]
+
 MIGRATIONS = [(1, _V1), (2, _V2), (3, _V3), (4, _V4), (5, _V5),
-              (6, _V6), (7, _V7), (8, _V8), (9, _V9)]
+              (6, _V6), (7, _V7), (8, _V8), (9, _V9), (10, _V10)]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -680,6 +700,36 @@ class Store:
     def asset_by_id(self, asset_id):
         return self.conn.execute(
             "SELECT * FROM asset WHERE id = ?", (asset_id,)).fetchone()
+
+    def add_asset_edge(self, src_id, dst_id, kind, props=None):
+        """A directed edge between two assets (IAM AssumeRole/PassRole, k8s RBAC, …),
+        keyed on ``(src, dst, kind)``. Idempotent. Returns ``(edge_id, created)``."""
+        props = props or {}
+        with self._write():
+            row = self.conn.execute(
+                "SELECT id FROM asset_edge WHERE src_id = ? AND dst_id = ? AND kind = ?",
+                (src_id, dst_id, kind)).fetchone()
+            if row is not None:
+                return row["id"], False
+            try:
+                cur = self.conn.execute(
+                    "INSERT INTO asset_edge (src_id, dst_id, kind, props_json, added) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (src_id, dst_id, kind, json.dumps(props, sort_keys=True), utcnow()))
+                return cur.lastrowid, True
+            except sqlite3.IntegrityError:
+                row = self.conn.execute(
+                    "SELECT id FROM asset_edge WHERE src_id = ? AND dst_id = ? AND kind = ?",
+                    (src_id, dst_id, kind)).fetchone()
+                if row is None:
+                    raise
+                return row["id"], False
+
+    def asset_edges(self, kind=None):
+        if kind is not None:
+            return self.conn.execute(
+                "SELECT * FROM asset_edge WHERE kind = ? ORDER BY id", (kind,)).fetchall()
+        return self.conn.execute("SELECT * FROM asset_edge ORDER BY id").fetchall()
 
     # -- scope enforcement --------------------------------------------------
 

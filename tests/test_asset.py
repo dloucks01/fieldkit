@@ -103,5 +103,31 @@ class AddAssetTest(AssetTestCase):
         self.assertEqual(len(self.store.assets()), 3)
 
 
+class AssetEdgeTest(AssetTestCase):
+    """The v10 asset graph — directed edges between assets (cloud IAM / k8s RBAC / …)."""
+
+    def test_add_edge_idempotent(self):
+        a, _ = self.store.add_asset("cloud_principal", "arn:user/dev")
+        b, _ = self.store.add_asset("cloud_principal", "arn:role/admin")
+        e1, created = self.store.add_asset_edge(a, b, "sts:AssumeRole")
+        e2, again = self.store.add_asset_edge(a, b, "sts:AssumeRole")
+        self.assertTrue(created)
+        self.assertFalse(again)
+        self.assertEqual(e1, e2)
+        self.assertEqual(len(self.store.asset_edges()), 1)
+        # a different kind between the same pair is a distinct edge
+        _, c3 = self.store.add_asset_edge(a, b, "iam:PassRole")
+        self.assertTrue(c3)
+        self.assertEqual(len(self.store.asset_edges()), 2)
+        self.assertEqual(len(self.store.asset_edges(kind="iam:PassRole")), 1)
+
+    def test_edge_cascades_on_asset_delete(self):
+        a, _ = self.store.add_asset("cloud_principal", "arn:user/dev")
+        b, _ = self.store.add_asset("cloud_principal", "arn:role/admin")
+        self.store.add_asset_edge(a, b, "sts:AssumeRole")
+        self.store.conn.execute("DELETE FROM asset WHERE id=?", (a,))
+        self.assertEqual(len(self.store.asset_edges()), 0)   # ON DELETE CASCADE
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
