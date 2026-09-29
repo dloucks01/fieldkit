@@ -169,9 +169,12 @@ def apply_httpx(store, endpoints):
                 h = store.host_by_ip(e.host_ip)
                 if h:
                     host_id = h["id"]
+            props = {"status": e.status, "tech": list(e.tech), "port": e.port}
+            if ip:
+                props["ip"] = ip          # lets the AD/host bridge link this endpoint
             _, created = store.add_asset(
                 ENDPOINT, norm_url(e.url), label=e.title or e.url, host_id=host_id,
-                props={"status": e.status, "tech": list(e.tech), "port": e.port})
+                props=props)
             rep.endpoints_added += created
             rep.endpoints_enriched += (not created)
     return rep

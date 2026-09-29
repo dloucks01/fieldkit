@@ -416,6 +416,14 @@ cloud/SaaS principal stitches `AD → cloud` automatically. The reflection is on
 idempotent — the AD tables stay the source of truth, and it does not replace the
 BloodHound ACL pathing.
 
+It also **links web endpoints to their hosts**: an `endpoint -hosted on-> ad_host` edge
+(matched by the endpoint's `host_id`, or an IP literal in the URL) means compromising the
+web app lands you on its host. An endpoint becomes an **owned** foothold when a
+code-execution web finding is *proven* against it (`rce_web` / `webshell` /
+`command_injection` / `ssti` / `deserialization` — a generic `web_vuln` nuclei match does
+not own it), so a proven web RCE originates `web → host → …` (e.g. a shell on a DC's web
+app is a `web → AD` escalation to the domain controller).
+
 **The cloud/k8s graph contract** (a normalized JSON your own enumerator produces —
 prowler / ScoutSuite / `aws iam get-account-authorization-details` / `kubectl auth
 can-i --list`; fieldkit calls no cloud/cluster APIs itself):
