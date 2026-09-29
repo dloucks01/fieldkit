@@ -4591,6 +4591,98 @@ def _build_bloodhound_parser(sub):
     p_bh.set_defaults(func=lambda a: _missing(p_bh))
 
 
+# ---------------------------------------------------------------- web domain
+
+def _read_file_or_stdin(args, what):
+    """Text from ``args.file`` (or stdin). Returns ``(text, None)`` or, on error,
+    ``(None, exit_code)`` after printing the message."""
+    if args.file and args.file != "-":
+        try:
+            with open(args.file, "r", errors="replace") as fh:
+                return fh.read(), None
+        except OSError as exc:
+            _err(f"{args.file}: {exc}")
+            return None, 2
+    if sys.stdin.isatty():
+        _err(f"no {what} given — pass a file or pipe it on stdin")
+        return None, 2
+    return sys.stdin.read(), None
+
+
+@needs_engagement
+def cmd_web_probe(args, store):
+    """Drive httpx over targets, folding live endpoints into state as assets."""
+    from . import web as web_mod
+    rep = web_mod.probe(store, args.targets)
+    if rep.aborted:
+        _err(f"httpx: {rep.aborted}")
+        return 1
+    print(f"probed {_plural(len(args.targets), 'target')}: "
+          f"{rep.endpoints_added} endpoint(s) added, {rep.endpoints_enriched} enriched")
+    return 0
+
+
+@needs_engagement
+def cmd_web_scan(args, store):
+    """Drive nuclei over targets, folding matches into state as web_vuln findings."""
+    from . import web as web_mod
+    rep = web_mod.scan(store, args.targets)
+    if rep.aborted:
+        _err(f"nuclei: {rep.aborted}")
+        return 1
+    print(f"scanned {_plural(len(args.targets), 'target')}: "
+          f"{rep.findings_added} finding(s) across {rep.endpoints_added} endpoint(s)")
+    return 0
+
+
+@needs_engagement
+def cmd_ingest_nuclei(args, store):
+    """Fold a saved `nuclei -jsonl` capture into state as web_vuln findings."""
+    from . import web as web_mod
+    text, rc = _read_file_or_stdin(args, "nuclei output")
+    if text is None:
+        return rc
+    vulns = web_mod.parse_nuclei(text)
+    if not vulns:
+        _err("no nuclei findings recognized — expected `nuclei -jsonl` output")
+        return 2
+    rep = web_mod.apply_nuclei(store, vulns)
+    print(f"recorded {rep.findings_added} web finding(s) across "
+          f"{rep.endpoints_added} endpoint(s)")
+    return 0
+
+
+@needs_engagement
+def cmd_ingest_httpx(args, store):
+    """Fold a saved `httpx -json` capture into state as endpoint assets."""
+    from . import web as web_mod
+    text, rc = _read_file_or_stdin(args, "httpx output")
+    if text is None:
+        return rc
+    eps = web_mod.parse_httpx(text)
+    if not eps:
+        _err("no endpoints recognized — expected `httpx -json` output")
+        return 2
+    rep = web_mod.apply_httpx(store, eps)
+    print(f"recorded {rep.endpoints_added} endpoint(s), {rep.endpoints_enriched} enriched")
+    return 0
+
+
+@needs_engagement
+def cmd_assets(args, store):
+    """List engagement assets (host / endpoint / …), optionally filtered by --kind."""
+    rows = store.assets(kind=getattr(args, "kind", None))
+    if not rows:
+        k = getattr(args, "kind", None)
+        print("no assets recorded" + (f" of kind {k!r}" if k else ""))
+        return 0
+    for a in rows:
+        host = f"  (host #{a['host_id']})" if a["host_id"] else ""
+        label = f"  — {a['label']}" if a["label"] and a["label"] != a["key"] else ""
+        print(f"  [{a['kind']}] {a['key']}{label}{host}")
+    return 0
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog=PROG,
@@ -4762,7 +4854,50 @@ the spec is missing that field. `--from-file` reads one credential per line.
     i_recce.add_argument("-y", "--yes", action="store_true", help="skip the confirm-back")
     i_recce.set_defaults(func=cmd_ingest_recce)
 
+    i_nuclei = ingest_sub.add_parser(
+        "nuclei", help="record web findings from a saved nuclei -jsonl capture",
+        description="Reads `nuclei -jsonl` output from a file or stdin and folds each "
+                    "match into state as a proven `web_vuln` finding attached to its "
+                    "endpoint asset — the captured match is the finding's evidence, so "
+                    "`report --check` treats it like any other proven finding. "
+                    "Idempotent: re-ingesting the same output upserts.")
+    i_nuclei.add_argument("file", nargs="?", help="nuclei -jsonl file (or `-` / stdin)")
+    i_nuclei.set_defaults(func=cmd_ingest_nuclei)
+
+    i_httpx = ingest_sub.add_parser(
+        "httpx", help="record live web endpoints from a saved httpx -json capture",
+        description="Reads `httpx -json` output and folds each live endpoint into state "
+                    "as an `endpoint` asset (status, title, tech), linked to a known "
+                    "host when the IP matches one already in the engagement.")
+    i_httpx.add_argument("file", nargs="?", help="httpx -json file (or `-` / stdin)")
+    i_httpx.set_defaults(func=cmd_ingest_httpx)
+
     p_ingest.set_defaults(func=lambda a: _missing(p_ingest))
+
+    p_web = sub.add_parser(
+        "web", help="web-app surface — probe live endpoints + scan with nuclei")
+    web_sub = p_web.add_subparsers(dest="web_command", metavar="<action>")
+    w_probe = web_sub.add_parser(
+        "probe", help="httpx over targets → live endpoints as assets",
+        description="Drives httpx over the given targets and folds every live endpoint "
+                    "into state as an `endpoint` asset. Read-only.")
+    w_probe.add_argument("targets", nargs="+", metavar="TARGET",
+                         help="URLs or hosts to probe")
+    w_probe.set_defaults(func=cmd_web_probe)
+    w_scan = web_sub.add_parser(
+        "scan", help="nuclei over targets → matches as web_vuln findings",
+        description="Drives nuclei over the given targets and folds each match into "
+                    "state as a proven `web_vuln` finding (evidence = the captured "
+                    "match), attached to its endpoint asset.")
+    w_scan.add_argument("targets", nargs="+", metavar="TARGET",
+                        help="URLs or hosts to scan")
+    w_scan.set_defaults(func=cmd_web_scan)
+    p_web.set_defaults(func=lambda a: _missing(p_web))
+
+    p_assets = sub.add_parser(
+        "assets", help="list engagement assets (host / endpoint / …)")
+    p_assets.add_argument("--kind", help="filter by asset kind (e.g. endpoint)")
+    p_assets.set_defaults(func=cmd_assets)
 
     p_spray = sub.add_parser(
         "spray", help="validate stored creds across scope and run the credential loop",
