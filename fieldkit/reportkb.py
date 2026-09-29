@@ -43,6 +43,18 @@ KB = {
              "low-privileged user or earlier in the search order than the legitimate DLL.",
         rem="Load DLLs by absolute path; enable SafeDllSearchMode and process-level mitigations "
             "(no user/remote directories in the search path); restrict ACLs on the affected directory."),
+    "k8s_privesc": dict(sev="High", cwe="CWE-269", os="",
+        name="Kubernetes RBAC privilege-escalation path",
+        desc="A subject the assessment controls (a service account, user or group) can "
+             "reach a cluster-admin-equivalent subject through a chain of RBAC "
+             "permissions (pod creation to mount another SA's token, the bind/escalate "
+             "verbs, impersonation, or secret reads). The path makes a low-privileged "
+             "workload effectively cluster-admin.",
+        rem="Break the chain on each hop: remove the offending verb/resource from the "
+            "Role/ClusterRole, avoid granting `bind`/`escalate`/`impersonate` and "
+            "`create` on pods to untrusted subjects, restrict `secrets` reads, and "
+            "prefer namespaced Roles over ClusterRoles; re-run the path analysis to "
+            "confirm the chain is broken."),
     "cloud_privesc": dict(sev="High", cwe="CWE-269", os="",
         name="Cloud IAM privilege-escalation path",
         desc="A principal the assessment controls can reach an administrative "
@@ -642,6 +654,7 @@ RISK = {
     "postgres_read_server_files": "read-only",
     "postgres_unauth": "read-only",         # the connection itself proves it
     "cloud_privesc": "read-only",           # a reachable IAM path — enumerated, not walked
+    "k8s_privesc": "read-only",             # a reachable RBAC path — enumerated, not walked
     "web_vuln": "read-only",                # a nuclei match is an observation, not exploited
     "mongodb_unauth": "read-only",          # the connection itself proves it
     "mongodb_admin": "read-only",
