@@ -131,6 +131,10 @@ def build(store, config, *, proven_only=True, include_suppressed=False):
     # did; they don't change the finding set.
     engagement["chain_history"] = _collect_chain_history(store)
     engagement["bh_paths"] = _collect_bh_paths(store)
+    # Cross-domain stitched paths (read-only): the owned→admin chains that traverse
+    # more than one domain, so the report can narrate them worst-first. Reflects the
+    # current asset graph (populated by `fieldkit paths`); empty otherwise.
+    engagement["cross_domain_paths"] = _collect_cross_domain_paths(store)
 
     # Cross-reference: attach the shipped TTPs whose report_type
     # matches each finding's vector_type. Lets the customer report
@@ -199,6 +203,17 @@ def _collect_bh_paths(store):
     try:
         from . import bloodhound as bh_mod
         return bh_mod.owned_paths(store)
+    except Exception:                                             # noqa: BLE001
+        return []
+
+
+def _collect_cross_domain_paths(store):
+    """Cross-domain owned→admin paths from the unified asset graph (read-only). Empty
+    when nothing crosses a domain boundary. Reflects the graph as `fieldkit paths` left
+    it — the bridge/pivot edges are already persisted, so this does not mutate."""
+    try:
+        from . import assetgraph
+        return assetgraph.cross_domain_paths(store)
     except Exception:                                             # noqa: BLE001
         return []
 
@@ -424,6 +439,39 @@ def _render_findings_by_domain(w, proven, observations):
             w(f"- **[{_sev(f)}]** {f.get('title') or _kb(f)['name']}{loc} "
               f"*({kind})*")
         w("")
+
+
+def _render_cross_domain_narrative(w, paths):
+    """Prose walkthrough of the top owned→admin chains that cross a domain boundary —
+    the moves a siloed, single-domain review misses. Worst-first, capped. Silent when
+    nothing crosses a boundary."""
+    if not paths:
+        return
+    top = paths[:6]
+    w("### Cross-domain attack narrative")
+    w("")
+    lead = (f"The assessment identified **{len(paths)} escalation chain(s) that cross a "
+            "domain boundary** — a foothold in one domain reaching administrative "
+            "control in another. These are the moves a siloed, single-domain review "
+            "misses: each individual hop can look acceptable inside its own domain, but "
+            "chained they defeat the boundary between them. Highest-impact first")
+    lead += f"; the top {len(top)} are walked below." if len(paths) > len(top) else "."
+    w(lead)
+    w("")
+    for i, p in enumerate(top, 1):
+        doms = p.get("domains") or []
+        route = " → ".join(kb.domain_label(d) for d in doms) or "—"
+        n = p.get("hop_count", 0)
+        w(f"{i}. **[{p.get('priority', '?')}] {p.get('start', '?')} → "
+          f"{p.get('target', '?')}** — {n} hop{'' if n == 1 else 's'} across "
+          f"{len(doms)} domain{'' if len(doms) == 1 else 's'} ({route}).")
+        w(f"   Chain: `{p.get('evidence', '')}`")
+        w("")
+    w("Each chain is recorded as a *Cross-domain* observation below. **Break it at the "
+      "pivot** — where it crosses domains (a federated or synced identity, a reused "
+      "credential, a host that fronts a web app) is usually the cheapest single place to "
+      "sever the whole path.")
+    w("")
 
 
 def _render_finding(w, i, f):
@@ -925,6 +973,7 @@ def render_markdown(engagement, findings):
     multidomain = _is_multidomain(proven + observations)
     if multidomain:
         _render_domain_coverage(w, proven, observations)
+    _render_cross_domain_narrative(w, engagement.get("cross_domain_paths") or [])
 
     if proven:
         _glance(w, proven, "Findings")

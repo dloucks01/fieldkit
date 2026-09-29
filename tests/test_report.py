@@ -11,6 +11,7 @@ Pinned:
 
 Run:  python3 -m unittest discover -s tests
 """
+import json
 import os
 import sys
 import tempfile
@@ -413,6 +414,39 @@ class PerDomainReportTest(ReportTestCase):
         md = render_markdown({"client": "ACME"}, findings)
         self.assertIn("Coverage by domain", md)
         self.assertNotIn("spanned more than one domain", md)   # wording stays accurate
+
+
+class CrossDomainNarrativeTest(ReportTestCase):
+    """The cross-domain attack narrative appears once a stitched multi-domain path
+    exists in the graph, and is absent otherwise."""
+
+    def _federated(self):
+        from fieldkit import cloud_iam, saas
+        saas.apply_saas(self.store, json.dumps({"tenant": "t", "principals": [
+            {"id": "u:helga", "name": "helga@corp.com", "owned": True,
+             "permissions": ["Application Administrator"]}]}))
+        cloud_iam.apply_iam(self.store, json.dumps({"provider": "aws", "principals": [
+            {"arn": "arn:aws:iam::1:role/helga", "name": "helga@corp.com",
+             "permissions": ["iam:CreateAccessKey"]}]}))
+
+    def test_narrative_present_for_cross_domain_path(self):
+        from fieldkit import assetgraph
+        self._federated()
+        assetgraph.record_cross_domain(self.store)          # persists pivots + findings
+        eng, findings = build(self.store, self.cfg, proven_only=False)
+        md = render_markdown(eng, findings)
+        self.assertIn("Cross-domain attack narrative", md)
+        self.assertIn("cross a domain boundary", md)
+        self.assertIn("Break it at the pivot", md)
+        # the route names both domains in human form
+        self.assertIn("SaaS / identity provider", md)
+        self.assertIn("Cloud IAM", md)
+
+    def test_no_narrative_without_cross_domain_path(self):
+        self.proven_finding()                               # a plain AD finding
+        eng, findings = build(self.store, self.cfg, proven_only=False)
+        md = render_markdown(eng, findings)
+        self.assertNotIn("Cross-domain attack narrative", md)
 
 
 if __name__ == "__main__":  # pragma: no cover
