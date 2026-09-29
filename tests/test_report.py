@@ -366,5 +366,54 @@ class ArchitectureTest(unittest.TestCase):
         self.assertEqual(offenders, [], f"I/O at import time: {offenders}")
 
 
+class PerDomainReportTest(ReportTestCase):
+    """The cross-domain summary + per-domain grouping appear once a non-AD finding
+    is present, and are absent from a pure-AD report."""
+
+    def _cloud_obs(self):
+        aid, _ = self.store.add_asset("cloud_principal", "arn:dev", label="dev")
+        self.store.add_finding("cloud_privesc", "Cloud IAM escalation: dev → admin",
+                               asset_id=aid, proven=False,
+                               evidence="dev -CreatePolicyVersion-> admin")
+
+    def _k8s_obs(self):
+        aid, _ = self.store.add_asset("k8s_subject", "sa:app", label="app")
+        self.store.add_finding("k8s_privesc", "Kubernetes RBAC escalation: app → cadmin",
+                               asset_id=aid, proven=False,
+                               evidence="app -create pods-> cadmin")
+
+    def test_pure_ad_report_has_no_domain_sections(self):
+        self.proven_finding()
+        _, findings = build(self.store, self.cfg, proven_only=False)
+        md = render_markdown({"client": "ACME"}, findings)
+        self.assertNotIn("Coverage by domain", md)
+        self.assertNotIn("Attack surface by domain", md)
+
+    def test_multidomain_report_groups_by_domain(self):
+        self.proven_finding()      # AD, proven
+        self._cloud_obs()          # cloud, observation
+        self._k8s_obs()            # k8s, observation
+        _, findings = build(self.store, self.cfg, proven_only=False)
+        md = render_markdown({"client": "ACME"}, findings)
+        # cross-domain executive summary
+        self.assertIn("Coverage by domain", md)
+        self.assertIn("Cloud IAM", md)
+        self.assertIn("Kubernetes RBAC", md)
+        self.assertIn("Active Directory & hosts", md)
+        # per-domain index groups each item under its domain
+        self.assertIn("# Attack surface by domain", md)
+        # every finding is still detailed in the standard sections
+        self.assertIn("# Findings (proven)", md)
+        self.assertIn("# Observations (identified, not exploited)", md)
+
+    def test_single_nonad_domain_still_summarised(self):
+        # a cloud-only engagement triggers the domain view too (not just >1 domain)
+        self._cloud_obs()
+        _, findings = build(self.store, self.cfg, proven_only=False)
+        md = render_markdown({"client": "ACME"}, findings)
+        self.assertIn("Coverage by domain", md)
+        self.assertNotIn("spanned more than one domain", md)   # wording stays accurate
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

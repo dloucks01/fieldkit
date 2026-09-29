@@ -351,6 +351,81 @@ def _glance(w, rows, kind):
     w("")
 
 
+def _domain_of(f):
+    return kb.domain_of(f.get("vector_type", ""))
+
+
+def _is_multidomain(findings):
+    """True once any non-AD-domain finding is present — the trigger for the
+    cross-domain summary and the per-domain grouping. Pure AD/host engagements
+    render exactly as before."""
+    return any(_domain_of(f) != "ad" for f in findings)
+
+
+def _worst_sev(fs):
+    """Worst (lowest-rank) severity label across a finding list, or '—'."""
+    if not fs:
+        return "—"
+    return min((_sev(f) for f in fs), key=lambda s: kb.SEV_ORDER.get(s, 9))
+
+
+def _render_domain_coverage(w, proven, observations):
+    """Executive cross-domain summary: what was covered and where the weight sits,
+    across Active Directory, external services, web, cloud IAM and Kubernetes."""
+    by_domain = {}
+    for f in proven:
+        by_domain.setdefault(_domain_of(f), {"proven": [], "obs": []})["proven"].append(f)
+    for f in observations:
+        by_domain.setdefault(_domain_of(f), {"proven": [], "obs": []})["obs"].append(f)
+    w("### Coverage by domain")
+    w("")
+    w("The table summarises where findings and observations fell across the "
+      "assessed domains; the detailed writeups follow, and *Attack surface by "
+      "domain* below indexes every item under its domain.")
+    w("")
+    w("| Domain | Findings (proven) | Observations | Highest severity |")
+    w("|--------|-------------------|--------------|------------------|")
+    for d in kb.DOMAIN_ORDER:
+        if d not in by_domain:
+            continue
+        pr, ob = by_domain[d]["proven"], by_domain[d]["obs"]
+        w(f"| {kb.domain_label(d)} | {len(pr)} | {len(ob)} | "
+          f"{_worst_sev(pr + ob)} |")
+    w("")
+
+
+def _render_findings_by_domain(w, proven, observations):
+    """Per-domain index of every finding/observation, grouped under its domain and
+    ordered worst-first. A cross-cutting map — the full writeups stay in the
+    Findings / Observations sections; this is the 'what's where' view."""
+    tagged = [(f, True) for f in proven] + [(f, False) for f in observations]
+    by_domain = {}
+    for f, is_proven in tagged:
+        by_domain.setdefault(_domain_of(f), []).append((f, is_proven))
+    w("# Attack surface by domain")
+    w("")
+    w("Every finding and observation, grouped by assessment domain and ordered "
+      "worst-first. Each item is detailed in full under *Findings* or *Observations*.")
+    w("")
+    for d in kb.DOMAIN_ORDER:
+        items = by_domain.get(d)
+        if not items:
+            continue
+        items.sort(key=lambda t: (kb.SEV_ORDER.get(_sev(t[0]), 9),
+                                  not t[1], t[0].get("title") or ""))
+        w(f"### {kb.domain_label(d)} ({len(items)})")
+        w("")
+        for f, is_proven in items:
+            kind = "proven" if is_proven else "observation"
+            where = f.get("affected_host") or ""
+            # asset-based domains (cloud/k8s) carry no host — the title names the
+            # principals, so don't print the "(unspecified host)" placeholder
+            loc = f" — `{where}`" if where and where != "(unspecified host)" else ""
+            w(f"- **[{_sev(f)}]** {f.get('title') or _kb(f)['name']}{loc} "
+              f"*({kind})*")
+        w("")
+
+
 def _render_finding(w, i, f):
     k = _kb(f)
     title = f.get("title") or k["name"]
@@ -847,10 +922,17 @@ def render_markdown(engagement, findings):
              "referenced per finding." if eng.get("evidence_log") else ""))
     w("")
 
+    multidomain = _is_multidomain(proven + observations)
+    if multidomain:
+        _render_domain_coverage(w, proven, observations)
+
     if proven:
         _glance(w, proven, "Findings")
     if observations:
         _glance(w, observations, "Observations")
+
+    if multidomain:
+        _render_findings_by_domain(w, proven, observations)
     w("---")
     w("")
 
