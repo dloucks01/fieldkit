@@ -638,6 +638,37 @@ SEV_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
 def entry(vt):
     return KB.get(vt, DEFAULT)
 
+
+# =====================================================================================================
+# ASSESSMENT DOMAIN a vector_type belongs to — drives the per-domain report grouping and the
+# cross-domain executive summary. Every vector_type not listed here is the AD / hosts core
+# (the original domain), so new AD/host vectors need no entry.
+# =====================================================================================================
+_DOMAIN_BY_VECTOR = {
+    "web_vuln": "web",
+    "exposed_service_cve": "external",
+    "cloud_privesc": "cloud",
+    "k8s_privesc": "k8s",
+}
+
+#: Display order (AD first — it's the core and usually the bulk) and human labels.
+DOMAIN_ORDER = ["ad", "external", "web", "cloud", "k8s"]
+_DOMAIN_LABELS = {
+    "ad": "Active Directory & hosts",
+    "external": "External network services",
+    "web": "Web applications",
+    "cloud": "Cloud IAM",
+    "k8s": "Kubernetes RBAC",
+}
+
+def domain_of(vt):
+    """The assessment domain (`ad`/`web`/`external`/`cloud`/`k8s`) for a vector_type."""
+    return _DOMAIN_BY_VECTOR.get(vt, "ad")
+
+def domain_label(domain):
+    """Human label for a domain key (falls back to the key itself)."""
+    return _DOMAIN_LABELS.get(domain, domain)
+
 # =====================================================================================================
 # OPERATIONAL RISK of EXPLOITING each vector on a live (possibly production) target — drives the
 # "prove-without-breaking" guidance and the internal cleanup manifest. Labels, safest -> most dangerous:
