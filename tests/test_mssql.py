@@ -141,5 +141,17 @@ class EscalateTest(MssqlTestCase):
                          if f["vector_type"] == "mssql_linked_server"])
 
 
+
+class SqlLiteralEscapingTest(unittest.TestCase):
+    """Login/user names are enumerated from the untrusted target; a quote must be
+    escaped, not break (or inject into) fieldkit's own EXECUTE AS query."""
+
+    def test_apostrophe_login_is_escaped(self):
+        sql = mssql._as_login("O'Brien", "EXEC something")
+        self.assertIn("EXECUTE AS LOGIN='O''Brien'", sql)
+        # the raw, unescaped form must not appear
+        self.assertNotIn("LOGIN='O'Brien'", sql)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

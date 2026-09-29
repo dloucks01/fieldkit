@@ -3738,10 +3738,12 @@ def cmd_report(args, store):
     # Observations are in the report by default now; --proven-only drops them. (--all is a
     # retired no-op alias — it used to be the way to include observations.)
     cfg = config_mod.load(store)
-    engagement, findings = report_mod.build(store, cfg, proven_only=args.proven_only)
+    engagement, findings = report_mod.build(
+        store, cfg, proven_only=args.proven_only,
+        include_suppressed=getattr(args, "include_suppressed", False))
 
     proven = [f for f in findings if f.get("proven", True)]
-    errors, warns = report_mod.check(findings)
+    errors, warns = report_mod.check(findings, engagement.get("chain_history"))
     if args.check:
         # A --check with zero findings is not a real OK — it's a nothing-to-check.
         # The old "CHECK OK: 0 proven findings" read as green even though nothing
@@ -5424,6 +5426,9 @@ the spec is missing that field. `--from-file` reads one credential per line.
                           help="anti-fabrication gate only (exit 2 on errors)")
     p_report.add_argument("--cleanup", action="store_true",
                           help="write the INTERNAL cleanup manifest instead of the report")
+    p_report.add_argument("--include-suppressed", action="store_true",
+                          help="include accepted-risk (suppressed) findings in the "
+                               "report; they are excluded by default")
     p_report.add_argument("--proven-only", action="store_true",
                           help="only demonstrated compromises — omit the Observations")
     # retired: --all (observations are now in the report by default). Kept as a hidden,

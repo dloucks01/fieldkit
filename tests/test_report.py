@@ -78,14 +78,51 @@ class CheckTest(ReportTestCase):
         errors, _ = check(findings)
         self.assertEqual(errors, [])
 
-    def test_step_without_output_is_an_error(self):
+    def test_proven_chain_without_evidence_is_flagged(self):
+        # a chain-history "proven" claim renders into the SAME deliverable; it must
+        # carry captured step evidence or the anti-fabrication gate flags it.
+        no_evidence = [{"id": 3, "profile": "esc8", "status": "proven", "steps": [
+            {"name": "s0", "evidence": ""}]}]
+        errors, _ = check([], chain_history=no_evidence)
+        self.assertTrue(any("captured no step evidence" in m for _, m in errors))
+        # a proven chain WITH evidence passes
+        with_evidence = [{"id": 4, "profile": "esc8", "status": "proven", "steps": [
+            {"name": "s0", "evidence": "DA cert obtained; dcsync ok"}]}]
+        errors2, _ = check([], chain_history=with_evidence)
+        self.assertEqual(errors2, [])
+
+
+class SuppressionInReportTest(ReportTestCase):
+    def test_suppressed_finding_excluded_by_default_but_kept_on_optin(self):
+        self.proven_finding()
+        self.store.add_suppression("seimpersonate")
+        _, default = build(self.store, self.cfg)
+        _, included = build(self.store, self.cfg, include_suppressed=True)
+        self.assertNotIn("seimpersonate", [f["vector_type"] for f in default])
+        self.assertIn("seimpersonate", [f["vector_type"] for f in included])
+
+    def test_proven_finding_with_no_captured_output_anywhere_is_an_error(self):
+        # the finding's only step captured nothing → no proof → still an error
         fid, _ = self.store.add_finding("gtfobins_sudo", "sudo find", host_id=self.hid,
                                         proven=True)
         self.store.add_step(cmd="sudo find . -exec id \\;", output="", host_id=self.hid,
                             finding_id=fid)
         _, findings = build(self.store, self.cfg)
         errors, _ = check(findings)
-        self.assertTrue(any("NO output" in m for _, m in errors))
+        self.assertTrue(any("no step captured any output" in m for _, m in errors))
+
+    def test_aux_step_without_output_is_ok_when_another_step_proves_it(self):
+        # a benign setup step (chmod, no output) must NOT block a finding whose OTHER
+        # step captured the proof — else operators are pushed to --force.
+        fid, _ = self.store.add_finding("seimpersonate", "SeImpersonate", host_id=self.hid,
+                                        proven=True, evidence="x")
+        self.store.add_step(cmd="chmod +x /tmp/x", output="", host_id=self.hid,
+                            finding_id=fid)
+        self.store.add_step(cmd="/tmp/x; id", output="uid=0(root)", host_id=self.hid,
+                            finding_id=fid)
+        _, findings = build(self.store, self.cfg)
+        errors, _ = check(findings)
+        self.assertEqual(errors, [])
 
     def test_finding_with_no_steps_is_an_error(self):
         self.store.add_finding("gtfobins_sudo", "sudo find", host_id=self.hid, proven=True)

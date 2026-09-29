@@ -190,16 +190,24 @@ def enumerate_privs(store, host, cred, *, run=None, allow_config_change=False,
     return rep
 
 
+def _js_str(s):
+    """Escape a value for a JS single-quoted string. Database names come from the
+    (untrusted) target's own listDatabases, so a name with a quote/backslash would
+    otherwise break — or inject into — fieldkit's own mongosh --eval script."""
+    return str(s).replace("\\", "\\\\").replace("'", "\\'")
+
+
 def _scan_script(dbname):
     """A JS one-liner: for each user-visible collection, print each cred-field's
     document count as ``FK:<coll>|<field>|<count>``."""
     fields = ",".join(f"'{f}'" for f in CRED_FIELDS)
+    db = _js_str(dbname)
     return (
-        f"db.getSiblingDB('{dbname}').getCollectionNames().forEach(function(c){{"
+        f"db.getSiblingDB('{db}').getCollectionNames().forEach(function(c){{"
         f"  var fields=[{fields}];"
         "  fields.forEach(function(f){"
         "    var q={}; q[f]={$exists:true};"
-        f"   var n=db.getSiblingDB('{dbname}')[c].countDocuments(q);"
+        f"   var n=db.getSiblingDB('{db}')[c].countDocuments(q);"
         "    if(n>0) print('FK:'+c+'|'+f+'|'+n);"
         "  });"
         "});"

@@ -176,5 +176,17 @@ class RendererTest(unittest.TestCase):
         self.assertIn("admin", r.argv)
 
 
+
+class ScanScriptEscapingTest(unittest.TestCase):
+    """Database names come from listDatabases on the untrusted target; a quote must be
+    escaped so it can't break out of the JS string in the mongosh --eval script."""
+
+    def test_db_name_quote_is_escaped(self):
+        script = mongodb._scan_script("admin'); db.dropDatabase(); //")
+        # the injected quote is escaped (\') — the payload stays inside the string
+        self.assertIn("\\'", script)
+        self.assertNotIn("getSiblingDB('admin')", script)  # no unescaped break-out
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
