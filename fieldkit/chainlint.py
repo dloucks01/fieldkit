@@ -66,6 +66,7 @@ def audit_profile(name):
         # Caller is responsible for handling missing profiles;
         # audit_profile is only called for names in known_profiles().
         return findings
+    from .chain import Chain
     try:
         ch = factory("<lint-target>")
     except Exception as exc:                                # noqa: BLE001
@@ -74,6 +75,15 @@ def audit_profile(name):
             step_index=None, step_name=None,
             message=(f"profile factory raised on placeholder target: "
                      f"{type(exc).__name__}: {exc}")))
+        return findings
+
+    if not isinstance(ch, Chain):
+        # A factory that returns something other than a Chain must not crash the
+        # whole catalog audit (audit_all iterates every profile) — report it.
+        findings.append(Finding(
+            profile=name, code="factory-fails", severity="error",
+            step_index=None, step_name=None,
+            message=(f"profile factory returned {type(ch).__name__}, not a Chain")))
         return findings
 
     if not ch.steps:

@@ -32,6 +32,19 @@ LDAP        10.0.0.10       389    DC01             SQL01$        Computer     R
 """
 
 
+class ProtocolTransitionParseTest(unittest.TestCase):
+    """`Constrained w/ Protocol Transition` (T2A4D) must keep its full label and a
+    clean rights-to target — the qualifier must not leak into rights_to."""
+
+    def test_protocol_transition_label_and_rights(self):
+        line = ("LDAP 10.0.0.5 389 DC01  svc_web  User  "
+                "Constrained w/ Protocol Transition  cifs/fs01.corp.local")
+        d = parse_delegation(line)[0]
+        self.assertEqual(d.dtype, "Constrained w/ Protocol Transition")
+        self.assertEqual(d.rights_to, "cifs/fs01.corp.local")
+        self.assertEqual(d.kind, "constrained_delegation")
+
+
 class ParseTest(unittest.TestCase):
     def test_types_mapped(self):
         by = {d.account: d.kind for d in parse_delegation(FIND)}

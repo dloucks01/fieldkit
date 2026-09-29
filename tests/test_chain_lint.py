@@ -322,5 +322,21 @@ class CLITest(unittest.TestCase):
         self.assertIn("empty-catalog", out)
 
 
+
+class NonChainFactoryTest(unittest.TestCase):
+    """A profile factory that returns a non-Chain must yield a finding, not crash the
+    whole catalog audit."""
+
+    def test_factory_returning_non_chain_is_a_finding(self):
+        import fieldkit.chain as cm
+        from fieldkit.chainlint import audit_profile
+        cm.register("_probe_nonchain")(lambda target, **k: None)
+        try:
+            codes = [f.code for f in audit_profile("_probe_nonchain")]
+        finally:
+            cm._PROFILES.pop("_probe_nonchain", None)
+        self.assertIn("factory-fails", codes)
+
+
 if __name__ == "__main__":
     unittest.main()

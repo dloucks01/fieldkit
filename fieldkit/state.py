@@ -957,13 +957,16 @@ class Store:
                 (src, dst, kind))
 
     def bh_nodes(self):
-        return self.conn.execute("SELECT * FROM bh_node").fetchall()
+        # ORDER BY so pathfinding (adjacency order + the max_paths_per_start cap)
+        # is deterministic rather than dependent on SQLite's scan order.
+        return self.conn.execute("SELECT * FROM bh_node ORDER BY sid").fetchall()
 
     def bh_node(self, sid):
         return self.conn.execute("SELECT * FROM bh_node WHERE sid = ?", (sid,)).fetchone()
 
     def bh_edges(self):
-        return self.conn.execute("SELECT src, dst, kind FROM bh_edge").fetchall()
+        return self.conn.execute(
+            "SELECT src, dst, kind FROM bh_edge ORDER BY src, dst, kind").fetchall()
 
     def bh_counts(self):
         n = self.conn.execute("SELECT COUNT(*) FROM bh_node").fetchone()[0]
