@@ -232,7 +232,44 @@ directory/roleAssignments?$expand=principal,roleDefinition"
     return {"tenant": "entra", "principals": principals}
 
 
+# --------------------------------------------------------------------------- CI/CD
+
+def github_collaborators(text, *, owned=()):
+    """Adapt ``gh api repos/{owner}/{repo}/collaborators`` JSON into a CI/CD graph.
+
+    Each collaborator becomes a ``cicd_principal`` whose held capabilities derive from
+    their repo permission: **admin** ⇒ full repo control (edit workflows + secrets);
+    **maintain / push** (write) ⇒ workflow injection (a write collaborator can add a
+    malicious workflow — Poisoned Pipeline Execution); triage/pull grant nothing that
+    escalates. ``owned`` marks a collaborator by login. Raises :class:`AdapterError` on
+    invalid JSON / shape."""
+    try:
+        data = json.loads(text) if isinstance(text, str) else text
+    except (ValueError, TypeError) as exc:
+        raise AdapterError(f"not valid JSON: {exc}") from None
+    if not isinstance(data, list):
+        raise AdapterError(
+            "expected a JSON list from `gh api repos/{owner}/{repo}/collaborators`")
+    owned_set = {o.strip() for o in owned if o and o.strip()}
+    principals = []
+    for c in data:
+        login = (c.get("login") or "").strip()
+        if not login:
+            continue
+        perms = c.get("permissions") or {}
+        caps = []
+        if perms.get("admin"):
+            caps.append("admin")
+        elif perms.get("maintain") or perms.get("push"):
+            caps.append("write workflow")
+        principals.append({
+            "id": f"gh:{login}", "name": login, "type": "user",
+            "owned": login in owned_set, "permissions": caps})
+    return {"platform": "github", "principals": principals}
+
+
 #: Native formats each ingest command understands, mapped to their adapter.
 CLOUD_FORMATS = {"aws-authdetails": aws_authorization_details}
 K8S_FORMATS = {"kubectl": kubectl_can_i}
 SAAS_FORMATS = {"entra-roles": entra_role_assignments}
+CICD_FORMATS = {"github-collaborators": github_collaborators}

@@ -18,7 +18,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fieldkit import adapters, cloud_iam, k8s, saas  # noqa: E402
+from fieldkit import adapters, cicd, cloud_iam, k8s, saas  # noqa: E402
 from fieldkit.state import Store  # noqa: E402
 
 # `aws iam get-account-authorization-details` (trimmed to the fields adapters read).
@@ -198,6 +198,42 @@ class EntraAdapterTest(unittest.TestCase):
         paths = saas.escalation_paths(store)
         self.assertTrue(paths)                          # Application Administrator → admin
         self.assertEqual(paths[0]["start"], "Helga")
+
+
+COLLABS = [
+    {"login": "owner", "permissions": {"admin": True, "push": True, "pull": True}},
+    {"login": "dev", "permissions": {"admin": False, "maintain": False, "push": True,
+                                     "pull": True}},
+    {"login": "reader", "permissions": {"admin": False, "push": False, "pull": True}},
+]
+
+
+class GithubCollaboratorsAdapterTest(unittest.TestCase):
+    def test_permissions_map_to_capabilities(self):
+        g = adapters.github_collaborators(json.dumps(COLLABS), owned=["dev"])
+        self.assertEqual(g["platform"], "github")
+        by = {p["name"]: p for p in g["principals"]}
+        self.assertEqual(by["owner"]["permissions"], ["admin"])
+        self.assertEqual(by["dev"]["permissions"], ["write workflow"])  # write ⇒ PPE
+        self.assertEqual(by["reader"]["permissions"], [])               # pull-only
+        self.assertTrue(by["dev"]["owned"])
+        self.assertFalse(by["owner"]["owned"])
+
+    def test_bad_shape_raises(self):
+        with self.assertRaises(adapters.AdapterError):
+            adapters.github_collaborators('{"not":"a list"}')
+
+    def test_end_to_end_write_collaborator_reaches_deploy_admin(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = Store.create(os.path.join(tmp.name, "e.db"))
+        self.addCleanup(store.close)
+        store.init_engagement("GH")
+        g = adapters.github_collaborators(json.dumps(COLLABS), owned=["dev"])
+        cicd.apply_cicd(store, json.dumps(g))
+        paths = cicd.escalation_paths(store)
+        self.assertTrue(paths)                          # dev (write) → deploy-admin
+        self.assertEqual(paths[0]["start"], "dev")
 
 
 if __name__ == "__main__":  # pragma: no cover
