@@ -365,6 +365,45 @@ fieldkit bloodhound import ./bh/                               # SharpHound → 
 Each records findings/loot and feeds `analyze`. The loop closes: `roast` → crack offline →
 `add cred` the cracked secret → `spray` again.
 
+### Non-AD domains & the asset model
+
+AD is the spine; the same store → capture → anti-fabrication-report core carries four
+more domains, each a thin driver over shared machinery — the **asset** table
+(`host` / `endpoint` / `cloud_principal` / `k8s_subject`), the **asset_edge** graph, and
+the shared owned→high-value BFS (`assetgraph`, reusing `bloodhound._bfs`). Findings from
+every domain flow through `analyze` (cross-domain block), `status`, and `report --check`
+like AD's, and are **observations** until proven.
+
+```bash
+# external services — match discovered versions against the CVE-TTP library
+nmap -sV -oX - <t> | fieldkit ingest nmap - ; fieldkit external
+# web — drive httpx / nuclei
+fieldkit web probe|scan <url> ; fieldkit ingest httpx|nuclei <file>
+# cloud IAM — owned→admin pathing
+fieldkit ingest cloud <graph.json> ; fieldkit cloud paths ; fieldkit cloud rules
+# kubernetes RBAC
+fieldkit ingest k8s <graph.json> ; fieldkit k8s paths ; fieldkit k8s rules
+```
+
+**The cloud/k8s graph contract** (a normalized JSON your own enumerator produces —
+prowler / ScoutSuite / `aws iam get-account-authorization-details` / `kubectl auth
+can-i --list`; fieldkit calls no cloud/cluster APIs itself):
+
+```jsonc
+// cloud IAM
+{"provider": "aws",
+ "principals": [{"arn": "...", "name": "...", "admin": false, "owned": true,
+                 "permissions": ["iam:CreatePolicyVersion", ...]}],   // OR pre-computed edges:
+ "edges": [{"src": "<arn>", "dst": "<arn>", "kind": "sts:AssumeRole"}]}
+// k8s RBAC: {"cluster","subjects":[{"id","name","admin","owned","permissions":["create pods",...]}],"edges":[...]}
+```
+
+Supply `permissions` and fieldkit **derives** the escalation edges from a built-in
+privesc-primitive ruleset (`iam:CreatePolicyVersion`, `iam:PassRole`+launcher, RBAC
+`bind`/`escalate`/`create pods`, …); `fieldkit cloud rules` / `k8s rules` print exactly
+what's recognized. Supply `edges` directly for chains the ruleset doesn't model (e.g. a
+specific `sts:AssumeRole` trust). Both combine.
+
 ## 16. arsenal
 
 ```bash

@@ -139,6 +139,12 @@ def derive_edges(principals):
     return edges, needed
 
 
+def rules():
+    """The IAM privesc primitives the derivation recognizes: ``[(label, [required perms])]``. Exposed so `fieldkit cloud rules` / `k8s rules` can show an operator
+    exactly what the permission-derivation checks for."""
+    return list(_IAM_PRIVESC_RULES)
+
+
 def apply_iam(store, text):
     """Fold a normalized cloud-IAM graph into state (``cloud_principal`` assets +
     ``asset_edge`` rows) and record a ``cloud_privesc`` finding per owned→admin path.

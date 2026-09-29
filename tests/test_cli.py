@@ -818,6 +818,18 @@ class IngestScopeTest(CliTestCase):
         self.assertIsNone(s.host_by_ip("8.8.8.8"))   # dropped, not a live target
 
 
+class PrivescRulesCommandTest(CliTestCase):
+    def test_cloud_rules_lists_iam_primitives(self):
+        out = self.run_cli("cloud", "rules")   # static — no engagement needed
+        self.assertIn("iam:CreatePolicyVersion", out)
+        self.assertIn("iam:PassRole", out)
+
+    def test_k8s_rules_lists_rbac_primitives(self):
+        out = self.run_cli("k8s", "rules")
+        self.assertIn("bind clusterroles", out)
+        self.assertIn("create pods", out)
+
+
 class UnifiedAnalyzeTest(CliTestCase):
     def test_analyze_surfaces_all_domains(self):
         import json

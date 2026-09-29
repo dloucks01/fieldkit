@@ -76,6 +76,12 @@ def derive_edges(subjects):
     return edges, needed
 
 
+def rules():
+    """The RBAC privesc primitives the derivation recognizes: ``[(label, [(verb, resource)])]``. Exposed so `fieldkit cloud rules` / `k8s rules` can show an operator
+    exactly what the permission-derivation checks for."""
+    return list(_K8S_PRIVESC_RULES)
+
+
 @dataclass
 class K8sReport:
     subjects_added: int = 0
