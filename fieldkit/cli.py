@@ -4732,11 +4732,22 @@ def cmd_ingest_httpx(args, store):
 @needs_engagement
 def cmd_ingest_cloud(args, store):
     """Fold a normalized cloud-IAM graph (JSON) into state and record owned→admin
-    escalation paths as findings."""
+    escalation paths as findings. With ``--from``, first adapt native enumerator
+    output (e.g. an `aws iam get-account-authorization-details` dump) into that graph."""
+    from . import adapters
     from . import cloud_iam as cloud_mod
     text, rc = _read_file_or_stdin(args, "cloud-IAM graph")
     if text is None:
         return rc
+    src = getattr(args, "src_format", "fieldkit")
+    if src != "fieldkit":
+        try:
+            graph = adapters.CLOUD_FORMATS[src](
+                text, owned=getattr(args, "owned", []) or [])
+        except adapters.AdapterError as exc:
+            _err(f"adapt {src}: {exc}")
+            return 2
+        text = json.dumps(graph)
     try:
         rep = cloud_mod.apply_iam(store, text)
     except cloud_mod.CloudIamError as exc:
@@ -4782,11 +4793,22 @@ def cmd_k8s_rules(args):
 @needs_engagement
 def cmd_ingest_k8s(args, store):
     """Fold a normalized k8s RBAC graph (JSON) into state and record owned→admin
-    escalation paths as findings."""
+    escalation paths as findings. With ``--from kubectl``, first adapt raw
+    `kubectl auth can-i --list` output into that graph."""
+    from . import adapters
     from . import k8s as k8s_mod
     text, rc = _read_file_or_stdin(args, "k8s RBAC graph")
     if text is None:
         return rc
+    src = getattr(args, "src_format", "fieldkit")
+    if src != "fieldkit":
+        try:
+            graph = adapters.K8S_FORMATS[src](
+                text, subject=getattr(args, "subject", None) or "self")
+        except adapters.AdapterError as exc:
+            _err(f"adapt {src}: {exc}")
+            return 2
+        text = json.dumps(graph)
     try:
         rep = k8s_mod.apply_rbac(store, text)
     except k8s_mod.K8sRbacError as exc:
@@ -5057,6 +5079,16 @@ the spec is missing that field. `--from-file` reads one credential per line.
                     "asset graph, and records each owned→admin escalation path as a "
                     "`cloud_privesc` finding. Idempotent.")
     i_cloud.add_argument("file", nargs="?", help="cloud-IAM graph JSON (or `-` / stdin)")
+    i_cloud.add_argument(
+        "--from", dest="src_format", choices=["fieldkit", "aws-authdetails"],
+        default="fieldkit",
+        help="input format (default: fieldkit's normalized graph). `aws-authdetails` "
+             "adapts an `aws iam get-account-authorization-details` dump.")
+    i_cloud.add_argument(
+        "--owned", action="append", default=[], metavar="ARN_OR_NAME",
+        help="mark this principal (by ARN or name) as owned — your foothold; "
+             "repeatable. Only meaningful with `--from` (a normalized graph carries "
+             "its own owned flags).")
     i_cloud.set_defaults(func=cmd_ingest_cloud)
 
     i_k8s = ingest_sub.add_parser(
@@ -5068,6 +5100,14 @@ the spec is missing that field. `--from-file` reads one credential per line.
                     "asset graph, and records each owned→admin escalation path as a "
                     "`k8s_privesc` finding. Idempotent.")
     i_k8s.add_argument("file", nargs="?", help="k8s RBAC graph JSON (or `-` / stdin)")
+    i_k8s.add_argument(
+        "--from", dest="src_format", choices=["fieldkit", "kubectl"],
+        default="fieldkit",
+        help="input format (default: fieldkit's normalized graph). `kubectl` adapts "
+             "raw `kubectl auth can-i --list` output (your foothold SA's grants).")
+    i_k8s.add_argument(
+        "--subject", metavar="NAME", default="self",
+        help="name for the subject when using `--from kubectl` (default: self).")
     i_k8s.set_defaults(func=cmd_ingest_k8s)
 
     p_ingest.set_defaults(func=lambda a: _missing(p_ingest))
