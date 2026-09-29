@@ -180,7 +180,13 @@ def resolve(technique, record, *, now=None, stale_days=STALE_DAYS):
     if verdict == "clean":
         now = now or datetime.now(timezone.utc)
         age = _age_days(tested, now)
-        if age is not None and age > stale_days:
+        if age is None:
+            # Freshness can't be established (missing/unparseable timestamp). Assume-
+            # caught fails CLOSED: without provable recency a clean result is not a
+            # green you may rely on.
+            return Status(technique, STALE, sig, tested,
+                          "clean result has no usable test date — re-test to trust it")
+        if age > stale_days:
             return Status(technique, STALE, sig, tested,
                           f"clean {int(age)}d ago — older than {stale_days}d, re-test")
         return Status(technique, GREEN, sig, tested, "lab-proven clean against current signatures")

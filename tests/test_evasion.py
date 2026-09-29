@@ -67,6 +67,16 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(s.verdict, STALE)
         self.assertFalse(s.usable)
 
+    def test_clean_without_usable_timestamp_fails_closed(self):
+        # assume-caught must fail CLOSED: a clean result whose freshness can't be
+        # established (missing/unparseable tested_at) is NOT a usable green.
+        for bad in (None, "", "not-a-date"):
+            s = resolve(by_key("native-exe"),
+                        {"verdict": "clean", "signature": "1.400.1", "tested_at": bad},
+                        now=NOW)
+            self.assertEqual(s.verdict, STALE)
+            self.assertFalse(s.usable)
+
     def test_stale_boundary(self):
         self.assertEqual(resolve(by_key("native-exe"), record("clean", days_ago=13),
                                  now=NOW).verdict, GREEN)
