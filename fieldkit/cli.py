@@ -866,7 +866,8 @@ def _cross_domain_moves(store):
         groups.append(("SaaS / identity provider (owned → admin)", sa))
 
     # cross-domain stitched paths — the highest-value moves, so lead with them
-    from . import assetgraph
+    from . import adbridge, assetgraph
+    adbridge.bridge_ad(store)
     assetgraph.derive_pivots(store)
     cross = [f"[{p['priority']}] {p['evidence']}"
              for p in assetgraph.cross_domain_paths(store)]
@@ -4904,10 +4905,12 @@ def _print_paths(paths, what, ingest_cmd):
 
 @needs_engagement
 def cmd_paths(args, store):
-    """Cross-domain escalation pathing: derive identity pivots between domains, then run
-    the owned→admin pathfinder over the WHOLE asset graph and record each stitched
-    (multi-domain) path as a `cross_domain_privesc` observation."""
-    from . import assetgraph
+    """Cross-domain escalation pathing: bridge AD/host state into the asset graph, derive
+    identity pivots between domains, then run the owned→admin pathfinder over the WHOLE
+    asset graph and record each stitched (multi-domain) path as a `cross_domain_privesc`
+    observation."""
+    from . import adbridge, assetgraph
+    adbridge.bridge_ad(store)     # reflect AD hosts/creds into the graph first
     pivots, added, paths = assetgraph.record_cross_domain(store)
     if not paths:
         print("no cross-domain escalation paths found.\n"

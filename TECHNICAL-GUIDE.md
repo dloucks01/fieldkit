@@ -403,7 +403,18 @@ another domain (operator-declared); (3) **explicit** — `fieldkit ingest pivots
 (`{"pivots":[{"src":{"kind","key"},"dst":{"kind","key"},"kind":"label"}]}`) for links the
 derivation can't infer. Stitched paths get a cross-domain score bump (an equal-length
 cross path outranks a single-domain one) and record as `cross_domain_privesc`
-observations; the report groups them first.
+observations; the report groups them first. Cross-domain detection keys on **domain**,
+not raw asset kind.
+
+`fieldkit paths` first **bridges the AD/host core** into the asset graph (`adbridge`):
+the separate `host` / `credential` / `access` tables are reflected as `ad_host` assets
+(owned when we admin them, high-value when a DC) and `ad_principal` assets (owned — we
+hold the secret; high-value when admin on a DC), with `access` rows becoming
+principal→host / host→principal (`dumps credential`) edges. Recovered accounts carry
+`user@domain` / `DOMAIN\user` aliases, so a dumped domain credential whose UPN matches a
+cloud/SaaS principal stitches `AD → cloud` automatically. The reflection is one-way and
+idempotent — the AD tables stay the source of truth, and it does not replace the
+BloodHound ACL pathing.
 
 **The cloud/k8s graph contract** (a normalized JSON your own enumerator produces —
 prowler / ScoutSuite / `aws iam get-account-authorization-details` / `kubectl auth
