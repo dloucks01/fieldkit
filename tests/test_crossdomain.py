@@ -148,6 +148,16 @@ class StitchingTest(CrossDomainTestCase):
         errors, _ = report.check(findings)
         self.assertEqual(errors, [])
 
+    def test_finding_severity_matches_path_priority(self):
+        # the recorded finding's severity is the path's blast-radius band, so the report
+        # narrative ([Critical]) and the findings tables agree — no High/Critical clash.
+        self._federated_scenario()
+        _, _, paths = assetgraph.record_cross_domain(self.store)
+        band = paths[0]["priority"]
+        f = [x for x in self.store.findings()
+             if x["vector_type"] == "cross_domain_privesc"][0]
+        self.assertEqual(f["severity"], band)
+
     def test_record_is_idempotent(self):
         self._federated_scenario()
         assetgraph.record_cross_domain(self.store)
