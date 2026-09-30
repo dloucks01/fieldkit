@@ -469,6 +469,9 @@ fieldkit ingest cloud authdetails.json --from aws-authdetails --owned <your-arn-
 kubectl auth can-i --list | fieldkit ingest k8s - --from kubectl --subject <foothold-sa>
 az rest --method GET --url "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?\$expand=principal,roleDefinition" \
   | fieldkit ingest saas - --from entra-roles --owned <you>
+fieldkit ingest saas okta-roles.json --from okta-roles --owned <you>          # Okta admin roles
+gh api repos/{o}/{r}/collaborators | fieldkit ingest cicd - --from github-collaborators --owned <you>
+fieldkit ingest cicd gitlab-members.json --from gitlab-members --owned <you>  # GitLab project members
 ```
 
 The AWS adapter resolves each user's/role's effective **Allow** actions (inline +

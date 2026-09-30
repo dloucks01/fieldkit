@@ -268,8 +268,93 @@ def github_collaborators(text, *, owned=()):
     return {"platform": "github", "principals": principals}
 
 
+def _gitlab_caps(level):
+    """CI/CD capabilities implied by a GitLab project ``access_level`` — Owner (50) has
+    full control; Maintainer (40) manages CI/CD variables (secrets) and pipelines;
+    Developer (30) can push a branch that runs `.gitlab-ci.yml` (workflow injection).
+    Reporter/Guest (<30) grant nothing that escalates."""
+    if level >= 50:
+        return ["admin"]
+    if level >= 40:
+        return ["write workflow", "read secrets"]
+    if level >= 30:
+        return ["write workflow"]
+    return []
+
+
+def gitlab_members(text, *, owned=()):
+    """Adapt ``GET /projects/:id/members/all`` JSON into a CI/CD graph. Each member
+    becomes a ``cicd_principal`` whose held capabilities derive from their
+    ``access_level`` (see :func:`_gitlab_caps`). ``owned`` marks a member by username.
+    Raises :class:`AdapterError` on invalid JSON / shape."""
+    try:
+        data = json.loads(text) if isinstance(text, str) else text
+    except (ValueError, TypeError) as exc:
+        raise AdapterError(f"not valid JSON: {exc}") from None
+    if not isinstance(data, list):
+        raise AdapterError("expected a JSON list from GitLab `/projects/:id/members/all`")
+    owned_set = {o.strip() for o in owned if o and o.strip()}
+    principals = []
+    for m in data:
+        user = (m.get("username") or m.get("name") or "").strip()
+        if not user:
+            continue
+        try:
+            level = int(m.get("access_level") or 0)
+        except (ValueError, TypeError):
+            level = 0
+        principals.append({
+            "id": f"gl:{user}", "name": user, "type": "user",
+            "owned": user in owned_set, "permissions": _gitlab_caps(level)})
+    return {"platform": "gitlab", "principals": principals}
+
+
+#: Okta admin role ``type`` → the SaaS privesc-rule label it corresponds to. Types not
+#: listed pass through as-is (they simply won't match a privesc primitive).
+_OKTA_ROLE = {
+    "SUPER_ADMIN": "Super Administrator",
+    "ORG_ADMIN": "Organization Administrator",
+}
+
+
+def okta_roles(text, *, owned=()):
+    """Adapt an Okta admin-role dump into a SaaS/IdP graph. Input is a list of
+    ``{"login"|"email"|"id", "roles": [...]}`` (each role a ``type`` string or a
+    ``{"type": ...}`` object — the shape of Okta's ``GET /users/{id}/roles`` gathered
+    per user). Okta role types map to the SaaS privesc-rule labels (SUPER_ADMIN →
+    *Super Administrator*, …); a SUPER_ADMIN holder is marked ``admin``. ``owned`` marks
+    a principal by login/email/id. Raises :class:`AdapterError` on invalid JSON / shape.
+    """
+    try:
+        data = json.loads(text) if isinstance(text, str) else text
+    except (ValueError, TypeError) as exc:
+        raise AdapterError(f"not valid JSON: {exc}") from None
+    if not isinstance(data, list):
+        raise AdapterError(
+            "expected a JSON list of {login, roles:[...]} Okta role assignments")
+    owned_set = {o.strip() for o in owned if o and o.strip()}
+    principals = []
+    for u in data:
+        ident = (u.get("login") or u.get("email") or u.get("id") or "").strip()
+        if not ident:
+            continue
+        raw = []
+        for r in u.get("roles") or []:
+            rtype = (r.get("type") if isinstance(r, dict) else r) or ""
+            if str(rtype).strip():
+                raw.append(str(rtype).strip())
+        roles = [_OKTA_ROLE.get(r, r) for r in raw]
+        principals.append({
+            "id": f"okta:{ident}", "name": ident, "type": "user",
+            "owned": bool(owned_set & {ident}),
+            "admin": any(r == "SUPER_ADMIN" for r in raw),
+            "permissions": roles})
+    return {"tenant": "okta", "principals": principals}
+
+
 #: Native formats each ingest command understands, mapped to their adapter.
 CLOUD_FORMATS = {"aws-authdetails": aws_authorization_details}
 K8S_FORMATS = {"kubectl": kubectl_can_i}
-SAAS_FORMATS = {"entra-roles": entra_role_assignments}
-CICD_FORMATS = {"github-collaborators": github_collaborators}
+SAAS_FORMATS = {"entra-roles": entra_role_assignments, "okta-roles": okta_roles}
+CICD_FORMATS = {"github-collaborators": github_collaborators,
+                "gitlab-members": gitlab_members}

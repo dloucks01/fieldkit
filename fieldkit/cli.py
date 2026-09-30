@@ -5336,10 +5336,10 @@ the spec is missing that field. `--from-file` reads one credential per line.
                     "owned→admin escalation path as a `saas_privesc` finding. Idempotent.")
     i_saas.add_argument("file", nargs="?", help="SaaS/IdP graph JSON (or `-` / stdin)")
     i_saas.add_argument(
-        "--from", dest="src_format", choices=["fieldkit", "entra-roles"],
-        default="fieldkit",
+        "--from", dest="src_format",
+        choices=["fieldkit", "entra-roles", "okta-roles"], default="fieldkit",
         help="input format (default: fieldkit's normalized graph). `entra-roles` adapts "
-             "Microsoft Graph `roleManagement/directory/roleAssignments` JSON.")
+             "Microsoft Graph role assignments; `okta-roles` an Okta admin-role dump.")
     i_saas.add_argument(
         "--owned", action="append", default=[], metavar="ID_OR_NAME",
         help="mark this principal (by id, displayName or UPN) as owned — your foothold; "
@@ -5357,11 +5357,12 @@ the spec is missing that field. `--from-file` reads one credential per line.
                     "path as a `cicd_privesc` finding. Idempotent.")
     i_cicd.add_argument("file", nargs="?", help="CI/CD graph JSON (or `-` / stdin)")
     i_cicd.add_argument(
-        "--from", dest="src_format", choices=["fieldkit", "github-collaborators"],
+        "--from", dest="src_format",
+        choices=["fieldkit", "github-collaborators", "gitlab-members"],
         default="fieldkit",
         help="input format (default: fieldkit's normalized graph). "
-             "`github-collaborators` adapts a `gh api repos/{owner}/{repo}/collaborators` "
-             "dump (write access ⇒ workflow injection).")
+             "`github-collaborators` adapts `gh api .../collaborators`; `gitlab-members` "
+             "a GitLab `/projects/:id/members/all` dump (write access ⇒ injection).")
     i_cicd.add_argument(
         "--owned", action="append", default=[], metavar="LOGIN",
         help="mark this principal (by login) as owned — your foothold; repeatable. "
