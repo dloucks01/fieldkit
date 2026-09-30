@@ -236,5 +236,75 @@ class GithubCollaboratorsAdapterTest(unittest.TestCase):
         self.assertEqual(paths[0]["start"], "dev")
 
 
+class GitlabMembersAdapterTest(unittest.TestCase):
+    MEMBERS = [
+        {"username": "owner", "access_level": 50},
+        {"username": "maint", "access_level": 40},
+        {"username": "dev", "access_level": 30},
+        {"username": "guest", "access_level": 10},
+    ]
+
+    def test_access_level_maps_to_capabilities(self):
+        g = adapters.gitlab_members(json.dumps(self.MEMBERS), owned=["dev"])
+        self.assertEqual(g["platform"], "gitlab")
+        by = {p["name"]: p for p in g["principals"]}
+        self.assertEqual(by["owner"]["permissions"], ["admin"])
+        self.assertIn("read secrets", by["maint"]["permissions"])
+        self.assertEqual(by["dev"]["permissions"], ["write workflow"])
+        self.assertEqual(by["guest"]["permissions"], [])
+        self.assertTrue(by["dev"]["owned"])
+
+    def test_bad_shape_raises(self):
+        with self.assertRaises(adapters.AdapterError):
+            adapters.gitlab_members('{"not":"a list"}')
+
+    def test_end_to_end_developer_reaches_deploy_admin(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = Store.create(os.path.join(tmp.name, "e.db"))
+        self.addCleanup(store.close)
+        store.init_engagement("GL")
+        g = adapters.gitlab_members(json.dumps(self.MEMBERS), owned=["dev"])
+        cicd.apply_cicd(store, json.dumps(g))
+        paths = cicd.escalation_paths(store)
+        self.assertTrue(paths)
+        self.assertEqual(paths[0]["start"], "dev")
+
+
+class OktaRolesAdapterTest(unittest.TestCase):
+    ROLES = [
+        {"login": "sa@corp.com", "roles": [{"type": "SUPER_ADMIN"}]},
+        {"login": "orga@corp.com", "roles": ["ORG_ADMIN"]},
+        {"login": "reader@corp.com", "roles": [{"type": "READ_ONLY_ADMIN"}]},
+    ]
+
+    def test_role_types_map_to_privesc_labels(self):
+        g = adapters.okta_roles(json.dumps(self.ROLES), owned=["sa@corp.com"])
+        self.assertEqual(g["tenant"], "okta")
+        by = {p["name"]: p for p in g["principals"]}
+        self.assertIn("Super Administrator", by["sa@corp.com"]["permissions"])
+        self.assertIn("Organization Administrator", by["orga@corp.com"]["permissions"])
+        self.assertTrue(by["sa@corp.com"]["admin"])         # SUPER_ADMIN
+        self.assertTrue(by["sa@corp.com"]["owned"])
+        # an unmapped role passes through and simply doesn't escalate
+        self.assertEqual(by["reader@corp.com"]["permissions"], ["READ_ONLY_ADMIN"])
+
+    def test_bad_shape_raises(self):
+        with self.assertRaises(adapters.AdapterError):
+            adapters.okta_roles('{"not":"a list"}')
+
+    def test_end_to_end_super_admin_reaches_tenant_admin(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = Store.create(os.path.join(tmp.name, "e.db"))
+        self.addCleanup(store.close)
+        store.init_engagement("OK")
+        g = adapters.okta_roles(json.dumps(self.ROLES), owned=["sa@corp.com"])
+        saas.apply_saas(store, json.dumps(g))
+        paths = saas.escalation_paths(store)
+        self.assertTrue(paths)
+        self.assertEqual(paths[0]["start"], "sa@corp.com")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
