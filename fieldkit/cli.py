@@ -5100,7 +5100,8 @@ def cmd_assets(args, store):
 def build_parser():
     parser = argparse.ArgumentParser(
         prog=PROG,
-        description="Stateful internal-AD execution engine. Authorized engagements only.")
+        description="Stateful, multi-domain execution engine for authorized pentests "
+                    "(AD · hosts · web · cloud · K8s · SaaS · CI/CD). Authorized engagements only.")
     parser.add_argument("--version", action="version", version=f"{PROG} {__version__}")
     parser.add_argument("--db", metavar="PATH",
                         help=f"engagement database (default: ${DB_ENV_VAR} or ./engagement.db)")

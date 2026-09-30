@@ -1,9 +1,10 @@
-"""fieldkit — a stateful internal-AD execution engine.
+"""fieldkit — a stateful, multi-domain execution engine.
 
-fieldkit is the *brain* of an internal engagement: it holds state (SQLite), owns one
-canonical credential model, drives proven external tools (netexec, impacket,
-evil-winrm), analyzes privesc opportunities, and reports on what it proved. It does
-not reimplement SMB/LDAP/Kerberos.
+fieldkit is the *brain* of an engagement: it holds state (SQLite), owns one canonical
+credential model, drives proven external tools (netexec, impacket, evil-winrm, certipy,
+httpx, nuclei), analyzes privesc opportunities across domains (AD, web, external
+services, cloud IAM, Kubernetes RBAC, SaaS/IdP, CI/CD), and reports on what it proved.
+The internal-AD credential loop is its spine; it does not reimplement SMB/LDAP/Kerberos.
 
 Nothing in this package prints or performs I/O at import time — every module is
 importable and unit-testable. Operator-facing output goes through the CLI layer.

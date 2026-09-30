@@ -75,7 +75,7 @@ which hosts you're pwned on, and any missing spine tools. **`fieldkit doctor`**
 is the broader health check (tools + chain lint + engagement + TTPs, single exit
 code for CI). **`fieldkit refresh <bridge.json>`** re-ingests a recce bridge +
 runs analyze in one command — the returning-operator flow after a break.
-**`fieldkit ttps list`** browses the 148-TTP catalog; **`fieldkit ttps show <key>`**
+**`fieldkit ttps list`** browses the 161-TTP catalog; **`fieldkit ttps show <key>`**
 pretty-prints one.
 
 ## Beyond AD — the other domains

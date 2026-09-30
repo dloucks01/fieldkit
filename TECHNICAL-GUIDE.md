@@ -9,10 +9,13 @@ The deep reference. For the one-page runbook see **`QUICKSTART.md`**; for the vi
 
 ## 1. What fieldkit is
 
-A **stateful internal-AD execution engine**. From one credential or foothold it drives
-your *existing* tools (netexec/nxc, impacket, evil-winrm, certipy) against a scope, runs
-the credential loop, escalates, and reports only what it actually proved. Standalone —
-Python 3 **stdlib only**; the offensive tooling is yours, on `$PATH`.
+A **stateful, multi-domain execution engine** — the internal-AD credential loop is its
+spine, and the same core also drives web, external-service, cloud-IAM, Kubernetes-RBAC,
+SaaS/identity-provider and CI/CD domains. From one credential or foothold it drives your
+*existing* tools (netexec/nxc, impacket, evil-winrm, certipy, httpx, nuclei, …) against a
+scope, runs the credential loop, escalates across domains, and reports only what it
+actually proved. Standalone — Python 3 **stdlib only**; the offensive tooling is yours,
+on `$PATH`.
 
 Five load-bearing ideas:
 

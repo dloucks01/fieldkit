@@ -1,12 +1,15 @@
 # fieldkit
 
+> **Stateful, multi-domain execution engine for authorized pentests — from a credential or foothold to full compromise across AD, hosts, cloud, K8s, SaaS & CI/CD, reporting only what it proved.**
+
 The field kit for the hours between first contact and full compromise.
 
 fieldkit is a **stateful, multi-domain execution engine** for **authorized** penetration
 testing. It began as an internal-AD engine — the credential loop is still its spine —
 and the same core (one SQLite engagement store, an injected-runner execution layer that
 captures everything, and an anti-fabrication report) now carries **web**,
-**external-service**, **cloud-IAM** and **Kubernetes-RBAC** domains too. From a
+**external-service**, **cloud-IAM**, **Kubernetes-RBAC**, **SaaS / identity-provider**
+and **CI/CD** domains too. From a
 credential, a foothold, or just a scan it ingests what you know (creds, hosts, tool
 output, IAM/RBAC graphs), drives your proven tools (netexec, impacket, certipy, httpx,
 nuclei, …) against the scope, finds the paths to compromise, and reports only what it
@@ -17,6 +20,24 @@ Optional `bin/fieldkit tui` uses vendored Textual — no `pip install` needed.)
 **New here?** → the one-page runbook is **[`QUICKSTART.md`](QUICKSTART.md)**, the visual
 map is **[`WORKFLOW.md`](WORKFLOW.md)**, the deep reference is
 **[`TECHNICAL-GUIDE.md`](TECHNICAL-GUIDE.md)**.
+
+## Get started in 30 seconds
+
+No install, nothing to resolve — the engine is **Python-3-stdlib-only**, so a clone *is* a
+working install:
+
+```bash
+git clone https://github.com/dloucks01/fieldkit && cd fieldkit
+bin/fieldkit preflight                  # which tools it drives are on your PATH (optional)
+bin/fieldkit init 'my first engagement' # creates ./engagement.db
+bin/fieldkit status                     # the board — you're up
+```
+
+That's the whole setup: **clone, run.** `bin/fieldkit` just execs `python3 -m fieldkit`.
+Prefer a command on your `PATH`? `pipx install git+https://github.com/dloucks01/fieldkit.git`
+— see [Install](#install). The tools fieldkit *drives* (netexec, impacket, certipy, …) are
+your own kit; `preflight` shows which are present. Then walk a real run with
+**[`QUICKSTART.md`](QUICKSTART.md)**.
 
 ## What it does
 
@@ -149,12 +170,14 @@ a wrong-format credential is caught at input, not forty hosts into a spray (`--y
 ## Coerce chains
 
 `fieldkit chain` walks multi-step coerce sequences end-to-end (coerce a
-target to auth, relay to a listener, land the payoff). Four shipped
+target to auth, relay to a listener, land the payoff). Five shipped
 profiles: **esc8** (coerce DC → ADCS relay → DC cert → PKINIT → DCSync),
 **rbcd** (coerce workstation → LDAPS relay → msDS-AllowedToActOnBehalf
 write → S4U2Self), **smb-relay-exec** (coerce → SMB relay to a signing-
 disabled host → command exec), **esc1** (direct ADCS enroll on a
-misconfigured template → PKINIT → DCSync).
+misconfigured template → PKINIT → DCSync), and **nopac**
+(CVE-2021-42278/42287 — abuse MachineAccountQuota to add a computer, spoof
+its sAMAccountName to a DC, then S4U2Self for a DC-as-admin service ticket).
 
 ```bash
 bin/fieldkit chain lint                       # audit the profile catalog
@@ -209,7 +232,7 @@ bin/fieldkit tui                                   # opens on the Dashboard
   w   watch          live event tail — sees steps from another terminal in ~250ms
   c   chain plan     preview every registered chain profile
   l   chain launch   pick a profile + target + ctx, walk it
-  t   ttps           browse the 148-TTP catalog with live filter
+  t   ttps           browse the 161-TTP catalog with live filter
   1-5 chain detail   from the dashboard's CHAINS block, jump to chain #N
   ?   help           keymap overlay
   q   quit           (Ctrl-C also)
@@ -247,7 +270,7 @@ gruvbox / dracula / nord / etc. all recolor live).
 | `fieldkit/tui/` | the optional Textual TUI — Dashboard / Analyze / Escalate / Watch |
 | `fieldkit/vendor/` | vendored Textual + Rich + deps (~12 MB); enables `bin/fieldkit tui` without `pip install` |
 | `bin/fieldkit` | run it from a clone without installing |
-| `tests/` | the test suite (~810, ~20s, no network/tools needed) |
+| `tests/` | the test suite (~1,900, ~3½ min, no network/tools needed) |
 | `exploits/` | operator-staged binaries/PoCs (air-gap); see `SUPPLIED-BINARIES.md` |
 | `QUICKSTART.md` · `WORKFLOW.md` · `TECHNICAL-GUIDE.md` | operator docs; `ARCHITECTURE.md` = architecture notes |
 | `package.sh` | bundle source + staged exploits into one archive for an air-gapped box |
