@@ -2213,8 +2213,12 @@ def cmd_ttps_show(args):
     if t.detect:
         _sep("detect")
         print(f"  kind : {t.detect.kind}")
-        for k, v in (t.detect.value or {}).items():
-            print(f"  {k}: {v}")
+        val = t.detect.value
+        if isinstance(val, dict):
+            for k, v in val.items():
+                print(f"  {k}: {v}")
+        elif val:
+            print(f"  {val}")
     if t.execute and t.execute.command:
         _sep("execute")
         print(t.execute.command.strip())

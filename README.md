@@ -136,7 +136,7 @@ bin/fieldkit add cred 'CORP/jdoe:Winter2025!'      # DOMAIN\user, user@corp.loca
 bin/fieldkit add hosts scope.txt                   # a single IP, a CIDR, or a file of them
 bin/fieldkit ingest nmap scan.xml                  # also -oN / -oG; folds hosts + services into state
 bin/fieldkit ingest hashcat hashcat.potfile        # cracked hashes → promoted credentials
-bin/fieldkit usernames < employees.txt             # generate first.last / flast / etc. username lists
+bin/fieldkit usernames --first-file first.txt --last-file last.txt   # generate first.last / flast / etc.
 
 # run the loop, then escalate a foothold
 bin/fieldkit spray smb                             # reads the lockout policy first

@@ -61,13 +61,21 @@ def parse_iam(text):
         arn = (p.get("arn") or p.get("id") or "").strip()
         if not arn:
             continue
+        # Accept ``aliases`` (and similar cross-domain identity fields) either nested
+        # under ``props`` or at the top level — the latter is what most operators
+        # write intuitively. Cross-domain stitching in ``fieldkit paths`` needs the
+        # field to live inside ``props`` downstream, so merge it in here.
+        props = dict(p.get("props") or {})
+        for extra in ("aliases", "roles"):
+            if extra in p and extra not in props:
+                props[extra] = p[extra]
         principals.append({
             "arn": arn,
             "name": (p.get("name") or arn).strip(),
             "type": (p.get("type") or "principal").strip(),
             "admin": bool(p.get("admin")),
             "owned": bool(p.get("owned")),
-            "props": p.get("props") or {},
+            "props": props,
             "permissions": [str(x) for x in (p.get("permissions") or [])]})
     for e in doc.get("edges") or []:
         src, dst = (e.get("src") or "").strip(), (e.get("dst") or "").strip()

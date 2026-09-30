@@ -53,6 +53,23 @@ _PWNED_RE = re.compile(r"\(Pwn3d!.*?\)")
 #: only at end-of-line so a password that merely *contains* underscores is untouched.
 _STATUS = re.compile(r"\s+(?P<status>(?:STATUS_|KDC_ERR_|SEC_E_)?[A-Z][A-Z0-9_]{3,})$")
 
+#: Trailing per-module annotations nxc appends after ``[+] dom\\user:secret``:
+#:  - SMB modules print ``(Guest)`` / ``(NULL Auth)`` / ``(Local Auth)`` for the
+#:    context of the successful auth.
+#:  - The SSH module always appends ``  <OS> - Shell access!`` when auth succeeds
+#:    and a shell can be spawned (``Linux - Shell access!``, ``Windows - Shell access!``,
+#:    ``Darwin - Shell access!``, ...).
+#: Without stripping these, the tail becomes part of the parsed secret; every spray
+#: round then promotes an ever-longer phantom credential (``pass``, ``pass (Guest)``,
+#: ``pass (Guest) (Guest)``, ...) that pollutes the store and breaks every subsequent
+#: enum/escalate because the corrupted secret is what fieldkit passes back to nxc.
+_ANNOTATIONS = re.compile(
+    r"\s*(?:"
+    r"\((?:Guest|NULL Auth|Local Auth|SPN Auth|Kerberos)\)"
+    r"|(?:[A-Za-z][A-Za-z0-9]*) - Shell access!"
+    r")\s*$"
+)
+
 #: ``(key:value)`` pairs in a host banner: (name:DC01) (domain:corp.local) (signing:True).
 _KV = re.compile(r"\(([A-Za-z0-9_]+):([^)]*)\)")
 
@@ -164,6 +181,14 @@ def _parse_auth(proto, ip, port, host, mark, message):
     admin = bool(_PWNED_RE.search(message))
     if admin:
         message = _PWNED_RE.sub("", message).strip()
+    # Strip trailing per-module annotations (``(Guest)``, ``Linux - Shell access!``,
+    # ...) before splitting user:secret — see :data:`_ANNOTATIONS`. Applied
+    # iteratively so a stacked ``(Guest) (Local Auth)`` clears fully in one call.
+    while True:
+        m = _ANNOTATIONS.search(message)
+        if not m:
+            break
+        message = message[: m.start()].rstrip()
     status = None
     if mark == "[-]":
         m = _STATUS.search(message)

@@ -111,8 +111,17 @@ def _spray_one(store, cred_row, ips, proto, run, source, report, on_event):
     if not result.ok:
         report.aborted = result.error
         return False
+    intent = classify_nxc(result.output)
+    # Surface the case where nxc ran but produced NO parseable auth/banner facts —
+    # typically a module crash (unicode/protocol trace) or a version mismatch that
+    # exits 0 with a Python traceback on stdout. Silent "0 valid" hides this; the
+    # operator needs to see it so they can pin the nxc version or switch modules.
+    if not intent.creds and not intent.hosts and result.output.strip():
+        _emit(report, on_event,
+              f"  {cred.principal} [{proto}]: nxc produced no parseable output — "
+              "tool may have crashed (see the raw output via `fieldkit session log`)")
     before = store.counts()
-    apply_nxc(store, classify_nxc(result.output), source=source)
+    apply_nxc(store, intent, source=source)
     after = store.counts()
     gained_admin = after["admin_access"] - before["admin_access"]
     new_valid = after["access"] - before["access"]

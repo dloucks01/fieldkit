@@ -218,11 +218,27 @@ def _driver(run, timeout):
                                                          timeout=timeout))
 
 
+def _resolve_httpx():
+    """The ProjectDiscovery ``httpx`` prober is packaged as ``httpx-toolkit`` on
+    Kali (the plain ``httpx`` binary there is the Python HTTP library's CLI, which
+    doesn't speak ``-json -silent -u ...``). Prefer the PD binary when present, and
+    fall back to plain ``httpx`` for boxes where it's the real thing."""
+    import shutil
+    return shutil.which("httpx-toolkit") or "httpx"
+
+
+def _resolve_nuclei():
+    """Nuclei's shipped binary is unambiguous but keep the resolver symmetric so
+    a nuclei-toolkit rename (mirroring httpx-toolkit) would land here."""
+    import shutil
+    return shutil.which("nuclei-toolkit") or "nuclei"
+
+
 def probe(store, targets, *, run=None, timeout=300):
     """Drive ``httpx`` over ``targets``, folding live endpoints into state. Aborts
     cleanly (WebReport.aborted set) when the tool isn't installed."""
     run = _driver(run, timeout)
-    argv = ["httpx", "-json", "-silent"]
+    argv = [_resolve_httpx(), "-json", "-silent"]
     for t in targets:
         argv += ["-u", t]
     res = run(argv, None)
@@ -234,7 +250,7 @@ def probe(store, targets, *, run=None, timeout=300):
 def scan(store, targets, *, run=None, timeout=1800):
     """Drive ``nuclei`` over ``targets``, folding matches into state as findings."""
     run = _driver(run, timeout)
-    argv = ["nuclei", "-jsonl", "-silent"]
+    argv = [_resolve_nuclei(), "-jsonl", "-silent"]
     for t in targets:
         argv += ["-u", t]
     res = run(argv, None)

@@ -120,13 +120,20 @@ def parse_rbac(text):
         sid = (s.get("id") or s.get("name") or "").strip()
         if not sid:
             continue
+        # Preserve top-level ``aliases`` / ``roles`` into props (see cloud_iam.parse_iam
+        # for the rationale) so cross-domain stitching can match this subject against
+        # a federated identity in another domain.
+        props = dict(s.get("props") or {})
+        for extra in ("aliases", "roles"):
+            if extra in s and extra not in props:
+                props[extra] = s[extra]
         subjects.append({
             "key": sid,
             "name": (s.get("name") or sid).strip(),
             "type": (s.get("kind") or "serviceaccount").strip(),
             "admin": bool(s.get("admin")),
             "owned": bool(s.get("owned")),
-            "props": s.get("props") or {},
+            "props": props,
             "permissions": [str(x) for x in (s.get("permissions") or [])]})
     for e in doc.get("edges") or []:
         src, dst = (e.get("src") or "").strip(), (e.get("dst") or "").strip()

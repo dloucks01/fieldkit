@@ -124,13 +124,20 @@ def parse_cicd(text):
         pid = (p.get("id") or p.get("name") or "").strip()
         if not pid:
             continue
+        # Preserve top-level ``aliases`` / ``roles`` into props (see cloud_iam.parse_iam
+        # for the rationale) so cross-domain stitching can match this principal against
+        # a federated identity in another domain.
+        props = dict(p.get("props") or {})
+        for extra in ("aliases", "roles"):
+            if extra in p and extra not in props:
+                props[extra] = p[extra]
         principals.append({
             "key": pid,
             "name": (p.get("name") or pid).strip(),
             "type": (p.get("type") or "repo").strip(),
             "admin": bool(p.get("admin")),
             "owned": bool(p.get("owned")),
-            "props": p.get("props") or {},
+            "props": props,
             "permissions": [str(x) for x in (p.get("permissions") or [])]})
     for e in doc.get("edges") or []:
         src, dst = (e.get("src") or "").strip(), (e.get("dst") or "").strip()

@@ -66,6 +66,34 @@ class AuthLineTest(unittest.TestCase):
         self.assertTrue(r.admin)
         self.assertEqual(r.principal, "root")
 
+    def test_ssh_shell_access_annotation_stripped(self):
+        # nxc SSH module appends "  Linux - Shell access!" after user:secret on a
+        # successful auth. Without stripping, the loop promotes the phantom secret
+        # "toor  Linux - Shell access!" and every subsequent spray fails.
+        r = parse_line("SSH   172.20.0.10   22   host   [+] root:toor  Linux - Shell access!")
+        self.assertEqual(r.secret, "toor")
+
+    def test_smb_guest_annotation_stripped(self):
+        # nxc SMB module marks anonymous/guest fallbacks with a trailing "(Guest)".
+        r = parse_line("SMB   10.0.0.6   445   WS01   [+] TESTLAB\\smbuser:smbpass123 (Guest)")
+        self.assertEqual((r.domain, r.username, r.secret), ("TESTLAB", "smbuser", "smbpass123"))
+        self.assertFalse(r.admin)
+
+    def test_pwned_and_annotation_coexist(self):
+        # A line can carry both markers; both must be stripped, admin must stay set.
+        r = parse_line(
+            "SMB   10.0.0.10   445   DC01   [+] corp.local\\svc:Passw0rd! (Pwn3d!) (Guest)")
+        self.assertTrue(r.admin)
+        self.assertEqual((r.domain, r.username, r.secret), ("corp.local", "svc", "Passw0rd!"))
+
+    def test_shell_access_across_platforms(self):
+        # ``Linux/Windows/Darwin`` — all three should strip identically.
+        for os in ("Linux", "Windows", "Darwin"):
+            with self.subTest(os=os):
+                line = f"SSH   10.0.0.9   22   host   [+] user:pw  {os} - Shell access!"
+                r = parse_line(line)
+                self.assertEqual(r.secret, "pw", msg=f"failed for {os}")
+
     def test_winrm_pwned(self):
         r = parse_line("WINRM   10.0.0.6   5985   WS01   [+] corp.local\\Administrator:Pass123 (Pwn3d!)")
         self.assertEqual(r.proto, "WINRM")
