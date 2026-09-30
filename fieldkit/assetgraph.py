@@ -145,9 +145,11 @@ def record_paths(store, kind, vector_type, *, label):
     added = 0
     for p in paths:
         with store.transaction():
+            # severity = the path's blast-radius priority band, so a 1-hop escalation
+            # reads Critical (not the flat KB default) and the report is consistent.
             _, created = store.add_finding(
                 vector_type, p["title"], asset_id=p["start_id"],
-                evidence=p["evidence"], proven=False)
+                evidence=p["evidence"], proven=False, severity=p["priority"])
             added += created
     return added, paths
 
@@ -369,7 +371,7 @@ def record_cross_domain(store):
         with store.transaction():
             _, created = store.add_finding(
                 "cross_domain_privesc", p["title"], asset_id=p["start_id"],
-                evidence=p["evidence"], proven=False)
+                evidence=p["evidence"], proven=False, severity=p["priority"])
             added += int(created)
     return pivots, added, paths
 
