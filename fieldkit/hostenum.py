@@ -221,6 +221,24 @@ def run_enum(store, host, cred, *, run=None, on_event=None, allow="read-only"):
             report.ran.append(check.category)
         else:
             report.failed.append((check.category, res.run.error if res.run else "no result"))
+    # After the target-command enum, run the nxc-probe suite for Windows hosts —
+    # ``--shares``, ``--loggedon-users``, ``--sessions``, ``-M laps``, ``-M gpp_password``.
+    # These reveal facts nxc's exec transport can't (readable/writable shares, active
+    # sessions on the remote host, LAPS passwords, GPP cpasswords in SYSVOL). Failures
+    # are per-probe (an nxc-version-drift or crash in one module skips only that one).
+    if host["os"] == WINDOWS:
+        from . import nxc_probes  # local import: keeps hostenum import graph small
+        methods = {r["method"] for r in store.access_on(host["id"])
+                   if r["cred_id"] == cred["id"]}
+        is_admin = any(r["admin"] for r in store.access_on(host["id"])
+                       if r["cred_id"] == cred["id"])
+        if "smb" in methods:
+            probe_rep = nxc_probes.run_probes(store, host, cred, is_admin=is_admin,
+                                              run=run, on_event=on_event)
+            for key, _ in probe_rep.ran:
+                report.ran.append(f"probe:{key}")
+            for key, reason in probe_rep.skipped:
+                report.failed.append((f"probe:{key}", reason))
     if not report.ran:
         report.blocked = report.failed[0][1] if report.failed else "no checks ran"
     return report
