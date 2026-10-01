@@ -1068,15 +1068,40 @@ class Store:
 
     # -- evasion lab --------------------------------------------------------
 
+    #: Canonical verdict strings for the evasion table + the operator-friendly
+    #: synonyms we normalize into them. The resolved-status side of the API uses
+    #: ``GREEN`` as its name but the stored row's verdict column is ``"clean"``;
+    #: an operator writing ``"green"`` directly used to silently fall through to
+    #: UNTESTED (posture then reported "0 lab-proven green" even though the row
+    #: was there). Validation at write time means a typo surfaces here with a
+    #: helpful message instead of silently misbehaving downstream.
+    _CANONICAL_EVASION_VERDICTS = ("caught", "clean", "error")
+    _EVASION_VERDICT_ALIASES = {
+        "green": "clean", "ok": "clean", "pass": "clean", "passed": "clean",
+        "detected": "caught", "blocked": "caught", "burned": "caught",
+        "burn": "caught",
+    }
+
     def record_evasion(self, technique, verdict, signature=None, detail=None):
-        """Upsert the latest lab verdict for a technique. Returns the row id."""
+        """Upsert the latest lab verdict for a technique. Returns the row id.
+
+        ``verdict`` must be one of :data:`_CANONICAL_EVASION_VERDICTS` or a
+        documented alias (``"green"`` → ``"clean"``, ``"blocked"`` → ``"caught"``,
+        ...). Unknown strings raise :class:`ValueError`.
+        """
+        normalized = self._EVASION_VERDICT_ALIASES.get(verdict, verdict)
+        if normalized not in self._CANONICAL_EVASION_VERDICTS:
+            raise ValueError(
+                f"invalid evasion verdict {verdict!r} — expected one of "
+                f"{self._CANONICAL_EVASION_VERDICTS!r} (synonyms accepted: "
+                f"{sorted(self._EVASION_VERDICT_ALIASES)!r})")
         with self._write():
             self.conn.execute(
                 "INSERT INTO evasion (technique, verdict, signature, detail, tested_at) "
                 "VALUES (?, ?, ?, ?, ?) ON CONFLICT(technique) DO UPDATE SET "
                 "verdict=excluded.verdict, signature=excluded.signature, "
                 "detail=excluded.detail, tested_at=excluded.tested_at",
-                (technique, verdict, signature, detail, utcnow()))
+                (technique, normalized, signature, detail, utcnow()))
             return self.conn.execute(
                 "SELECT id FROM evasion WHERE technique = ?", (technique,)).fetchone()[0]
 

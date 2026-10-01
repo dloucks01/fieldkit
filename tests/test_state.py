@@ -380,5 +380,63 @@ class AccessIntegrityTest(unittest.TestCase):
         self.assertGreater(self.store.conn.execute("PRAGMA busy_timeout").fetchone()[0], 0)
 
 
+class EvasionVerdictTest(StoreTestCase):
+    """record_evasion normalizes operator-friendly aliases to canonical verdicts
+    and rejects unknown strings. Without this, writing an unrecognized verdict
+    (e.g. ``"green"`` — the resolved-status name, not the stored one) silently
+    fell through to UNTESTED in :func:`fieldkit.evasion.resolve`, and ``posture``
+    reported "0 lab-proven green" even though the row was there."""
+
+    def _verdict(self, technique):
+        row = self.store.evasion_result(technique)
+        return row["verdict"] if row else None
+
+    def test_canonical_verdicts_pass_through(self):
+        self.store.record_evasion("native-exe", "caught")
+        self.store.record_evasion("inmem-fileless", "clean")
+        self.store.record_evasion("ps-amsi-revshell", "error")
+        self.assertEqual(self._verdict("native-exe"), "caught")
+        self.assertEqual(self._verdict("inmem-fileless"), "clean")
+        self.assertEqual(self._verdict("ps-amsi-revshell"), "error")
+
+    def test_green_alias_normalizes_to_clean(self):
+        """``"green"`` is the resolved-status name — operators type it; the store
+        canonicalizes it to ``"clean"`` so posture + resolve agree."""
+        self.store.record_evasion("inmem-fileless", "green")
+        self.assertEqual(self._verdict("inmem-fileless"), "clean")
+
+    def test_other_clean_aliases_normalize(self):
+        for alias in ("ok", "pass", "passed"):
+            with self.subTest(alias=alias):
+                self.store.record_evasion("inmem-fileless", alias)
+                self.assertEqual(self._verdict("inmem-fileless"), "clean")
+
+    def test_caught_aliases_normalize(self):
+        for alias in ("detected", "blocked", "burned", "burn"):
+            with self.subTest(alias=alias):
+                self.store.record_evasion("native-exe", alias)
+                self.assertEqual(self._verdict("native-exe"), "caught")
+
+    def test_unknown_verdict_raises(self):
+        """A typo surfaces here with a helpful message instead of silently
+        misbehaving downstream (posture reporting a zero green-count)."""
+        with self.assertRaises(ValueError) as ctx:
+            self.store.record_evasion("native-exe", "nope")
+        msg = str(ctx.exception)
+        self.assertIn("nope", msg)
+        self.assertIn("caught", msg)                   # names the canonical options
+        self.assertIn("clean", msg)
+
+    def test_posture_green_count_sees_the_normalized_row(self):
+        """End-to-end: ``"green"`` write → posture sees the technique as green."""
+        from fieldkit.evasion import posture, GREEN, resolve, for_os
+        self.store.record_evasion("inmem-fileless", "green",
+                                   signature="test", detail="manual")
+        statuses = [resolve(t, self.store.evasion_result(t.key))
+                    for t in for_os("windows")]
+        green = [s for s in statuses if s.verdict == GREEN]
+        self.assertEqual([s.technique.key for s in green], ["inmem-fileless"])
+
+
 if __name__ == "__main__":
     unittest.main()
