@@ -113,11 +113,20 @@ class ChainLaunchScreen(Screen):
         self._profiles = tui_data.chain_profiles()
         if self._selected >= len(self._profiles):
             self._selected = max(0, len(self._profiles) - 1)
-        self._render()
+        self._repaint_panes()
 
     # ---------- rendering --------------------------------------------
 
-    def _render(self):
+    def _repaint_panes(self):
+        """Refresh the on-screen panes from current state.
+
+        NOTE: do not rename to ``_render`` — Textual's ``Widget._render()``
+        is the internal protocol method that MUST return a :class:`Visual`.
+        Overriding it with UI-update logic shadows the protocol, Textual
+        gets ``None`` back where it expects a Visual, and the screen fails
+        to composite (upstream ``Visual.to_strips`` → ``AttributeError`` on
+        ``None.render_strips``).
+        """
         self.query_one("#chain-launch-profiles", Static).update(
             self._render_profiles())
         self.query_one("#chain-launch-hint", Static).update(
@@ -152,12 +161,12 @@ class ChainLaunchScreen(Screen):
     def action_cursor_down(self):
         if self._profiles and self._selected < len(self._profiles) - 1:
             self._selected += 1
-            self._render()
+            self._repaint_panes()
 
     def action_cursor_up(self):
         if self._selected > 0:
             self._selected -= 1
-            self._render()
+            self._repaint_panes()
 
     def action_focus_input(self):
         self.query_one("#chain-launch-target-input", Input).focus()

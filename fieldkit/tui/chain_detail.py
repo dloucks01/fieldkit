@@ -58,7 +58,7 @@ class ChainDetailScreen(Screen):
 
     def on_mount(self):
         self._load()
-        self._render()
+        self._repaint_panes()
 
     def _load(self):
         """Read the chain row + trail from the store. Also pull the
@@ -94,7 +94,16 @@ class ChainDetailScreen(Screen):
         finally:
             store.close()
 
-    def _render(self):
+    def _repaint_panes(self):
+        """Refresh the on-screen panes from current state.
+
+        NOTE: do not rename to ``_render`` — Textual's ``Widget._render()``
+        is the internal protocol method that MUST return a :class:`Visual`.
+        Overriding it with UI-update logic shadows the protocol, Textual
+        gets ``None`` back where it expects a Visual, and the screen fails
+        to composite (upstream ``Visual.to_strips`` → ``AttributeError`` on
+        ``None.render_strips``).
+        """
         if not self._data or "error" in (self._data or {}):
             msg = (self._data or {}).get("error",
                                           "chain data not loaded")

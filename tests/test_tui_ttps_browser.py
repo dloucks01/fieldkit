@@ -126,7 +126,7 @@ class FilterTest(unittest.TestCase):
         self._apply(s, "xyz-really-no-such-ttp-xyz")
         self.assertEqual(len(s._filtered), 0)
         # Detail pane still renders (empty) without crash
-        s._render()
+        s._repaint_panes()
         list_text = s._fake_statics["#ttps-list"].text
         self.assertIn("no TTPs match", list_text)
 
@@ -139,7 +139,7 @@ class RenderTest(unittest.TestCase):
         class _Ev:
             value = "fortigate"
         s.on_input_changed(_Ev())
-        s._render()
+        s._repaint_panes()
         h = s._fake_statics["#ttps-header"].text
         self.assertIn("TTPs", h)
         self.assertIn(f"/{len(s._all_ttps)}", h)
@@ -152,7 +152,7 @@ class RenderTest(unittest.TestCase):
         class _Ev:
             value = "service_cve:2024-55591"
         s.on_input_changed(_Ev())
-        s._render()
+        s._repaint_panes()
         d = s._fake_statics["#ttps-detail"].text
         self.assertIn("service_cve:2024-55591", d)
         self.assertIn("T1190", d)
@@ -178,3 +178,40 @@ class AppIntegrationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoRenderShadowTest(unittest.TestCase):
+    """Regression — none of the TUI screens may define ``_render`` as an
+    instance method. Textual's :meth:`Widget._render` is the internal protocol
+    method that MUST return a :class:`Visual`; overriding it with UI-update
+    logic shadows the protocol, Textual gets ``None`` back where it expects a
+    Visual, and the whole screen fails to composite under Pilot
+    (``Visual.to_strips`` → ``AttributeError`` on ``None.render_strips``).
+
+    This test walks every screen class in ``fieldkit.tui`` and asserts that
+    ``_render`` is not defined on the subclass (i.e. the attribute reaches up
+    to Textual's :class:`Widget` base).
+    """
+
+    def test_no_tui_screen_shadows_widget_render(self):
+        from fieldkit import tui
+        import pkgutil, importlib
+        from textual.screen import Screen
+        from textual.widget import Widget
+        from textual.app import App
+        base = Widget
+        offenders = []
+        for mod_info in pkgutil.iter_modules(tui.__path__):
+            try:
+                mod = importlib.import_module(f"fieldkit.tui.{mod_info.name}")
+            except Exception:                           # noqa: BLE001
+                continue
+            for name in dir(mod):
+                cls = getattr(mod, name, None)
+                if (isinstance(cls, type) and issubclass(cls, Screen)
+                        and cls is not Screen and "_render" in cls.__dict__):
+                    offenders.append(f"{mod_info.name}.{name}")
+        self.assertEqual(
+            offenders, [],
+            "TUI screens shadowing Widget._render — rename to e.g. "
+            "`_repaint_panes`:\n  " + "\n  ".join(offenders))

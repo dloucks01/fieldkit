@@ -60,11 +60,20 @@ class TTPsBrowserScreen(Screen):
             self._all_ttps = []
         self._all_ttps.sort(key=lambda t: (t.technique, t.key))
         self._filtered = list(self._all_ttps)
-        self._render()
+        self._repaint_panes()
 
     # ---------- rendering ---------------------------------------------
 
-    def _render(self):
+    def _repaint_panes(self):
+        """Refresh header/list/detail panes from current state.
+
+        NOTE: do not rename to ``_render`` — Textual's ``Widget._render()`` is
+        the internal protocol method that MUST return a :class:`Visual`.
+        Overriding it to run UI-update logic (as an earlier revision did)
+        shadows the protocol, Textual gets ``None`` back where it expects a
+        Visual, and the whole screen fails to composite under Pilot (upstream
+        ``Visual.to_strips`` → ``AttributeError`` on ``None.render_strips``).
+        """
         self.query_one("#ttps-header", Static).update(self._header())
         self.query_one("#ttps-list", Static).update(self._render_list())
         self.query_one("#ttps-detail", Static).update(self._render_detail())
@@ -154,12 +163,12 @@ class TTPsBrowserScreen(Screen):
     def action_cursor_down(self):
         if self._selected < len(self._filtered) - 1:
             self._selected += 1
-            self._render()
+            self._repaint_panes()
 
     def action_cursor_up(self):
         if self._selected > 0:
             self._selected -= 1
-            self._render()
+            self._repaint_panes()
 
     def action_focus_filter(self):
         self.query_one("#ttps-filter-input", Input).focus()
@@ -168,7 +177,7 @@ class TTPsBrowserScreen(Screen):
         """Live filter — every keypress in the Input re-filters."""
         self._filter_text = (event.value or "").strip()
         self._apply_filter()
-        self._render()
+        self._repaint_panes()
 
     def _apply_filter(self):
         needle = self._filter_text.lower()

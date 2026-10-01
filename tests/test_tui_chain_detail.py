@@ -114,7 +114,7 @@ class RenderTest(unittest.TestCase):
         cid = _persist_chain(s, "10.0.0.5", ["ok"] * 7)
         screen = _fresh_screen(cid, db)
         screen._load()
-        screen._render()
+        screen._repaint_panes()
         h = screen._fake_statics["#chain-detail-header"].text
         t = screen._fake_statics["#chain-detail-trail"].text
         sig = screen._fake_statics["#chain-detail-signals"].text
@@ -136,7 +136,7 @@ class RenderTest(unittest.TestCase):
         # Row is in_progress by default with partial outcomes
         screen = _fresh_screen(cid, db)
         screen._load()
-        screen._render()
+        screen._repaint_panes()
         hint = screen._fake_statics["#chain-detail-hint"].text
         self.assertIn("press r to resume", hint)
 
@@ -145,7 +145,7 @@ class RenderTest(unittest.TestCase):
         cid = _persist_chain(s, "10.0.0.5", ["ok", "fail"])
         screen = _fresh_screen(cid, db)
         screen._load()
-        screen._render()
+        screen._repaint_panes()
         h = screen._fake_statics["#chain-detail-header"].text
         self.assertIn("aborted", h)
         self.assertIn("test-driven fail", h)
@@ -153,7 +153,7 @@ class RenderTest(unittest.TestCase):
     def test_render_of_error_state_paints_header(self):
         screen = _fresh_screen(1, "/nonexistent/no.db")
         screen._load()
-        screen._render()
+        screen._repaint_panes()
         h = screen._fake_statics["#chain-detail-header"].text
         # error state → header shows the error
         self.assertTrue(any(term in h.lower()
