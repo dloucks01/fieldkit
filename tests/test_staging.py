@@ -45,7 +45,8 @@ class DownloadStageTest(unittest.TestCase):
             # the "target" runs certutil — extract the URL and actually fetch it, proving
             # the HTTP serve works end to end.
             url = re.search(r'https?://[^"\s]+', command).group(0)
-            got["data"] = urllib.request.urlopen(url, timeout=5).read()
+            with urllib.request.urlopen(url, timeout=5) as _resp:
+                got["data"] = _resp.read()
             return RunResult(["nxc"], exit_code=0,
                              stdout="CertUtil: -URLCache command completed successfully.")
 

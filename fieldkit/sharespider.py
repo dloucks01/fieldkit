@@ -397,7 +397,8 @@ def _parse_inventory(output_folder, host_ip):
     if not os.path.exists(path):
         return {}, 0, 0
     try:
-        data = json.loads(open(path, encoding="utf-8").read())
+        with open(path, encoding="utf-8") as fh:
+            data = json.loads(fh.read())
     except (OSError, ValueError):
         return {}, 0, 0
     files = sum(len(v) for v in data.values() if isinstance(v, dict))

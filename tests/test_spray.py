@@ -220,8 +220,8 @@ class WordlistSprayTest(LoopTestCase):
                           passwords=("Winter2025!", "Summer2024!")):
         u = os.path.join(self.tmp.name, "users.txt")
         p = os.path.join(self.tmp.name, "passwords.txt")
-        open(u, "w").write("\n".join(users) + "\n")
-        open(p, "w").write("\n".join(passwords) + "\n")
+        with open(u, "w") as _fh: _fh.write("\n".join(users) + "\n")
+        with open(p, "w") as _fh: _fh.write("\n".join(passwords) + "\n")
         return u, p
 
     def _fake_wordlist_nxc(self, hits=(("10.0.0.7", "admin", "Winter2025!", True),)):
@@ -260,8 +260,8 @@ class WordlistSprayTest(LoopTestCase):
         # write a passlist with more entries than safe_attempts to force the block.
         u = os.path.join(self.tmp.name, "u.txt")
         p = os.path.join(self.tmp.name, "p.txt")
-        open(u, "w").write("jdoe\n")
-        open(p, "w").write("\n".join(f"pw{i}" for i in range(50)) + "\n")
+        with open(u, "w") as _fh: _fh.write("jdoe\n")
+        with open(p, "w") as _fh: _fh.write("\n".join(f"pw{i}" for i in range(50)) + "\n")
 
         rep = spray_mod.wordlist_spray(
             self.store, self.cfg, userlist=u, passlist=p,
@@ -310,8 +310,8 @@ class WordlistSprayUnknownPolicyTest(unittest.TestCase):
     def _lists(self, n_pw):
         u = os.path.join(self.tmp.name, "u.txt")
         p = os.path.join(self.tmp.name, "p.txt")
-        open(u, "w").write("alice\nbob\n")
-        open(p, "w").write("\n".join(f"pw{i}" for i in range(n_pw)) + "\n")
+        with open(u, "w") as _fh: _fh.write("alice\nbob\n")
+        with open(p, "w") as _fh: _fh.write("\n".join(f"pw{i}" for i in range(n_pw)) + "\n")
         return u, p
 
     def test_big_passlist_refused_and_nothing_sprayed(self):

@@ -43,7 +43,7 @@ class RecipeTest(unittest.TestCase):
         self.assertEqual(r.tool, "wixl")
         self.assertEqual(seen["argv"][:3], ["wixl", "-o", "/out/e.msi"])
         # the templated .wxs was written and carries the proof command
-        wxs = open(os.path.join(self.wd, "p.wxs")).read()
+        with open(os.path.join(self.wd, "p.wxs")) as _fh: wxs = _fh.read()
         self.assertIn("whoami", wxs)
 
     def test_so_drives_gcc(self):
@@ -51,7 +51,8 @@ class RecipeTest(unittest.TestCase):
         r = poc.build("so", "/out/p.so", run=run, workdir=self.wd)
         self.assertEqual(r.tool, "gcc")
         self.assertIn("-shared", seen["argv"])
-        self.assertIn("id", open(os.path.join(self.wd, "p.c")).read())
+        with open(os.path.join(self.wd, "p.c")) as _fh:
+            self.assertIn("id", _fh.read())
 
     def test_exe_defaults_to_msfvenom_exec_proof(self):
         run, seen = capture()
@@ -129,7 +130,8 @@ class ConfuserTest(unittest.TestCase):
             seen["argv"] = argv
             proj = argv[-1]
             import re
-            outdir = re.search(r'outputDir="([^"]+)"', open(proj).read()).group(1)
+            with open(proj) as _fh: _proj_text = _fh.read()
+            outdir = re.search(r'outputDir="([^"]+)"', _proj_text).group(1)
             if produce:
                 os.makedirs(outdir, exist_ok=True)
                 with open(os.path.join(outdir, "GodPotato.exe"), "w") as fh:
@@ -145,7 +147,7 @@ class ConfuserTest(unittest.TestCase):
         self.assertEqual(res.tool, "ConfuserEx")
         self.assertEqual(seen["argv"][0], "/opt/ConfuserEx/Confuser.CLI")   # native CLI, no mono
         self.assertTrue(seen["argv"][-1].endswith(".crproj"))
-        self.assertEqual(open(out).read(), "OBFUSCATED")                    # moved to out
+        with open(out) as _fh: self.assertEqual(_fh.read(), "OBFUSCATED")                    # moved to out
 
     def test_missing_input_is_not_ok(self):
         run, _ = self._fake_confuser()

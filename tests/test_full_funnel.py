@@ -373,7 +373,7 @@ class FullFunnelTest(unittest.TestCase):
         check = self.cli("report", "--check")
         self.assertIn("CHECK OK", check)
         self.cli("report", "--formats", "md", "-o", os.path.join(self.dir, "rpt"))
-        md = open(os.path.join(self.dir, "rpt.md")).read()
+        with open(os.path.join(self.dir, "rpt.md")) as _fh: md = _fh.read()
         self.assertIn("SeImpersonate", md)
         self.assertIn("nt authority\\system", md)        # the captured PoC output
         # the DEFAULT report now includes Observations (delegation/ADCS were not exploited)
@@ -381,17 +381,18 @@ class FullFunnelTest(unittest.TestCase):
         self.assertIn("delegation", md.lower())
         # --proven-only drops them for the tight deliverable
         self.cli("report", "--proven-only", "--formats", "md", "-o", os.path.join(self.dir, "po"))
-        po = open(os.path.join(self.dir, "po.md")).read()
+        with open(os.path.join(self.dir, "po.md")) as _fh: po = _fh.read()
         self.assertNotIn("# Observations (identified, not exploited)", po)
         self.cli("report", "--cleanup", "-o", os.path.join(self.dir, "rpt"))
-        cleanup = open(os.path.join(self.dir, "rpt.cleanup.md")).read()
+        with open(os.path.join(self.dir, "rpt.cleanup.md")) as _fh:
+            cleanup = _fh.read()
         self.assertIn("INTERNAL", cleanup)
         self.assertIn("GodPotato", cleanup)              # the vector's artifact
 
         # 9) recce bridge: proven findings fold back, contract intact
         out = os.path.join(self.dir, "recce.json")
         self.cli("export-recce", out)
-        payload = json.load(open(out))
+        with open(out) as _fh: payload = json.load(_fh)
         self.assertEqual(payload["source"], "fieldkit")
         self.assertTrue(payload["findings"])
         self.assertEqual(payload["findings"][0]["_recce"]["confidence"], "confirmed")

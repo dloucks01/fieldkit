@@ -81,7 +81,7 @@ class ExportRecceCliTest(unittest.TestCase):
         out = os.path.join(self.tmp.name, "recce.json")
         text = self.run_cli("export-recce", out)
         self.assertIn("recce fieldkit-import", text)
-        data = json.load(open(out))
+        with open(out) as _fh: data = json.load(_fh)
         self.assertEqual(data["source"], "fieldkit")
         r = data["findings"][0]["_recce"]
         self.assertEqual(r["ip"], "10.0.0.5")

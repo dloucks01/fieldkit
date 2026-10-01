@@ -334,7 +334,7 @@ class ArchitectureTest(unittest.TestCase):
         for path in self._package_files():
             if os.path.basename(path) == "runner.py":
                 continue
-            tree = ast.parse(open(path).read())
+            with open(path) as _fh: tree = ast.parse(_fh.read())
             for node in ast.walk(tree):
                 # `import subprocess` / `from subprocess import ...`
                 if isinstance(node, ast.Import):
@@ -356,7 +356,7 @@ class ArchitectureTest(unittest.TestCase):
         forbidden = {"open", "urlopen", "mkdir", "makedirs", "remove", "rmtree", "connect"}
         offenders = []
         for path in self._package_files():
-            tree = ast.parse(open(path).read())
+            with open(path) as _fh: tree = ast.parse(_fh.read())
             for node in tree.body:            # module level only, not inside a def/class
                 for sub in ast.walk(node) if not isinstance(
                         node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) else ():
