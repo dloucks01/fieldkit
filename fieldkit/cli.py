@@ -153,7 +153,7 @@ def cmd_init(args):
     if not session_mod.log_path():
         default_log = os.path.join(os.path.dirname(os.path.abspath(path)),
                                    "fieldkit-session.jsonl")
-        print(f"\nfor a reproducible per-invocation log + replay:")
+        print("\nfor a reproducible per-invocation log + replay:")
         print(f"      eval $({PROG} session log --enable --out {default_log})")
     return 0
 

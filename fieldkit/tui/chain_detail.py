@@ -238,12 +238,14 @@ class ChainDetailScreen(Screen):
         # the resumed one.
         def _install_resumed(self=run_screen, resumed=resumed):
             self._chain = resumed
-            self._step_states = []
-            for i in range(len(resumed.steps)):
-                if i < len(resumed.outcomes):
-                    self._step_states.append(resumed.outcomes[i].kind)
-                else:
-                    self._step_states.append("queued")
+            # Each step's state is its outcome.kind when the chain already
+            # recorded one; still-pending steps queue. Index into outcomes
+            # by position — index-i outcome belongs to step-i.
+            outcomes = resumed.outcomes
+            self._step_states = [
+                outcomes[i].kind if i < len(outcomes) else "queued"
+                for i, _ in enumerate(resumed.steps)
+            ]
         run_screen._build_chain = _install_resumed
         self.app.push_screen(run_screen)
 

@@ -288,7 +288,10 @@ def run_probes(store, host, cred_row, *, is_admin=False, run=None, on_event=None
         parser = PARSERS.get(probe.key, lambda t: ProbeResult(ok=True, raw_output=t))
         parsed = parser(text)
         with store.transaction():
-            step_id = store.add_step(
+            # Capture the probe as a step row for the report + evidence trail;
+            # the id isn't threaded onto the findings (per-probe findings have
+            # their own asset_id/host_id scoping) so we don't bind the return.
+            store.add_step(
                 cmd=f"nxc {probe.proto} {host['ip']} {' '.join(probe.extra)}",
                 output=text, exit_code=res.exit_code, host_id=host["id"],
                 transport=f"nxc-probe:{probe.key}")
