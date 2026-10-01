@@ -488,7 +488,12 @@ def _key_for(ttp, matched_payload, stage=""):
     (``unquoted:C:\\Program Files\\svc.exe`` / ``weakservice:AppMgmt``).
     """
     if ttp.key:
-        if "{{" in ttp.key and isinstance(matched_payload, dict):
+        # Render ``{{...}}`` placeholders per-payload. ``_substitute`` already
+        # handles both string payloads (fills ``{{binary}}`` directly) and dict
+        # payloads (fills any ``{{<field>}}`` from dict keys), so the two cases
+        # don't need separate branches. Non-templated keys pass through
+        # unchanged.
+        if "{{" in ttp.key and matched_payload:
             return _substitute(ttp.key, matched_payload, stage)
         return ttp.key
     kind = ttp.detect.kind

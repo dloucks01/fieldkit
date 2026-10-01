@@ -232,24 +232,59 @@ class KeyStrictnessTest(unittest.TestCase):
                 load_file(path)
 
     def test_duplicate_keys_across_files_raise(self):
+        """Two files sharing a static key but DIFFERENT vector_types is a bug —
+        no runtime dedup would collapse them, so one would silently shadow the
+        other on ``ttps show`` / ``run``."""
         from fieldkit.ttps.loader import load_all, LoaderError
         with tempfile.TemporaryDirectory() as tmp:
-            _write_yaml(tmp, "a.yaml", _valid_body(key="dup"))
-            _write_yaml(tmp, "b.yaml", _valid_body(key="dup"))
+            _write_yaml(tmp, "a.yaml", _valid_body(
+                key="dup", report="\n  vector_type: va"))
+            _write_yaml(tmp, "b.yaml", _valid_body(
+                key="dup", report="\n  vector_type: vb"))
             with self.assertRaises(LoaderError) as ctx:
                 load_all(tmp)
             self.assertIn("duplicate", str(ctx.exception).lower())
             self.assertIn("dup", str(ctx.exception))
 
-    def test_shipped_catalog_has_no_empty_keys_or_duplicates(self):
+    def test_duplicate_keys_allowed_when_same_vector_type(self):
+        """Two files that INTENTIONALLY key the same vector_type dedup to one
+        vector at runtime — e.g. SeBackupPrivilege (held right) + Backup
+        Operators (group membership) both key ``sebackup``. Legit."""
+        from fieldkit.ttps import load_all
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_yaml(tmp, "a.yaml", _valid_body(
+                key="shared", report="\n  vector_type: shared_vt"))
+            _write_yaml(tmp, "b.yaml", _valid_body(
+                key="shared", technique="T1068",
+                report="\n  vector_type: shared_vt"))
+            ttps = load_all(tmp)
+            self.assertEqual(len(ttps), 2)
+
+    def test_shipped_catalog_has_no_empty_keys(self):
         """Regression: 47-TTPs-missing-key would have slipped through this."""
         from fieldkit.ttps import load_all
         ttps = load_all()
         empty = [t for t in ttps if not t.key]
         self.assertEqual(empty, [], f"TTPs with empty key: {len(empty)}")
-        from collections import Counter
-        dups = {k: c for k, c in Counter(t.key for t in ttps).items() if c > 1}
-        self.assertEqual(dups, {}, f"duplicate TTP keys: {dups}")
+
+    def test_shipped_catalog_any_shared_keys_also_share_vector_type(self):
+        """Any static-key collision in the shipped catalog must be the
+        legit same-vector_type pattern (what the loader allows). This is
+        the regression against the ``unquoted:{{path}}`` incident where
+        two YAMLs collided on a static key without any dedup intent."""
+        from collections import defaultdict
+        from fieldkit.ttps import load_all
+        by_key = defaultdict(list)
+        for t in load_all():
+            if "{{" not in t.key:
+                by_key[t.key].append(t)
+        for key, group in by_key.items():
+            if len(group) > 1:
+                vts = {t.report.vector_type for t in group}
+                self.assertEqual(
+                    len(vts), 1,
+                    f"TTPs sharing key {key!r} have divergent vector_types "
+                    f"{vts!r} — this is a silent-shadow bug.")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 # SUID perl → root (GTFOBins)
 technique: T1548.001
 name: SUID perl → root (GTFOBins)
-key: suid:perl
+key: 'suid:{{binary}}'
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

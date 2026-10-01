@@ -6,7 +6,7 @@
 # in `{{binary}}` so the command invokes the real file.
 technique: T1548.001
 name: SUID python → root (GTFOBins)
-key: suid:python
+key: 'suid:{{binary}}'
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

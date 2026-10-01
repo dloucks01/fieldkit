@@ -11,7 +11,7 @@
 # `_cap_vector`'s `canon in _SETUID_INTERP` gate).
 technique: T1548.001
 name: cap_setuid on python → root
-key: cap:setuid-python
+key: 'cap:{{binary}}'
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

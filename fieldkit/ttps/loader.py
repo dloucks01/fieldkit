@@ -283,15 +283,32 @@ def load_all(directory=None):
         if fn.endswith(".yaml") or fn.endswith(".yml")
     )
     ttps = [load_file(p) for p in files]
-    # Reject duplicate keys — ``ttps show <key>`` and ``run <host> <key>`` expect
-    # a unique handle, and two TTPs sharing one would silently route to whichever
-    # loaded first. The CLI tests encode this invariant so a drift surfaces fast.
+    # Reject duplicate keys that would silently route ``ttps show <key>`` /
+    # ``run <host> <key>`` to whichever file loaded first. Two exceptions
+    # cover intentional sharing:
+    #
+    # 1. **Templated keys** (containing ``{{...}}``) — rendered per-matched-
+    #    payload at vector-emission time, so two YAMLs sharing
+    #    ``cap:{{binary}}`` produce distinct per-binary vector keys at runtime.
+    #
+    # 2. **Same-vector_type dedup pairs** — some TTPs ship with matching
+    #    static keys ON PURPOSE so :func:`fieldkit.ttps.adapter._key_for`'s
+    #    dedup collapses them to one vector when both predicates fire on the
+    #    same host (e.g. SeBackupPrivilege the held-right + Backup Operators
+    #    the group both key as ``sebackup``). The pair must share
+    #    ``report.vector_type`` for this to be legitimate; a share without
+    #    that is still a bug.
     seen = {}
     for t in ttps:
+        if "{{" in t.key:
+            continue
         if t.key in seen:
+            earlier = seen[t.key]
+            if t.report.vector_type and t.report.vector_type == earlier.report.vector_type:
+                continue       # intentional dedup pair
             raise LoaderError(
                 f"{t.source_path}: duplicate TTP key {t.key!r} — already used by "
-                f"{seen[t.key]}")
-        seen[t.key] = t.source_path
+                f"{earlier.source_path} (and they don't share report.vector_type)")
+        seen[t.key] = t
     ttps.sort(key=lambda t: (t.technique, t.source_path))
     return ttps

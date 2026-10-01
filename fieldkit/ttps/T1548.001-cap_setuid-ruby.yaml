@@ -1,7 +1,7 @@
 # cap_setuid on ruby → root
 technique: T1548.001
 name: cap_setuid on ruby → root
-key: cap:setuid-ruby
+key: 'cap:{{binary}}'
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

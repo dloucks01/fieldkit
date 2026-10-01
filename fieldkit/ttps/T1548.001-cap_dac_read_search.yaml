@@ -14,7 +14,7 @@
 # are the modern granular replacement.
 technique: T1548.001
 name: cap_dac_read_search → read /etc/shadow (any file)
-key: cap:dac-read-search
+key: 'cap:{{binary}}'
 tactic: [privilege-escalation, credential-access]
 platform: [linux]
 ranking:

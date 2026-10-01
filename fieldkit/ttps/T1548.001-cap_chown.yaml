@@ -12,7 +12,7 @@
 # primitive.
 technique: T1548.001
 name: cap_chown → arbitrary chown → own /etc/passwd → root
-key: cap:chown
+key: 'cap:{{binary}}'
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

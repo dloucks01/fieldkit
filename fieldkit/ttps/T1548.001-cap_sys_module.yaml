@@ -8,7 +8,7 @@
 # credential keyrings from kernel memory.
 technique: T1548.001
 name: cap_sys_module → load kernel module → root
-key: cap:sys-module
+key: 'cap:{{binary}}'
 tactic: [privilege-escalation, persistence]
 platform: [linux]
 ranking:
