@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import warnings
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -257,6 +258,83 @@ class MigrationAtomicityTest(unittest.TestCase):
             st.MIGRATIONS, st.SCHEMA_VERSION = orig, orig_ver
         # with the good migration list the database still opens cleanly (not bricked)
         Store.open(self.path).close()
+
+    def test_open_failure_does_not_leak_a_connection(self):
+        """When Store.open fails after sqlite3.connect — a bad migration, a
+        bad PRAGMA — the half-opened Connection must be closed before the
+        exception propagates. Without this, Python's gc tries to finalize an
+        orphaned Connection at interpreter shutdown and ``sqlite3`` emits an
+        unraisable 'Exception ignored while finalizing database connection'
+        warning that pytest surfaces as a test failure under ``-W error``.
+
+        Regression against: 1 unraisable finalizer at test-session end seen
+        when ``test_failed_migration_rolls_back_and_does_not_brick`` ran as
+        part of the test_state module.
+
+        Detection strategy: track every ``sqlite3.Connection`` ``Store.open``
+        hands out (via a weak-reference finalizer that records a 'closed' flag
+        the moment ``.close()`` is called on it). The ``catch_warnings`` /
+        ``sys.unraisablehook`` approach doesn't work in-test because the
+        failing-open's exception traceback keeps a strong reference to the
+        Connection, so gc can't reclaim it until the ``with assertRaises``
+        block exits — by which time the test's capture window has closed.
+        Patching ``.close`` is the one state-change the fix is MAKING on the
+        orphaned Connection, so it's what we assert on.
+        """
+        import fieldkit.state as st
+        Store.create(self.path).close()
+        orig, orig_ver = st.MIGRATIONS[:], st.SCHEMA_VERSION
+        bad_ver = orig[-1][0] + 1
+        st.MIGRATIONS = orig + [(bad_ver, ["NOT VALID SQL AT ALL"])]
+        st.SCHEMA_VERSION = bad_ver
+
+        # Patch sqlite3.connect to return a tracking wrapper. We can't
+        # monkey-patch ``.close`` on a sqlite3.Connection directly (it's a
+        # read-only C-level method), so wrap each Connection in a proxy that
+        # records close() calls while delegating everything else via
+        # __getattr__ to the real Connection.
+        import sqlite3 as _sq
+        orig_connect = _sq.connect
+        handed_out = []
+
+        class _TrackingConn:
+            def __init__(self, inner):
+                object.__setattr__(self, "_inner", inner)
+                object.__setattr__(self, "_closed", False)
+            def close(self):
+                object.__setattr__(self, "_closed", True)
+                return self._inner.close()
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+            def __setattr__(self, name, value):
+                setattr(self._inner, name, value)
+            def __enter__(self):
+                return self._inner.__enter__()
+            def __exit__(self, *exc):
+                return self._inner.__exit__(*exc)
+
+        def tracking_connect(*a, **kw):
+            tc = _TrackingConn(orig_connect(*a, **kw))
+            handed_out.append(tc)
+            return tc
+        _sq.connect = tracking_connect
+        try:
+            with self.assertRaises(StateError):
+                Store.open(self.path)
+        finally:
+            _sq.connect = orig_connect
+            st.MIGRATIONS, st.SCHEMA_VERSION = orig, orig_ver
+
+        # Exactly one Connection was created by the failing Store.open; it must
+        # have been closed before the exception propagated. If this assertion
+        # fails, that Connection is orphaned and ``sqlite3``'s unraisable
+        # finalizer will warn at interpreter shutdown.
+        self.assertEqual(len(handed_out), 1)
+        self.assertTrue(
+            handed_out[0]._closed,
+            "Store.open did not close() its Connection on failure — "
+            "an orphan at Python-gc time triggers sqlite3's unraisable "
+            "finalizer at session teardown.")
 
 
 class ConcurrentUpsertTest(unittest.TestCase):

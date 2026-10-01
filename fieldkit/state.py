@@ -453,15 +453,29 @@ class Store:
             conn = sqlite3.connect(path)
         except sqlite3.OperationalError as exc:
             raise StateError(f"cannot open {path}: {exc}") from None
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
-        # WAL allows concurrent writers (bulk multi-source ingest); without a busy
-        # timeout a second writer fails immediately with "database is locked". Wait
-        # a few seconds for the lock instead of erroring out under contention.
-        conn.execute("PRAGMA busy_timeout = 5000")
-        store = cls(conn, path)
-        store.migrate()
+        # Any failure after this point MUST close ``conn`` — a half-opened
+        # Connection that leaks to Python's gc raises an unraisable finalizer
+        # warning at interpreter shutdown ("Exception ignored while finalizing
+        # database connection") because sqlite3 can't tear down a connection
+        # whose cursors/statements it has lost track of. The failed-migration
+        # test exercises exactly this path.
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA journal_mode = WAL")
+            # WAL allows concurrent writers (bulk multi-source ingest); without
+            # a busy timeout a second writer fails immediately with "database is
+            # locked". Wait a few seconds for the lock instead of erroring out
+            # under contention.
+            conn.execute("PRAGMA busy_timeout = 5000")
+            store = cls(conn, path)
+            store.migrate()
+        except Exception:
+            try:
+                conn.close()
+            except Exception:                                       # noqa: BLE001
+                pass    # whatever's wrong with the conn, don't mask the original
+            raise
         return store
 
     @classmethod
