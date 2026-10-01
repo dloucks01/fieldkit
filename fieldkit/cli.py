@@ -146,6 +146,15 @@ def cmd_init(args):
 
     print(f"\nnext: {PROG} config set lhost=<your ip> lport=443 domain=<ad domain>")
     print(f"      {PROG} add hosts scope.txt")
+    # Session recording is opt-in but easy to miss — a one-liner here makes it
+    # discoverable without changing the default (noisy JSONL on every invocation
+    # is deliberately NOT the default).
+    from . import session as session_mod
+    if not session_mod.log_path():
+        default_log = os.path.join(os.path.dirname(os.path.abspath(path)),
+                                   "fieldkit-session.jsonl")
+        print(f"\nfor a reproducible per-invocation log + replay:")
+        print(f"      eval $({PROG} session log --enable --out {default_log})")
     return 0
 
 
