@@ -1,6 +1,7 @@
 # SUID gawk → root (GTFOBins)
 technique: T1548.001
 name: SUID gawk → root (GTFOBins)
+key: suid:gawk
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

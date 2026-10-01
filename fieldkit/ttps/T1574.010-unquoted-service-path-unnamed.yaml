@@ -11,7 +11,7 @@ technique: T1574.010
 name: unquoted service path (?) → SYSTEM
 tactic: [privilege-escalation]
 platform: [windows]
-key: 'unquoted:{{path}}'
+key: 'unquoted:unnamed:{{path}}'
 ranking:
   exploitability: medium
   safety: config-change

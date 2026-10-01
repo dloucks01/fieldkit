@@ -1,6 +1,7 @@
 # Sudo → root via perl (GTFOBins)
 technique: T1548.003
 name: Sudo → root via perl (GTFOBins)
+key: sudo:perl
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

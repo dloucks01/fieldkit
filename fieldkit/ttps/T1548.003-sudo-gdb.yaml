@@ -1,6 +1,7 @@
 # Sudo → root via gdb (GTFOBins)
 technique: T1548.003
 name: Sudo → root via gdb (GTFOBins)
+key: sudo:gdb
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

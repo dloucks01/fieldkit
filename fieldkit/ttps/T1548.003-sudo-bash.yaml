@@ -3,6 +3,7 @@
 # analysis sees it as a ranked opp rather than as a silent lack.
 technique: T1548.003
 name: Sudo → root via bash (GTFOBins)
+key: sudo:bash
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

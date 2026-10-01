@@ -1,6 +1,7 @@
 # SUID docker → root (GTFOBins)
 technique: T1548.001
 name: SUID docker → root (GTFOBins)
+key: suid:docker
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

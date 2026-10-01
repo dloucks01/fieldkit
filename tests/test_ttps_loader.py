@@ -32,7 +32,10 @@ def _write_yaml(dir_, name, body):
 
 
 def _valid_body(**overrides):
-    """A minimal-but-complete valid TTP body; overrides replace top-level fields."""
+    """A minimal-but-complete valid TTP body; overrides replace top-level fields.
+
+    Pass ``key=None`` to omit the ``key:`` field (e.g. for the strictness tests
+    that assert the loader rejects a missing key)."""
     base = {
         "technique": "T1548.003",
         "name": "Sample",
@@ -43,8 +46,10 @@ def _valid_body(**overrides):
         "execute": "\n  command: 'id'",
         "verify": "\n  success: 'uid=0'",
         "report": "\n  vector_type: sample_vector",
+        "key": "test:sample",
     }
     base.update(overrides)
+    base = {k: v for k, v in base.items() if v is not None}
     return "\n".join(f"{k}: {v}" for k, v in base.items())
 
 
@@ -89,6 +94,7 @@ class LoadFileTest(unittest.TestCase):
         name: Sample
         tactic: [privilege-escalation]
         platform: [linux]
+        key: test:sample
         detect: {always: true}
         execute: {command: 'id'}
         verify: {success: 'uid=0'}
@@ -180,8 +186,10 @@ class LoadAllTest(unittest.TestCase):
     def test_load_all_from_custom_dir(self):
         from fieldkit.ttps import load_all
         with tempfile.TemporaryDirectory() as tmp:
-            _write_yaml(tmp, "a.yaml", _valid_body(technique="T1078.002"))
-            _write_yaml(tmp, "b.yaml", _valid_body(technique="T1548.003"))
+            _write_yaml(tmp, "a.yaml",
+                        _valid_body(technique="T1078.002", key="test:a"))
+            _write_yaml(tmp, "b.yaml",
+                        _valid_body(technique="T1548.003", key="test:b"))
             # a non-yaml file is ignored
             with open(os.path.join(tmp, "README"), "w") as fh:
                 fh.write("not a ttp")
@@ -198,6 +206,50 @@ class LoadAllTest(unittest.TestCase):
             _write_yaml(tmp, "bad.yaml", "technique: not-a-tcode")
             with self.assertRaises(LoaderError):
                 load_all(tmp)
+
+
+class KeyStrictnessTest(unittest.TestCase):
+    """``key:`` is required and must be unique across the catalog. An empty
+    key silently drops the TTP out of ``ttps show`` / ``run <host> <key>``
+    reachability — once we shipped a catalog where 47 of 161 TTPs lacked a
+    key for this reason. Duplicate keys would silently route to whichever
+    file loaded first."""
+
+    def test_missing_key_raises(self):
+        from fieldkit.ttps.loader import load_file, LoaderError
+        with tempfile.TemporaryDirectory() as tmp:
+            # omit `key:` entirely — loader must reject
+            path = _write_yaml(tmp, "nokey.yaml", _valid_body(key=None))
+            with self.assertRaises(LoaderError) as ctx:
+                load_file(path)
+            self.assertIn("key", str(ctx.exception))
+
+    def test_empty_key_raises(self):
+        from fieldkit.ttps.loader import load_file, LoaderError
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_yaml(tmp, "emptykey.yaml", _valid_body(key='""'))
+            with self.assertRaises(LoaderError):
+                load_file(path)
+
+    def test_duplicate_keys_across_files_raise(self):
+        from fieldkit.ttps.loader import load_all, LoaderError
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_yaml(tmp, "a.yaml", _valid_body(key="dup"))
+            _write_yaml(tmp, "b.yaml", _valid_body(key="dup"))
+            with self.assertRaises(LoaderError) as ctx:
+                load_all(tmp)
+            self.assertIn("duplicate", str(ctx.exception).lower())
+            self.assertIn("dup", str(ctx.exception))
+
+    def test_shipped_catalog_has_no_empty_keys_or_duplicates(self):
+        """Regression: 47-TTPs-missing-key would have slipped through this."""
+        from fieldkit.ttps import load_all
+        ttps = load_all()
+        empty = [t for t in ttps if not t.key]
+        self.assertEqual(empty, [], f"TTPs with empty key: {len(empty)}")
+        from collections import Counter
+        dups = {k: c for k, c in Counter(t.key for t in ttps).items() if c > 1}
+        self.assertEqual(dups, {}, f"duplicate TTP keys: {dups}")
 
 
 if __name__ == "__main__":

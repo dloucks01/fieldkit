@@ -4,6 +4,7 @@
 # a root shell in one call. Ported from privesc.GTFO["bash"]["suid"].
 technique: T1548.001
 name: SUID bash → root (GTFOBins)
+key: suid:bash
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

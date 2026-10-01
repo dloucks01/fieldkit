@@ -1,6 +1,7 @@
 # Sudo → root via gawk (GTFOBins)
 technique: T1548.003
 name: Sudo → root via gawk (GTFOBins)
+key: sudo:gawk
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

@@ -1,6 +1,7 @@
 # SUID make → root (GTFOBins)
 technique: T1548.001
 name: SUID make → root (GTFOBins)
+key: suid:make
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

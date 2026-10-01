@@ -1,6 +1,7 @@
 # SUID tar → root (GTFOBins)
 technique: T1548.001
 name: SUID tar → root (GTFOBins)
+key: suid:tar
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

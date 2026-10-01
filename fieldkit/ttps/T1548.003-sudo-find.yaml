@@ -9,6 +9,7 @@
 # fieldkit-TTP roadmap. First TTP file; the schema + loader are exercised here.
 technique: T1548.003
 name: Sudo → root via find (GTFOBins)
+key: sudo:find
 tactic:
   - privilege-escalation
 platform:

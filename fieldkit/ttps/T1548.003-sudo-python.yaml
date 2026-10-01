@@ -3,6 +3,7 @@
 # gives arbitrary system() as root.
 technique: T1548.003
 name: Sudo → root via python (GTFOBins)
+key: sudo:python
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

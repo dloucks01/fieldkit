@@ -7,6 +7,7 @@
 # (replace + restart service) is per-target and handled via `fieldkit prep`.
 technique: T1068
 name: SeTakeOwnership → own a SYSTEM file → SYSTEM
+key: setakeownership
 tactic: [privilege-escalation]
 platform: [windows]
 ranking:

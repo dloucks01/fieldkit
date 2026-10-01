@@ -1,6 +1,7 @@
 # cap_setuid on perl → root
 technique: T1548.001
 name: cap_setuid on perl → root
+key: cap:setuid-perl
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

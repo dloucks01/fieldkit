@@ -7,6 +7,7 @@
 # informational; the actual DLL plant is per-target.
 technique: T1068
 name: SeManageVolume → arbitrary write → SYSTEM
+key: semanagevolume
 tactic: [privilege-escalation]
 platform: [windows]
 ranking:

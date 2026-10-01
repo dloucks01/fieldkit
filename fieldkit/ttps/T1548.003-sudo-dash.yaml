@@ -1,6 +1,7 @@
 # Sudo → root via dash (GTFOBins)
 technique: T1548.003
 name: Sudo → root via dash (GTFOBins)
+key: sudo:dash
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

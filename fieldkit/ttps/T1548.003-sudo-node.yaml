@@ -1,6 +1,7 @@
 # Sudo → root via node (GTFOBins)
 technique: T1548.003
 name: Sudo → root via node (GTFOBins)
+key: sudo:node
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

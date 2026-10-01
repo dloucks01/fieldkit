@@ -1,6 +1,7 @@
 # SUID find → root (GTFOBins)
 technique: T1548.001
 name: SUID find → root (GTFOBins)
+key: suid:find
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

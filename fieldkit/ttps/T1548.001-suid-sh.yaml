@@ -1,6 +1,7 @@
 # SUID sh → root (GTFOBins)
 technique: T1548.001
 name: SUID sh → root (GTFOBins)
+key: suid:sh
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

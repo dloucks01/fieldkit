@@ -3,6 +3,7 @@
 # into an image and chroot in.
 technique: T1548.003
 name: Sudo → root via docker (GTFOBins)
+key: sudo:docker
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

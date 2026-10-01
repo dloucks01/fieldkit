@@ -1,6 +1,7 @@
 # Sudo → root via make (GTFOBins)
 technique: T1548.003
 name: Sudo → root via make (GTFOBins)
+key: sudo:make
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

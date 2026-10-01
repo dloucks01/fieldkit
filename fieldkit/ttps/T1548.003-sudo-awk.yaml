@@ -1,6 +1,7 @@
 # Sudo → root via awk (GTFOBins)
 technique: T1548.003
 name: Sudo → root via awk (GTFOBins)
+key: sudo:awk
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

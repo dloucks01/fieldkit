@@ -1,6 +1,7 @@
 # SUID dash → root (GTFOBins)
 technique: T1548.001
 name: SUID dash → root (GTFOBins)
+key: suid:dash
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

@@ -1,6 +1,7 @@
 # SUID gdb → root (GTFOBins)
 technique: T1548.001
 name: SUID gdb → root (GTFOBins)
+key: suid:gdb
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

@@ -1,6 +1,7 @@
 # SUID ruby → root (GTFOBins)
 technique: T1548.001
 name: SUID ruby → root (GTFOBins)
+key: suid:ruby
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

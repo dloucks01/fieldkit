@@ -1,6 +1,7 @@
 # Sudo → root via sh (GTFOBins)
 technique: T1548.003
 name: Sudo → root via sh (GTFOBins)
+key: sudo:sh
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

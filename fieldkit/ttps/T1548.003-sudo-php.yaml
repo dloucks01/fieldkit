@@ -1,6 +1,7 @@
 # Sudo → root via php (GTFOBins)
 technique: T1548.003
 name: Sudo → root via php (GTFOBins)
+key: sudo:php
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

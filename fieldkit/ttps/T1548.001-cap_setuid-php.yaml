@@ -1,6 +1,7 @@
 # cap_setuid on php → root
 technique: T1548.001
 name: cap_setuid on php → root
+key: cap:setuid-php
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

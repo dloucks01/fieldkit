@@ -1,6 +1,7 @@
 # SUID env → root (GTFOBins)
 technique: T1548.001
 name: SUID env → root (GTFOBins)
+key: suid:env
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

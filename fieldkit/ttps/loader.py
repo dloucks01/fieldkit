@@ -237,9 +237,12 @@ def load_file(path):
     for p in platform_list:
         _require_in(p, VALID_PLATFORMS, f"platform[{platform_list.index(p)}]", source)
 
-    key = doc.get("key") or ""
-    if key and not isinstance(key, str):
-        raise LoaderError(f"{source}: top-level `key` must be a string, got {key!r}")
+    # ``key`` is required: it's the only stable handle for ``ttps show``,
+    # ``fieldkit run <host> <key>`` and the escalate trail. An empty key
+    # loads a TTP that can still fire via detect-matching but can't be
+    # targeted individually, which is a silent coverage gap (47 TTPs
+    # once shipped this way — see commit history).
+    key = _require_str(doc, "key", "<root>", source)
     family = doc.get("family") or ""
     if family and not isinstance(family, str):
         raise LoaderError(f"{source}: top-level `family` must be a string, got {family!r}")
@@ -280,5 +283,15 @@ def load_all(directory=None):
         if fn.endswith(".yaml") or fn.endswith(".yml")
     )
     ttps = [load_file(p) for p in files]
+    # Reject duplicate keys — ``ttps show <key>`` and ``run <host> <key>`` expect
+    # a unique handle, and two TTPs sharing one would silently route to whichever
+    # loaded first. The CLI tests encode this invariant so a drift surfaces fast.
+    seen = {}
+    for t in ttps:
+        if t.key in seen:
+            raise LoaderError(
+                f"{t.source_path}: duplicate TTP key {t.key!r} — already used by "
+                f"{seen[t.key]}")
+        seen[t.key] = t.source_path
     ttps.sort(key=lambda t: (t.technique, t.source_path))
     return ttps

@@ -6,6 +6,7 @@
 # a host with BOTH the priv AND the group gets one vector, not two.
 technique: T1003.002
 name: Backup Operators → dump the SAM/SYSTEM hives
+key: backup-operators
 tactic: [credential-access, privilege-escalation]
 platform: [windows]
 ranking:

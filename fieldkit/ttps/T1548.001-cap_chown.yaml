@@ -12,6 +12,7 @@
 # primitive.
 technique: T1548.001
 name: cap_chown → arbitrary chown → own /etc/passwd → root
+key: cap:chown
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

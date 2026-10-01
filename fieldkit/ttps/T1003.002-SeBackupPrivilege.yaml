@@ -7,6 +7,7 @@
 # masterkeys.
 technique: T1003.002
 name: SeBackup → dump the SAM/SYSTEM hives
+key: sebackup
 tactic: [credential-access, privilege-escalation]
 platform: [windows]
 ranking:

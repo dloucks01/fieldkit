@@ -10,6 +10,7 @@
 # reads its status — that alone confirms the primitive without dumping.
 technique: T1548.001
 name: cap_sys_ptrace → attach to any process → credential extraction
+key: cap:sys-ptrace
 tactic: [privilege-escalation, credential-access]
 platform: [linux]
 ranking:

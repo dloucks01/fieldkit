@@ -3,6 +3,7 @@
 # no-op archive with checkpoint 1 fires the exec exactly once.
 technique: T1548.003
 name: Sudo → root via tar (GTFOBins)
+key: sudo:tar
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

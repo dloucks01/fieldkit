@@ -1,6 +1,7 @@
 # Sudo → root via nmap (GTFOBins)
 technique: T1548.003
 name: Sudo → root via nmap (GTFOBins)
+key: sudo:nmap
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

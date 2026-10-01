@@ -1,6 +1,7 @@
 # Sudo → root via env (GTFOBins)
 technique: T1548.003
 name: Sudo → root via env (GTFOBins)
+key: sudo:env
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

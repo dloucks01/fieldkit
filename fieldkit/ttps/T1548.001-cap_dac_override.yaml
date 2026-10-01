@@ -12,6 +12,7 @@
 # MITRE: T1548.001 (Setuid/Setgid) — capabilities as fine-grained SUID.
 technique: T1548.001
 name: cap_dac_override → append UID-0 line to /etc/passwd → root
+key: cap:dac-override
 tactic: [privilege-escalation]
 platform: [linux]
 ranking:

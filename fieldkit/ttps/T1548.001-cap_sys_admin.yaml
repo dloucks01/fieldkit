@@ -12,6 +12,7 @@
 # host mount as a probe; container-escape use is documented in refs.
 technique: T1548.001
 name: cap_sys_admin → mount/nsenter primitives → root
+key: cap:sys-admin
 tactic: [privilege-escalation, defense-evasion]
 platform: [linux]
 ranking:
