@@ -2707,14 +2707,28 @@ def cmd_retest(args, store):
             continue
         current = (result.stdout or "") + (result.stderr or "")
         original = (step["output"] or "").strip()
-        # Heuristic: if the original's key marker (first
-        # non-blank line) appears in the current output, the
-        # exploit still fires.
+        # Pick the strongest proof token in the original capture. The naive
+        # "first non-blank line" heuristic routinely picked up an nxc banner
+        # (``SMB ... [*] SSH-2.0...``) instead of the actual elevation marker
+        # (``uid=0(root)``), so a successful retest of e.g. ``sudo:find``
+        # was mis-reported as "no-longer / output changed" even though the
+        # proof reproduced cleanly. Prefer a line containing one of the
+        # canonical TTP ``verify.success`` strings (the vocabulary the
+        # shipped catalog uses — see fieldkit/ttps/*.yaml); fall back to the
+        # first non-blank line only when no canonical token is present.
+        proof_tokens = ("uid=0", "NT AUTHORITY", "nt authority",
+                        "root", "SYSTEM", "HTTP/")
         marker = ""
         for line in original.splitlines():
-            if line.strip():
-                marker = line.strip()
+            stripped = line.strip()
+            if any(tok in stripped for tok in proof_tokens):
+                marker = stripped
                 break
+        if not marker:
+            for line in original.splitlines():
+                if line.strip():
+                    marker = line.strip()
+                    break
         if marker and marker[:80] in current:
             results.append({"id": f["id"], "title": f["title"],
                             "verdict": "still-exploitable",

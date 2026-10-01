@@ -110,6 +110,50 @@ class RetestTest(unittest.TestCase):
         self.assertEqual(len(doc), 1)
         self.assertEqual(doc[0]["verdict"], "still-exploitable")
 
+    def test_marker_prefers_proof_token_over_nxc_banner(self):
+        """Regression: when a proven step's captured output starts with the
+        nxc banner (``SMB ... [*] SSH-2.0-OpenSSH_...``) and the actual proof
+        marker (``uid=0``) appears several lines later, the retest marker
+        must latch onto the proof token — not the banner. Previously it
+        picked the first non-blank line, so a successful retest was
+        mis-reported as 'no-longer / output changed' because the banner's
+        timestamp or session-specific metadata differed between runs."""
+        s = _mk_store(self)
+        # original capture: banner first, proof deep in the output
+        original = (
+            "SSH   10.0.0.5   22   target   [*] SSH-2.0-OpenSSH_8.9p1 Ubuntu-xxx\n"
+            "SSH   10.0.0.5   22   target   [+] testuser:pw  Linux - Shell access!\n"
+            "SSH   10.0.0.5   22   target   [+] Executed command\n"
+            "SSH   10.0.0.5   22   target   uid=0(root) gid=0(root) groups=0(root)\n")
+        # retest run: DIFFERENT banner (newer OpenSSH version), SAME proof
+        current = (
+            "SSH   10.0.0.5   22   target   [*] SSH-2.0-OpenSSH_9.0p2 Ubuntu-yyy\n"
+            "SSH   10.0.0.5   22   target   [+] testuser:pw  Linux - Shell access!\n"
+            "SSH   10.0.0.5   22   target   uid=0(root) gid=0(root) groups=0(root)\n")
+        _add_finding_with_step(s, "sudo:find", "sudo find . -exec id \\; -quit",
+                                original)
+        undo = _fake_runner(s, {
+            "sudo find . -exec id \\; -quit": {"stdout": current}})
+        self.addCleanup(undo)
+        code, out, _ = _run(["retest"], s)
+        self.assertEqual(code, 0)
+        # The banner differs; without the fix the retest would say no-longer.
+        self.assertIn("still-exploitable: 1", out,
+                      f"retest misread the proof token — output was:\n{out}")
+
+    def test_marker_falls_back_to_first_line_when_no_proof_token(self):
+        """Not every finding has a canonical proof token (recce_confirmed
+        and nuclei web_vulns don't). Preserve the first-line fallback for
+        those — they still want the same before/after comparison."""
+        s = _mk_store(self)
+        banner = "GET /admin/debug HTTP/1.1 → 200 OK, 42 bytes"
+        _add_finding_with_step(s, "web_vuln", "curl -s target", banner)
+        # unchanged output → still-exploitable
+        undo = _fake_runner(s, {"curl -s target": {"stdout": banner}})
+        self.addCleanup(undo)
+        code, out, _ = _run(["retest"], s)
+        self.assertIn("still-exploitable: 1", out)
+
 
 if __name__ == "__main__":
     unittest.main()
