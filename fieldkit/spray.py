@@ -20,6 +20,7 @@ case that can bite. The loop never guesses; it validates and pivots.
 The subprocess runner is injected (``run=``) so the whole loop is testable against
 canned nxc output without a packet.
 """
+import re
 from dataclasses import dataclass, field
 
 from . import runner as runner_mod
@@ -116,10 +117,20 @@ def _spray_one(store, cred_row, ips, proto, run, source, report, on_event):
     # typically a module crash (unicode/protocol trace) or a version mismatch that
     # exits 0 with a Python traceback on stdout. Silent "0 valid" hides this; the
     # operator needs to see it so they can pin the nxc version or switch modules.
-    if not intent.creds and not intent.hosts and result.output.strip():
+    raw = result.output or ""
+    if raw.strip() and (not intent.creds and not intent.hosts):
         _emit(report, on_event,
               f"  {cred.principal} [{proto}]: nxc produced no parseable output — "
               "tool may have crashed (see the raw output via `fieldkit session log`)")
+    # Even when something DID parse, an embedded Python traceback means nxc
+    # crashed partway through one of its modules — the operator should see it
+    # rather than silently losing the rest of what the module would have printed.
+    elif ("Traceback (most recent call last)" in raw
+          or re.search(r"\n\s*(?:KeyError|TypeError|ValueError|UnicodeDecodeError):",
+                       raw)):
+        _emit(report, on_event,
+              f"  {cred.principal} [{proto}]: nxc emitted a Python traceback — "
+              "a module crashed mid-run (results above may be partial)")
     before = store.counts()
     apply_nxc(store, intent, source=source)
     after = store.counts()

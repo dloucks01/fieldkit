@@ -90,6 +90,7 @@ class _FakeStore:
 
     def __init__(self):
         self.steps, self.findings, self.credentials = [], [], []
+        self.access = []       # (host_id, cred_id, method, admin)
 
     def transaction(self):
         return self  # context manager: __enter__/__exit__ are self
@@ -113,6 +114,11 @@ class _FakeStore:
         self.credentials.append({"user": cred.username, "secret": cred.secret,
                                  "source": source})
         return len(self.credentials), True
+
+    def add_access(self, host_id, cred_id, method, admin=False, integrity=None):
+        self.access.append({"host_id": host_id, "cred_id": cred_id,
+                            "method": method, "admin": bool(admin)})
+        return len(self.access), True
 
 
 class TestRunProbes(unittest.TestCase):
@@ -174,6 +180,72 @@ class TestRunProbes(unittest.TestCase):
                       run=fake_run, probes=laps_only)
         self.assertEqual(len(store.credentials), 1)
         self.assertEqual(store.credentials[0]["secret"], "7Wf!q8xL2@zY")
+
+    #: A ``--shares`` capture matching the Samba DC lab: sysvol AND netlogon
+    #: are both READ,WRITE (replication-grade = domain admin). This is the
+    #: exact shape that nxc's ``(Pwn3d!)`` C$-based oracle misses, and the
+    #: shape the heuristic promotes.
+    SAMBA_DC_SHARES = (
+        "SMB   10.0.0.1  445  DC01  [*] Enumerated shares\n"
+        "SMB   10.0.0.1  445  DC01  Share           Permissions     Remark\n"
+        "SMB   10.0.0.1  445  DC01  -----           -----------     ------\n"
+        "SMB   10.0.0.1  445  DC01  sysvol          READ,WRITE\n"
+        "SMB   10.0.0.1  445  DC01  netlogon        READ,WRITE\n"
+        "SMB   10.0.0.1  445  DC01  IPC$                            IPC Service\n")
+
+    def test_shares_probe_promotes_admin_on_samba_dc(self):
+        """SYSVOL + NETLOGON both writable → promote the SMB access row to admin.
+        nxc's ``(Pwn3d!)`` oracle is C$-based and misses Samba DCs; without this
+        heuristic a correct domain-admin cred stays flagged "0 admin on 0 hosts"."""
+        store = _FakeStore()
+        shares_only = tuple(p for p in np.PROBES if p.key == "shares")
+
+        def fake_run(argv, env):
+            return RunResult(
+                argv=argv, exit_code=0, stderr="",
+                stdout=self.SAMBA_DC_SHARES)
+
+        rep = np.run_probes(store, self.HOST, self._cred_row(), is_admin=False,
+                            run=fake_run, probes=shares_only)
+        self.assertTrue(rep.promoted_admin)
+        self.assertEqual(len(store.access), 1)
+        self.assertTrue(store.access[0]["admin"])
+        self.assertEqual(store.access[0]["method"], "smb")
+
+    def test_shares_probe_does_not_promote_when_already_admin(self):
+        """When the cred is already admin, no promotion event (prevents duplicate
+        'promoted to admin' event lines)."""
+        store = _FakeStore()
+        shares_only = tuple(p for p in np.PROBES if p.key == "shares")
+
+        def fake_run(argv, env):
+            return RunResult(
+                argv=argv, exit_code=0, stderr="",
+                stdout=self.SAMBA_DC_SHARES)
+
+        rep = np.run_probes(store, self.HOST, self._cred_row(), is_admin=True,
+                            run=fake_run, probes=shares_only)
+        self.assertFalse(rep.promoted_admin)
+
+    def test_dc_admin_shares_requires_both_sysvol_and_netlogon_write(self):
+        """SYSVOL writable alone (an orphan permission) must NOT promote — only
+        the full pair indicates domain-admin."""
+        shares_only_sysvol = [
+            np.ProbeFinding(kind="smb_share",
+                            title="SMB share 'sysvol' — READ,WRITE",
+                            evidence="", severity="Medium"),
+            np.ProbeFinding(kind="smb_share",
+                            title="SMB share 'netlogon' — READ",
+                            evidence="", severity="Info"),
+        ]
+        self.assertFalse(np._is_dc_admin_by_shares(shares_only_sysvol))
+
+        both_writable = shares_only_sysvol + [
+            np.ProbeFinding(kind="smb_share",
+                            title="SMB share 'netlogon' — READ,WRITE",
+                            evidence="", severity="Medium"),
+        ]
+        self.assertTrue(np._is_dc_admin_by_shares(both_writable))
 
 
 if __name__ == "__main__":

@@ -265,6 +265,35 @@ def _bloodhound_paths(store):
 
 _RECCE_CRIT_SEV = {"critical", "high"}
 
+#: When a recce evidence string carries a comma-separated CVE list, the analyze view
+#: trims to this many visible CVEs and appends "+N more". The full list stays in the
+#: finding row so the report + ``retest`` see the entire set.
+_CVE_LIST_PREVIEW = 5
+
+
+def _trim_cve_list(evidence):
+    """Collapse a long ``cves: CVE-..., CVE-..., ...`` tail in an evidence string
+    down to the first few CVEs plus a count of what was elided. The analyze view is
+    meant to be glanceable — a 90-CVE Apache run shouldn't wall-of-CVEs the operator
+    just to count as one ranked move.
+    """
+    if not evidence or "cves:" not in evidence:
+        return evidence
+    head, _, tail = evidence.partition("cves:")
+    # Split tail on commas BEFORE any trailing dialectic token (" ·", " · ", "...").
+    stop = len(tail)
+    for sep in (" · ", "\n", " —"):
+        idx = tail.find(sep)
+        if 0 < idx < stop:
+            stop = idx
+    cve_part, rest = tail[:stop], tail[stop:]
+    cves = [c.strip() for c in cve_part.split(",") if c.strip()]
+    if len(cves) <= _CVE_LIST_PREVIEW:
+        return evidence
+    shown = ", ".join(cves[:_CVE_LIST_PREVIEW])
+    extra = len(cves) - _CVE_LIST_PREVIEW
+    return f"{head}cves: {shown} (+{extra} more){rest}"
+
 
 def _recce_confirmed_finding(store):
     """Recce-confirmed vulns rank high — they are proven inputs from the survey layer,
@@ -278,6 +307,7 @@ def _recce_confirmed_finding(store):
         sev = (f["severity"] or "medium").lower()
         host = store.host_by_id(f["host_id"]) if f["host_id"] else None
         where = (host["hostname"] or host["ip"]) if host else "unknown"
+        trimmed = _trim_cve_list(f["evidence"] or "")
         yield Opportunity(
             key=f"recce-conf:{f['id']}",
             title=f["title"] + f" — on {where}",
@@ -285,9 +315,9 @@ def _recce_confirmed_finding(store):
             safety="config-change",     # exploitation typically mutates target state
             detection="moderate",
             host=host["ip"] if host else None,
-            detail=(f["evidence"] or "") + " — recce already confirmed this "
+            detail=trimmed + " — recce already confirmed this "
                    "weakness; escalate is the next step (or drive the CVE PoC).",
-            evidence=f["evidence"] or "recce confirmed",
+            evidence=f["evidence"] or "recce confirmed",   # keep full list for the report
             next_step=(f"fieldkit escalate {host['ip']} --allow config-change   "
                        "(or drive the CVE-specific PoC from the recce report's refs)")
                       if host else "escalate against the affected host",
@@ -305,6 +335,7 @@ def _recce_version_route(store):
         host = store.host_by_id(f["host_id"]) if f["host_id"] else None
         where = (host["hostname"] or host["ip"]) if host else "unknown"
         has_cve = "cves:" in (f["evidence"] or "")
+        trimmed = _trim_cve_list(f["evidence"] or "")
         yield Opportunity(
             key=f"recce-ver:{f['id']}",
             title=f["title"] + f" — on {where}",
@@ -312,7 +343,7 @@ def _recce_version_route(store):
             safety="read-only",         # a CVE lookup itself is read-only
             detection="quiet",
             host=host["ip"] if host else None,
-            detail=(f["evidence"] or "") + " — recce fingerprinted a version with "
+            detail=trimmed + " — recce fingerprinted a version with "
                    "public exploits; verify the CVE applies before escalation.",
             evidence=f["evidence"] or "",
             next_step="searchsploit / trickest lookup for the fingerprinted CVE(s); "

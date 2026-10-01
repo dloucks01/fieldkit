@@ -1243,8 +1243,19 @@ def cmd_escalate(args):
             build=None if args.no_stage else prov.build, on_event=lambda m: print(m))
 
         provision_mod.record_proof(store, outcome, prov.results, host)
+        # Was this credential already at max privilege when we started? Used to
+        # reframe the "no vector proved elevation" message when the ranked list
+        # on an already-root/-admin foothold is loot + persist, not elevation.
+        already_elevated = False
+        if host["os"] == hostenum_mod.LINUX:
+            facts = hostenum_mod.facts_for(store, host["id"])
+            already_elevated = facts.is_root
+        else:
+            already_elevated = any(r["admin"] for r in store.access_on(host["id"])
+                                   if r["cred_id"] == cred["id"])
 
-    _print_escalation_outcome(outcome)
+    _print_escalation_outcome(outcome, already_elevated=already_elevated,
+                              host_ip=args.host)
 
     # If manual routes surfaced and we're interactive, offer to run `prep` on
     # the first one right here — saves a context-switch to `fieldkit prep <ip>
@@ -1264,7 +1275,7 @@ def cmd_escalate(args):
     return 0 if outcome.ok else 1
 
 
-def _print_escalation_outcome(outcome):
+def _print_escalation_outcome(outcome, *, already_elevated=False, host_ip=None):
     print("\n--- trail ---")
     for a in outcome.attempts:
         if a.verdict is not None:
@@ -1289,6 +1300,18 @@ def _print_escalation_outcome(outcome):
     elif outcome.stopped == "budget":
         print("STOPPED: attempt budget reached before proof — raise it with --max or "
               "narrow the plan.")
+    elif already_elevated:
+        # The foothold cred was already at maximum privilege for this OS
+        # (uid=0 on Linux, admin access row on Windows). The "escalate"
+        # trail is really a loot/persist sweep in that case — no vector
+        # was supposed to elevate anything. Reframe so the tester reads
+        # the trail as "what did we capture / what persistence openings
+        # exist" rather than a failure.
+        host = host_ip or "the host"
+        print(f"already at max privilege on {host} — the trail above walked loot and "
+              "persistence vectors (nothing new to elevate TO). The findings column of "
+              "status reflects what was captured; use `fieldkit run <host> <vector>` "
+              "to re-fire a specific loot probe, or `fieldkit prep` for the manual routes.")
     else:
         print("no vector proved elevation — every ranked move was tried. See the trail "
               "for the per-vector verdict and its recommended manual step.")
@@ -5310,6 +5333,12 @@ the spec is missing that field. `--from-file` reads one credential per line.
         help="mark this principal (by ARN or name) as owned — your foothold; "
              "repeatable. Only meaningful with `--from` (a normalized graph carries "
              "its own owned flags).")
+    # ``-y`` accepted for consistency with the ingest subcommands that DO ask a
+    # confirm-back (nmap, hashcat, recce). A structured JSON graph has no
+    # parse-ambiguity so no confirm-back fires; the flag is a no-op but accepting
+    # it means a non-interactive caller can pass -y uniformly across every ingest.
+    i_cloud.add_argument("-y", "--yes", action="store_true",
+                         help="accepted for consistency (no confirm-back for JSON graphs)")
     i_cloud.set_defaults(func=cmd_ingest_cloud)
 
     i_k8s = ingest_sub.add_parser(
@@ -5329,6 +5358,8 @@ the spec is missing that field. `--from-file` reads one credential per line.
     i_k8s.add_argument(
         "--subject", metavar="NAME", default="self",
         help="name for the subject when using `--from kubectl` (default: self).")
+    i_k8s.add_argument("-y", "--yes", action="store_true",
+                       help="accepted for consistency (no confirm-back for JSON graphs)")
     i_k8s.set_defaults(func=cmd_ingest_k8s)
 
     i_saas = ingest_sub.add_parser(
@@ -5349,6 +5380,8 @@ the spec is missing that field. `--from-file` reads one credential per line.
         "--owned", action="append", default=[], metavar="ID_OR_NAME",
         help="mark this principal (by id, displayName or UPN) as owned — your foothold; "
              "repeatable. Only meaningful with `--from`.")
+    i_saas.add_argument("-y", "--yes", action="store_true",
+                        help="accepted for consistency (no confirm-back for JSON graphs)")
     i_saas.set_defaults(func=cmd_ingest_saas)
 
     i_cicd = ingest_sub.add_parser(
@@ -5372,6 +5405,8 @@ the spec is missing that field. `--from-file` reads one credential per line.
         "--owned", action="append", default=[], metavar="LOGIN",
         help="mark this principal (by login) as owned — your foothold; repeatable. "
              "Only meaningful with `--from`.")
+    i_cicd.add_argument("-y", "--yes", action="store_true",
+                        help="accepted for consistency (no confirm-back for JSON graphs)")
     i_cicd.set_defaults(func=cmd_ingest_cicd)
 
     i_pivots = ingest_sub.add_parser(
@@ -5384,6 +5419,8 @@ the spec is missing that field. `--from-file` reads one credential per line.
                     "SaaS identity). `fieldkit paths` then stitches escalation across "
                     "them. Idempotent.")
     i_pivots.add_argument("file", nargs="?", help="pivots JSON (or `-` / stdin)")
+    i_pivots.add_argument("-y", "--yes", action="store_true",
+                          help="accepted for consistency (no confirm-back for JSON pivots)")
     i_pivots.set_defaults(func=cmd_ingest_pivots)
 
     p_ingest.set_defaults(func=lambda a: _missing(p_ingest))
@@ -5977,6 +6014,8 @@ the spec is missing that field. `--from-file` reads one credential per line.
     p_sync.add_argument("folder", help="engagement folder path")
     p_sync.add_argument("--json", action="store_true",
                          help="emit machine-readable JSON")
+    p_sync.add_argument("-y", "--yes", action="store_true",
+                         help="passed through to every ingest call")
     p_sync.set_defaults(func=cmd_sync)
 
     p_refresh = sub.add_parser(
@@ -5995,6 +6034,8 @@ the spec is missing that field. `--from-file` reads one credential per line.
     p_refresh.add_argument("--proof", action="store_true",
                             help="include safe-proof lines in the ranked "
                                  "output (passes through to analyze)")
+    p_refresh.add_argument("-y", "--yes", action="store_true",
+                            help="passed through to the ingest call")
     p_refresh.set_defaults(func=cmd_refresh)
 
     p_prep = sub.add_parser(

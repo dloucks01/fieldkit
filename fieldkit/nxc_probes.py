@@ -237,6 +237,25 @@ PARSERS = {
 class ProbeRunReport:
     ran: list = field(default_factory=list)          # [(probe_key, ProbeResult)]
     skipped: list = field(default_factory=list)      # [(probe_key, reason)]
+    promoted_admin: bool = False                     # a probe inferred admin access
+
+
+#: Share names that, when the authenticating credential can WRITE to all of them,
+#: indicate domain-controller admin — nxc's ``(Pwn3d!)`` marker is C$-based and misses
+#: DCs that don't advertise C$ (Samba, some lab builds). Lower-cased for matching.
+_DC_ADMIN_SHARES = frozenset({"sysvol", "netlogon"})
+
+
+def _is_dc_admin_by_shares(share_findings):
+    """SYSVOL + NETLOGON both writable → effectively DC admin, promote the access."""
+    writable = set()
+    for f in share_findings:
+        if f.kind != "smb_share" or "WRITE" not in f.title.upper():
+            continue
+        m = re.search(r"'([^']+)'", f.title)
+        if m:
+            writable.add(m.group(1).lower())
+    return _DC_ADMIN_SHARES.issubset(writable)
 
 
 def run_probes(store, host, cred_row, *, is_admin=False, run=None, on_event=None,
@@ -251,6 +270,7 @@ def run_probes(store, host, cred_row, *, is_admin=False, run=None, on_event=None
                   runner_mod.run(argv, env_add=env, timeout=timeout))
     cred = Credential.from_row(cred_row)
     report = ProbeRunReport()
+    promoted_admin = False
     for probe in probes:
         if probe.requires_admin and not is_admin:
             report.skipped.append((probe.key, "requires admin"))
@@ -280,5 +300,19 @@ def run_probes(store, host, cred_row, *, is_admin=False, run=None, on_event=None
                 cred_obj = Credential(username=c.username, secret=c.secret,
                                       secret_type=c.secret_type, domain=c.domain)
                 store.add_credential(cred_obj, source=c.source)
+            # Samba DCs don't advertise C$, so nxc's ``(Pwn3d!)`` admin oracle misses
+            # them. Writable SYSVOL + NETLOGON is a strong second signal: that pair
+            # of shares is only writable by domain admins (replication requires it).
+            # Promote the SMB access row to admin when we see both — the credential
+            # loop can then run `mssql escalate` and other admin-gated commands.
+            if not is_admin and probe.key == "shares" and _is_dc_admin_by_shares(
+                    parsed.findings):
+                store.add_access(host["id"], cred_row["id"], method="smb", admin=True)
+                promoted_admin = True
+                if on_event:
+                    on_event(f"  [nxc:shares] {host['ip']}: "
+                             "SYSVOL+NETLOGON both writable → promoting to admin "
+                             "(nxc missed the Pwn3d! marker — likely a non-C$ DC)")
         report.ran.append((probe.key, parsed))
+    report.promoted_admin = promoted_admin
     return report

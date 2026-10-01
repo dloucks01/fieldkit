@@ -146,6 +146,44 @@ class CredentialLoopTest(LoopTestCase):
         self.assertEqual(rep.aborted, "no hosts in scope for 10.9.9.0/24")
 
 
+class DiagnosticTest(LoopTestCase):
+    """Spray surfaces nxc crashes and empty output so a silent "0 valid" doesn't
+    hide a tool failure. The two paths: (1) nxc exits 0 but prints nothing
+    parseable (unicode/protocol trace that we can't fold into state), and
+    (2) a Python traceback shows up in otherwise-partial output."""
+
+    def _collect_events(self, run_fn):
+        events = []
+        spray_loop(self.store, self.cfg, run=run_fn,
+                   on_event=events.append, loot=False, with_policy=False)
+        return events
+
+    def test_unparseable_output_is_surfaced(self):
+        """nxc exits 0 with gibberish — no [+]/[-] lines, nothing to apply."""
+        def crash_output(argv, env=None):
+            return RunResult(argv, exit_code=0,
+                             stdout="\\x00\\x01\\x02 nxc mssql trace garbage")
+        events = self._collect_events(crash_output)
+        self.assertTrue(any("no parseable output" in e for e in events),
+                        f"expected 'no parseable output' in events: {events}")
+
+    def test_python_traceback_is_surfaced(self):
+        """A traceback-in-output means a module crashed mid-run."""
+        def traceback_output(argv, env=None):
+            return RunResult(
+                argv, exit_code=0,
+                stdout=(
+                    "SMB   10.0.0.6  445  DC01  [*] Windows (name:DC01) "
+                    "(domain:corp.local) (signing:True)\n"
+                    "SMB   10.0.0.6  445  DC01  [+] corp.local\\jdoe:Winter2025!\n"
+                    "Traceback (most recent call last):\n"
+                    "  File \"nxc/modules/winrm.py\", line 42\n"
+                    "KeyError: 'www-authenticate'\n"))
+        events = self._collect_events(traceback_output)
+        self.assertTrue(any("Python traceback" in e for e in events),
+                        f"expected 'Python traceback' in events: {events}")
+
+
 class RunnerFailureTest(LoopTestCase):
     def test_missing_nxc_aborts_cleanly(self):
         def missing(argv, env=None):

@@ -16,7 +16,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fieldkit.creds import Credential  # noqa: E402
-from fieldkit.kb import Opportunity, analyze  # noqa: E402
+from fieldkit.kb import Opportunity, _trim_cve_list, analyze  # noqa: E402
 from fieldkit.state import Store  # noqa: E402
 
 NT = "31d6cfe0d16ae931b73c59d7e0c089c0"
@@ -133,6 +133,38 @@ class EmptyTest(unittest.TestCase):
             store.add_host("10.0.0.5")
             self.assertEqual(analyze(store), [])
             store.close()
+
+
+class TestTrimCveList(unittest.TestCase):
+    """`_trim_cve_list` collapses a long ``cves: CVE-..., ..., ...`` tail in the recce
+    evidence string so the analyze view stays glanceable. The full list stays in the
+    finding row itself for the report + retest to see."""
+
+    def test_short_list_unchanged(self):
+        ev = "ports: 80 · cves: CVE-2024-1, CVE-2024-2, CVE-2024-3"
+        self.assertEqual(_trim_cve_list(ev), ev)
+
+    def test_long_list_trimmed_to_preview_plus_count(self):
+        cves = ", ".join(f"CVE-2024-{i}" for i in range(1, 20))     # 19 CVEs
+        ev = f"ports: 443 · cves: {cves}"
+        out = _trim_cve_list(ev)
+        self.assertIn("CVE-2024-1,", out)                         # first few shown
+        self.assertIn("CVE-2024-5 ", out)                         # fifth is the last visible
+        self.assertNotIn("CVE-2024-6", out)                       # cut after 5
+        self.assertIn("(+14 more)", out)
+
+    def test_tail_tokens_preserved(self):
+        """The ` · recce source: ...` tail must survive the trim — report rendering
+        reads it to annotate the source of the lookup."""
+        cves = ", ".join(f"CVE-2024-{i}" for i in range(1, 20))
+        ev = f"ports: 80 · cves: {cves} · recce source: nse"
+        out = _trim_cve_list(ev)
+        self.assertIn("(+14 more)", out)
+        self.assertIn("· recce source: nse", out)
+
+    def test_empty_or_no_cves_passthrough(self):
+        self.assertEqual(_trim_cve_list(""), "")
+        self.assertEqual(_trim_cve_list("ports: 80"), "ports: 80")
 
 
 if __name__ == "__main__":  # pragma: no cover
