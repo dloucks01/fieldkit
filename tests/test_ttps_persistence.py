@@ -37,13 +37,24 @@ WIN_PERSIST = {
     "persist:win-schtasks",
     "persist:win-startup-folders",
 }
+#: Axis-1 slice added facts-gated persistence TTPs — they fire only when
+#: enum detected the writable primitive. Different invariants from the
+#: C5-slice always-fire TTPs above; verified by :class:`FactsGatedPersistTest`.
+FACTS_GATED_PERSIST = {
+    "persist:writable-pam-module",
+    "persist:writable-udev",
+    "persist:systemd-user-unit",
+}
 
 
 class PersistTTPCoverageTest(unittest.TestCase):
 
     def _load(self):
+        """Return the original C5-slice persist TTPs (always-fire enum).
+        Facts-gated persistence TTPs added later get :class:`FactsGatedPersistTest`."""
         from fieldkit.ttps.loader import load_all
-        return [t for t in load_all() if t.key.startswith("persist:")]
+        return [t for t in load_all()
+                if t.key in LINUX_PERSIST or t.key in WIN_PERSIST]
 
     def test_six_persistence_ttps_shipped(self):
         keys = {t.key for t in self._load()}
@@ -214,6 +225,36 @@ class PersistCommandShapeTest(unittest.TestCase):
                        "Start Menu\\Programs\\Startup"):
             with self.subTest(token=token):
                 self.assertIn(token, t.execute.command)
+
+
+class FactsGatedPersistTest(unittest.TestCase):
+    """Axis-1 slice: facts-gated persistence TTPs fire on a specific primitive
+    detected by enum (writable PAM module, writable udev rule, writable
+    per-user systemd unit). Different invariants from the always-fire
+    C5-slice family — they use ``facts_match``, not ``always``, and each
+    gets a distinct report ``vector_type``."""
+
+    def _load(self):
+        from fieldkit.ttps.loader import load_all
+        return [t for t in load_all() if t.key in FACTS_GATED_PERSIST]
+
+    def test_all_three_shipped(self):
+        self.assertEqual({t.key for t in self._load()}, FACTS_GATED_PERSIST)
+
+    def test_all_linux_only(self):
+        for t in self._load():
+            with self.subTest(key=t.key):
+                self.assertEqual(t.platform, ("linux",))
+
+    def test_all_use_facts_match_predicate(self):
+        for t in self._load():
+            with self.subTest(key=t.key):
+                self.assertEqual(t.detect.kind, "facts_match")
+
+    def test_each_has_a_distinct_vector_type(self):
+        vts = [t.report.vector_type for t in self._load()]
+        self.assertEqual(len(set(vts)), len(vts),
+                         f"vector_types must be distinct, got {vts}")
 
 
 if __name__ == "__main__":

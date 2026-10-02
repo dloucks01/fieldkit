@@ -276,6 +276,46 @@ class TestProbesGpp(ParserFuzzBase):
     expected_exc = ()
 
 
+class TestProbesVeeam(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_veeam
+        cls.parser = staticmethod(parse_veeam)
+    expected_exc = ()
+
+
+class TestProbesTeamsLocaldb(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_teams
+        cls.parser = staticmethod(parse_teams)
+    expected_exc = ()
+
+
+class TestProbesNanodump(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_nanodump
+        cls.parser = staticmethod(parse_nanodump)
+    expected_exc = ()
+
+
+class TestProbesMs17_010(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_ms17_010
+        cls.parser = staticmethod(parse_ms17_010)
+    expected_exc = ()
+
+
+class TestProbesCoercePlus(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_coerce_plus
+        cls.parser = staticmethod(parse_coerce_plus)
+    expected_exc = ()
+
+
 # ---------------------------------------------------------------- scan outputs
 
 

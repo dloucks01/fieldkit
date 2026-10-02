@@ -204,6 +204,108 @@ def parse_gpp(text):
     return result
 
 
+def parse_veeam(text):
+    """``nxc smb ... -M veeam`` — Veeam backup server cached creds. The module
+    prints ``[+] <description> : <user>:<password>`` lines; passwords are
+    cleartext (Veeam re-encrypts them with a well-known key the module
+    reverses). High-value because Veeam deploys with a dedicated service
+    account that typically holds Backup Operators / Domain Admin."""
+    result = ProbeResult(ok=True, raw_output=text)
+    pair_re = re.compile(r"([A-Za-z0-9._\\$-]+)\s*:\s*(\S+)")
+    for raw in _strip_ansi(text).splitlines():
+        if "veeam" not in raw.lower() and ":" not in raw:
+            continue
+        body = raw.split("]", 1)[-1] if "]" in raw else raw
+        # Skip the module's own log lines
+        if "Looking for" in body or "Running" in body:
+            continue
+        m = pair_re.search(body)
+        if m:
+            user, pw = m.group(1), m.group(2)
+            if user in ("Encrypted", "Decrypted"):      # module annotation, not a cred
+                continue
+            result.findings.append(ProbeFinding(
+                kind="veeam_credential", title=f"Veeam credential: {user}",
+                severity="High", evidence=raw.strip()))
+            result.credentials.append(PromotedCredential(
+                username=user, secret=pw, secret_type="password",
+                source="nxc-probe:veeam"))
+    return result
+
+
+def parse_teams(text):
+    """``nxc smb ... -M teams_localdb`` — pulls Microsoft Teams's local SQLite
+    (cookies.db + storage) which caches Entra bearer tokens + refresh tokens.
+    A single harvested token typically has 1-24h validity against Microsoft
+    Graph with the user's full Entra scope. The module prints ``[+] ...
+    Token for <user>:...`` lines."""
+    result = ProbeResult(ok=True, raw_output=text)
+    user_re = re.compile(r"[Tt]oken (?:for\s+|:\s*)([A-Za-z0-9._@-]+)")
+    for raw in _strip_ansi(text).splitlines():
+        body = raw.split("]", 1)[-1] if "]" in raw else raw
+        if "token" not in body.lower():
+            continue
+        m = user_re.search(body)
+        user = m.group(1) if m else "<teams-user>"
+        if "cookies" in body.lower() or "token" in body.lower():
+            result.findings.append(ProbeFinding(
+                kind="teams_token", title=f"Teams cached token: {user}",
+                severity="High", evidence=raw.strip()))
+    return result
+
+
+def parse_nanodump(text):
+    """``nxc smb ... -M nanodump`` — downloads an LSASS mini-dump via a
+    fileless technique. The module reports ``[+] Dump saved to
+    <path>`` on success. The actual dump is parsed offline with
+    pypykatz; this probe just records that a dump landed so the
+    operator knows to run the offline tool."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        body = raw.split("]", 1)[-1] if "]" in raw else raw
+        if "dump" in body.lower() and ("saved" in body.lower()
+                                        or "written" in body.lower()
+                                        or ".dmp" in body.lower()):
+            result.findings.append(ProbeFinding(
+                kind="lsass_dump", title="LSASS dump captured via nanodump",
+                severity="Critical", evidence=raw.strip()))
+    return result
+
+
+def parse_ms17_010(text):
+    """``nxc smb ... -M ms17-010`` — EternalBlue scan. ``[+] Vulnerable to
+    MS17-010`` is the vuln signal; some nxc versions print it as
+    ``is vulnerable to MS17-010``."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        body = raw.split("]", 1)[-1] if "]" in raw else raw
+        low = body.lower()
+        if "ms17-010" in low and ("vulnerable" in low or "vulnrable" in low):
+            if "not vulnerable" in low:
+                continue
+            result.findings.append(ProbeFinding(
+                kind="ms17_010", title="MS17-010 (EternalBlue) — target vulnerable",
+                severity="Critical", evidence=raw.strip()))
+    return result
+
+
+def parse_coerce_plus(text):
+    """``nxc smb ... -M coerce_plus`` — multi-protocol auth coercer that
+    tries PetitPotam / DFSCoerce / PrinterBug / MS-EFSRPC in sequence.
+    Prints ``[+] Target <host> is vulnerable to <protocol>`` lines on hit."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        body = raw.split("]", 1)[-1] if "]" in raw else raw
+        low = body.lower()
+        if "vulnerable to" in low and "coerce" in low or "petitpotam" in low \
+                or "dfscoerce" in low or "ms-efs" in low or "printerbug" in low:
+            result.findings.append(ProbeFinding(
+                kind="auth_coercion",
+                title=f"auth coercion vulnerability: {body.strip()[:80]}",
+                severity="High", evidence=raw.strip()))
+    return result
+
+
 # ------------------------------------------------------------- registry
 
 PROBES = (
@@ -217,6 +319,17 @@ PROBES = (
           "smb", ("-M", "laps"), requires_admin=True),
     Probe("gpp_password", "GPP cpassword in SYSVOL",
           "smb", ("-M", "gpp_password")),
+    # axis 2 — more nxc modules
+    Probe("veeam", "Veeam backup server cached credentials",
+          "smb", ("-M", "veeam"), requires_admin=True),
+    Probe("teams_localdb", "Microsoft Teams cached tokens / cookies",
+          "smb", ("-M", "teams_localdb"), requires_admin=True),
+    Probe("nanodump", "LSASS dump via nanodump (fileless)",
+          "smb", ("-M", "nanodump"), requires_admin=True),
+    Probe("ms17_010", "EternalBlue (MS17-010) vulnerability scan",
+          "smb", ("-M", "ms17-010",)),
+    Probe("coerce_plus", "multi-protocol auth coercer (PetitPotam / DFSCoerce / etc.)",
+          "smb", ("-M", "coerce_plus",)),
 )
 
 
@@ -228,6 +341,11 @@ PARSERS = {
         ok=True, findings=parse_sessions(t), raw_output=t),
     "laps": parse_laps,
     "gpp_password": parse_gpp,
+    "veeam": parse_veeam,
+    "teams_localdb": parse_teams,
+    "nanodump": parse_nanodump,
+    "ms17_010": parse_ms17_010,
+    "coerce_plus": parse_coerce_plus,
 }
 
 

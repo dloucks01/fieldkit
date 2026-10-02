@@ -36,12 +36,29 @@ LOOT_KEYS = {
     "loot:private-key-loot",
 }
 
+#: The axis-1 slice added facts-gated loot primitives (fire only when enum
+#: proved the specific primitive exists). They're a different KIND of loot
+#: from the always-fire C2-slice family above — specific escalation handles,
+#: not broad grep sweeps — so the C2-slice coverage invariants don't apply
+#: to them and they get their own test class :class:`FactsGatedLootTest`.
+FACTS_GATED_LOOT_KEYS = {
+    "loot:ssh-agent-hijack",
+    "loot:docker-config",
+    "loot:kubectl-config",
+    "loot:terraform-state",
+    "loot:jenkins-credentials",
+}
+
 
 class LootTTPCoverageTest(unittest.TestCase):
 
     def _load_loot(self):
+        """Return the original C2-slice loot TTPs (always-fire grep hunts).
+        Later axes have added facts-gated loot TTPs that break the C2-slice
+        invariants (medium / always / exposed_secret) on purpose — those get
+        their own test class."""
         from fieldkit.ttps.loader import load_all
-        return [t for t in load_all() if t.key.startswith("loot:") and not t.key.startswith("loot:win-")]
+        return [t for t in load_all() if t.key in LOOT_KEYS]
 
     def test_five_loot_ttps_shipped(self):
         loot = self._load_loot()
@@ -173,6 +190,44 @@ class LootCommandShapeTest(unittest.TestCase):
         self.assertIn("id_rsa", t.execute.command)
         self.assertIn("*.pem", t.execute.command)
         self.assertIn("BEGIN", t.execute.command)
+
+
+class FactsGatedLootTest(unittest.TestCase):
+    """Axis-1 slice added loot TTPs that gate on a specific HostFacts field —
+    they only fire when enum confirmed the primitive is present. Different
+    invariants from the C2-slice always-fire grep hunts: these have their
+    own vector_type per primitive (ssh_agent_hijack, docker_config_loot,
+    etc.), can rank higher than medium when the primitive directly yields
+    crown-jewel access, and use ``facts_match``, not ``always``."""
+
+    def _load_facts_gated(self):
+        from fieldkit.ttps.loader import load_all
+        return [t for t in load_all() if t.key in FACTS_GATED_LOOT_KEYS]
+
+    def test_all_five_facts_gated_loot_ttps_shipped(self):
+        self.assertEqual({t.key for t in self._load_facts_gated()},
+                         FACTS_GATED_LOOT_KEYS)
+
+    def test_all_target_linux_only(self):
+        for t in self._load_facts_gated():
+            with self.subTest(key=t.key):
+                self.assertEqual(t.platform, ("linux",))
+
+    def test_all_use_facts_match_predicate(self):
+        """These TTPs fire on an enumerated primitive, not blindly — their
+        detect kind MUST be ``facts_match`` so analyze doesn't surface them
+        on hosts where the primitive isn't actually there."""
+        for t in self._load_facts_gated():
+            with self.subTest(key=t.key):
+                self.assertEqual(t.detect.kind, "facts_match")
+
+    def test_each_has_a_distinct_vector_type(self):
+        """Reporting groups findings by vector_type — these need distinct
+        types so the report doesn't collapse "we found cached kubectl
+        tokens" and "we found a jenkins credentials.xml" into one bucket."""
+        vts = [t.report.vector_type for t in self._load_facts_gated()]
+        self.assertEqual(len(set(vts)), len(vts),
+                         f"vector_types must be distinct, got {vts}")
 
 
 if __name__ == "__main__":

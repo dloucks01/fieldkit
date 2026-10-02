@@ -227,6 +227,52 @@ class TestRunProbes(unittest.TestCase):
                             run=fake_run, probes=shares_only)
         self.assertFalse(rep.promoted_admin)
 
+    # --- axis 2: additional probe parsers ------------------------------
+
+    def test_parse_veeam_promotes_discovered_credentials(self):
+        out = (
+            "SMB   10.0.0.5  445  BAK01  [*] Looking for Veeam creds\n"
+            "SMB   10.0.0.5  445  BAK01  [+] Running Veeam credentials dump\n"
+            "SMB   10.0.0.5  445  BAK01  CORP\\svc_backup : Winter2025!\n"
+            "SMB   10.0.0.5  445  BAK01  Decrypted : vmware_api_token\n")
+        r = np.parse_veeam(out)
+        self.assertTrue(any(c.secret == "Winter2025!" for c in r.credentials),
+                        msg=f"expected to promote CORP\\svc_backup; got {r.credentials}")
+        self.assertTrue(any(f.severity == "High" for f in r.findings))
+
+    def test_parse_teams_surfaces_cached_token_as_high_finding(self):
+        out = (
+            "SMB   10.0.0.5  445  WS02  [+] Found Teams cookies.db for alice@corp.com\n"
+            "SMB   10.0.0.5  445  WS02  [+] Token for alice@corp.com: eyJhbGciOi...\n")
+        r = np.parse_teams(out)
+        self.assertTrue(any("teams_token" in f.kind for f in r.findings),
+                        msg=f"expected teams_token finding; got {r.findings}")
+
+    def test_parse_nanodump_records_lsass_dump_as_critical(self):
+        out = (
+            "SMB   10.0.0.5  445  DC01  [+] Running nanodump\n"
+            "SMB   10.0.0.5  445  DC01  [+] Dump saved to C:\\Windows\\Temp\\lsass.dmp\n")
+        r = np.parse_nanodump(out)
+        self.assertEqual(len(r.findings), 1)
+        self.assertEqual(r.findings[0].severity, "Critical")
+
+    def test_parse_ms17_010_distinguishes_vulnerable_from_not(self):
+        vuln = ("SMB   10.0.0.5  445  SV01  [+] 10.0.0.5 is vulnerable to MS17-010\n")
+        r = np.parse_ms17_010(vuln)
+        self.assertEqual(len(r.findings), 1)
+        self.assertEqual(r.findings[0].severity, "Critical")
+        safe = ("SMB   10.0.0.5  445  SV01  [-] 10.0.0.5 is NOT vulnerable to MS17-010\n")
+        r2 = np.parse_ms17_010(safe)
+        self.assertEqual(r2.findings, [])
+
+    def test_parse_coerce_plus_flags_coercion_vulnerable_hosts(self):
+        out = (
+            "SMB   10.0.0.5  445  DC01  [+] Target DC01 is vulnerable to PetitPotam\n"
+            "SMB   10.0.0.5  445  DC01  [+] Target DC01 is vulnerable to DFSCoerce\n")
+        r = np.parse_coerce_plus(out)
+        self.assertGreaterEqual(len(r.findings), 1)
+        self.assertTrue(all(f.severity == "High" for f in r.findings))
+
     def test_dc_admin_shares_requires_both_sysvol_and_netlogon_write(self):
         """SYSVOL writable alone (an orphan permission) must NOT promote — only
         the full pair indicates domain-admin."""

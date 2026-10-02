@@ -1,0 +1,32 @@
+# Writable per-user systemd unit → persistence without needing root
+technique: T1543.002
+name: writable per-user systemd unit → user-level persistence
+key: persist:systemd-user-unit
+tactic: [persistence]
+platform: [linux]
+ranking:
+  exploitability: medium
+  safety: read-only
+  detection: quiet
+detect:
+  facts_match: {has_writable_systemd_user: true}
+execute:
+  command: |-
+    find "$HOME/.config/systemd/user" -maxdepth 2 -type f -writable          \( -name '*.service' -o -name '*.timer' \) 2>/dev/null | head -20
+verify:
+  success: "/"
+cleanup:
+  command: ""
+report:
+  vector_type: writable_systemd_user_unit
+  evidence: "writable ~/.config/systemd/user/*.service or .timer"
+  description: >
+    systemd per-user units survive logout and get re-launched by the
+    user manager at next login (``systemctl --user start``). A writable
+    unit under ``~/.config/systemd/user/`` is persistence without
+    needing root; combined with linger (``loginctl enable-linger``) it
+    survives logout entirely.
+  remediation: >
+    Audit ``~/.config/systemd/user/`` on sensitive accounts. Review
+    any unit file whose ExecStart points at a non-package path.
+  refs: [T1543.002]

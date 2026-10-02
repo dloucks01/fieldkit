@@ -1,0 +1,32 @@
+# Writable udev rules → persistence on hardware events (USB plug, boot)
+technique: T1546.003
+name: writable udev rule → persistence on device events
+key: persist:writable-udev
+tactic: [persistence]
+platform: [linux]
+ranking:
+  exploitability: medium
+  safety: read-only
+  detection: quiet
+detect:
+  facts_match: {has_writable_udev_rules: true}
+execute:
+  command: |-
+    find /etc/udev/rules.d /lib/udev/rules.d -maxdepth 1 -type f -writable 2>/dev/null | head -20
+verify:
+  success: "/"
+cleanup:
+  command: ""
+report:
+  vector_type: writable_udev_rule
+  evidence: "writable udev rule file"
+  description: >
+    udev rules trigger on hardware events: USB plug, filesystem mount,
+    device subsystem load. A writable rule file lets the operator add
+    a ``RUN+=/path/to/payload`` directive that fires as root on the
+    next trigger — plug a USB stick, trigger a reboot's device probe,
+    etc. Quiet because udev rules are normal admin territory.
+  remediation: >
+    Rule directories should be root-owned 0755, rule files 0644. Audit
+    config-management tooling (ansible, puppet) that writes here.
+  refs: [T1546.003]

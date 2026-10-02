@@ -1,0 +1,33 @@
+# ~/.kube/config → cluster credentials + exec-plugin tokens
+technique: T1552.001
+name: ~/.kube/config → cluster credentials
+key: loot:kubectl-config
+tactic: [credential-access, lateral-movement]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  facts_match: {has_cloud_sdk_tokens: true}
+execute:
+  command: |-
+    cat $HOME/.kube/config 2>/dev/null | head -200
+verify:
+  success: "kind: Config"
+cleanup:
+  command: ""
+report:
+  vector_type: kubectl_config_loot
+  evidence: "readable ~/.kube/config carrying cluster + user contexts"
+  description: >
+    A readable ~/.kube/config contains cluster endpoints, CA certs, and
+    user credentials — static tokens, client cert+key pairs, or exec-plugin
+    stanzas invoking an OIDC/cloud-CLI helper. The exec plugin's cache
+    (``~/.kube/cache`` or ``~/.aws/sso/cache`` on EKS) often holds a live
+    bearer token with 15-60 min TTL ready to replay against the apiserver.
+  remediation: >
+    Scope kubeconfig to least-privilege contexts per user. Prefer
+    short-lived OIDC/IAM exec plugins over static tokens. Audit
+    ClusterRoleBindings for any user listed in the config.
+  refs: [T1552.001]

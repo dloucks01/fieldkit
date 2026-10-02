@@ -1,0 +1,38 @@
+# Terraform state → long-lived cloud secrets
+technique: T1552.001
+name: Terraform state loot
+key: loot:terraform-state
+tactic: [credential-access]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  facts_match: {has_terraform_states: true}
+execute:
+  command: |-
+    for f in $(find / -maxdepth 5 -type f -name '*.tfstate' -readable 2>/dev/null | head -5); do
+      echo "=== $f ==="
+      python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps([{'r':r.get('type'),'instances':len(r.get('instances',[]))} for r in d.get('resources',[])],indent=2))" "$f" 2>/dev/null
+    done
+verify:
+  success: "instances"
+cleanup:
+  command: ""
+report:
+  vector_type: terraform_state_loot
+  evidence: "readable *.tfstate files on disk"
+  description: >
+    Terraform state files hold the cleartext materialized state of every
+    resource Terraform manages — including DB connection strings, API
+    keys handed to cloud-provider resources, bootstrap passwords, and
+    secret-manager contents resolved into ``outputs``. The remote-state
+    backend (S3, Terraform Cloud, Consul) is often where orgs harden
+    access, but local *.tfstate files on CI runners / dev boxes bypass
+    that and get long-lived.
+  remediation: >
+    Use a remote state backend with encryption at rest + IAM-scoped
+    access. Set ``terraform { backend "s3" { encrypt = true ... } }``.
+    Never commit state to git. Delete local *.tfstate after import.
+  refs: [T1552.001]

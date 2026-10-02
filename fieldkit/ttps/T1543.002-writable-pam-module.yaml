@@ -1,0 +1,35 @@
+# Writable PAM module path → every sudo / su / sshd runs our code
+technique: T1543.002
+name: writable PAM module path → persistence as every logging-in user
+key: persist:writable-pam-module
+tactic: [persistence, privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: moderate
+detect:
+  facts_match: {has_writable_pam_modules: true}
+execute:
+  command: |-
+    # List + describe — don't drop in a real .so during fire. Flag with
+    # a readable marker so the finding is unambiguous. Operator drops
+    # the actual payload under --allow config-change manually.
+    find /lib/x86_64-linux-gnu/security /lib/security          /usr/lib/x86_64-linux-gnu/security /usr/lib/security          -maxdepth 1 -type f -writable 2>/dev/null | head -20
+verify:
+  success: "pam_"
+cleanup:
+  command: ""
+report:
+  vector_type: writable_pam_module
+  evidence: "writable PAM module .so under security/ directory"
+  description: >
+    A writable PAM module .so means replacing it (or adding a side-by-
+    side module and editing ``/etc/pam.d/common-auth`` to call it)
+    runs attacker code every time sudo, su, sshd, or any PAM-aware
+    daemon authenticates. Classic root-password-logger primitive.
+  remediation: >
+    PAM module directories must be root-owned 0755, modules 0644.
+    Hardening: ``chattr +i`` on well-known modules. Audit any package
+    install that writes to these paths.
+  refs: [T1543.002, pam-exec]

