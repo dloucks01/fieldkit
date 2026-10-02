@@ -63,7 +63,7 @@ docstring note explaining why.
 ```
 fieldkit/
 ├── cli.py            # every subcommand handler, argparse tree
-├── state.py          # Store — SQLite engagement DB
+├── state.py          # Store — SQLite engagement DB (schema v12)
 ├── config.py         # per-engagement config
 ├── runner.py         # THE subprocess spawn
 ├── report.py         # markdown + docx/pdf/html render
@@ -73,14 +73,32 @@ fieldkit/
 ├── bloodhound.py     # BH graph → owned→high-value + chain suggestions
 ├── doctor.py         # health check (tools + chain lint + engagement + TTPs)
 ├── session.py        # opt-in JSONL recording + replay
-├── ttps/             # 155+ shipped TTP YAMLs (T1548-*, T1068-*, T1190-*)
+├── ttps/             # 216 shipped TTP YAMLs (T1548-*, T1068-*, T1190-*, …)
 │   ├── loader.py     # parse YAML → TTP
 │   ├── schema.py     # dataclass shapes
 │   └── adapter.py    # TTP → Vector via _d_ttp_yaml
+│
+│ # analysis depth (axis 5)
+├── enrich.py         # entity extractor + hashcat mode suggestion
+├── confidence.py     # four-tier scoring (direct_capture → unverified)
+├── timeline.py       # chronological event ribbon + prose narrative
+├── correlate.py      # cross-engagement overlap (users/creds/hosts)
+├── cve_lookup.py     # offline CVE lookup from TTP catalog version ranges
+│
+│ # reporting polish (axis 6)
+├── cvss.py           # CVSS v3.1 vector + base score derivation
+├── html_report.py    # self-contained interactive HTML (SVG attack path)
+├── pptx_export.py    # stdlib-only hand-crafted Open XML exec deck
+│
+│ # weaponization + beacon (axes 3, 4)
+├── weaponization.py  # 27-entry metadata catalog (loader/bypass/syscall/…)
+├── loaders/          # reference templates per catalog entry (.c.j2/.cs.j2/.asm/.py.j2)
+├── beacon.py         # beacon metadata + task queue (fieldkit tracks state only)
+│
 ├── tui/              # 8 Textual screens (dashboard/analyze/watch/...
 │   └── vendor/       # vendored Textual — DO NOT AUDIT
 └── vendor/           # vendored YAML — DO NOT AUDIT
-tests/                # 100+ test files; pytest, unittest, subTest
+tests/                # 100+ test files; pytest, unittest, subTest (2,456 tests)
 ```
 
 ## Conventions

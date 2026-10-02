@@ -5,6 +5,11 @@ weaponization engine, better than Havoc / Nemesis / PlumHound). Each axis
 tracks what's missing and what's shipped. Tick a box when its commit
 lands in `main`.
 
+**Status: 111/111 ticked across all six axes.** Linux depth caught up
+with Windows, NXC module coverage expanded 5×, analysis + reporting
+reached the parity target, weaponization + C2 catalogs landed. The
+remaining gaps are deliberate scope cuts noted in each axis.
+
 **Vision statement.** fieldkit is the one engine that runs the full
 chain — ingest → analyze → weaponize → deliver → own → persist → report —
 with one SQLite state layer as the backbone so every step is reproducible

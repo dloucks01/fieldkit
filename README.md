@@ -203,7 +203,7 @@ install self-documenting:
 
 ```bash
 bin/fieldkit doctor [--json]                  # health check: preflight + chain lint + engagement + TTPs
-bin/fieldkit ttps list [--grep STR]           # browse the shipped TTP catalog
+bin/fieldkit ttps list [--grep STR]           # browse the shipped TTP catalog (216 entries)
 bin/fieldkit ttps show <key>                  # pretty-print one TTP (detect / execute / playbook / …)
 bin/fieldkit chain lint [--json --profile X]  # coverage audit of the chain-profile catalog
 bin/fieldkit bloodhound import <path>         # ingest a SharpHound zip
@@ -215,6 +215,62 @@ bin/fieldkit refresh [<bridge.json>]          # re-ingest recce + analyze in one
 `fieldkit doctor` returns a single exit code (0 clean, 1 warnings,
 2 errors) — CI can gate on it. `chain lint --json` emits a structured
 findings payload for the same purpose.
+
+## Analysis & reporting depth
+
+Nemesis-parity analysis + PlumHound-parity reporting built on the same
+capture-driven stance as the rest of the engine: everything reads from
+the engagement store, nothing speculates, everything renders only what
+fieldkit actually proved.
+
+```bash
+# analysis
+bin/fieldkit enrich                           # extract IPs, hashes, PATs, Kerberos tickets,
+                                              #   AWS keys from every captured step +
+                                              #   suggest the matching hashcat -m per hash
+bin/fieldkit timeline [--narrative]           # chronological ribbon (step/finding/credential/
+                                              #   evasion rows merged, ts-sorted) or prose
+                                              #   paragraph suitable for a report preface
+bin/fieldkit correlate --dir <path>           # cross-engagement overlap: shared usernames,
+                                              #   credentials, hosts across multiple DBs
+bin/fieldkit cve-lookup kernel 5.15.0         # offline CVE lookup from the TTP catalog's
+                                              #   version-range rules — zero network
+
+# reporting
+bin/fieldkit cvss --severity High --exploitability high \
+                  --safety read-only --detection quiet
+                                              # CVSS v3.1 vector + base score (pure, no store)
+bin/fieldkit report --exec-summary            # severity-count table + top-5 findings +
+                                              #   narrative on stdout — readout slides / email
+bin/fieldkit report --interactive-html PATH   # single self-contained HTML (inline CSS/JS,
+                                              #   filter controls, SVG attack path, dark/light)
+bin/fieldkit report --pptx PATH               # 5-slide executive deck (stdlib hand-crafted
+                                              #   Open XML — no python-pptx dependency,
+                                              #   BrandConfig for title/accent/footer)
+```
+
+## Weaponization catalog + beacon tracking
+
+27 weaponization options across 5 categories (loader / bypass / syscall /
+encoder / delivery) with OPSEC profile + prereqs + references per entry.
+Reference templates live under `fieldkit/loaders/` — fieldkit never
+compiles or executes them; operators adapt + build in their own arsenal.
+
+```bash
+bin/fieldkit weaponization list [--category loader|bypass|syscall|encoder|delivery]
+bin/fieldkit weaponization show <key>         # full description + prereqs + references
+bin/fieldkit weaponization render <key>       # print the reference template body
+
+# beacon tracking — fieldkit records state only; operator runs their own C2
+bin/fieldkit beacon new <name> --platform windows --transport https \
+                                --callback-url https://c2.example/api
+bin/fieldkit beacon list / task / result / history / build-config
+```
+
+The beacon pieces manage the engagement-side view (per-build mutation
+seed, task queue, check-in results) alongside the rest of the state.
+Beacon payload code lives as reference templates under
+`fieldkit/loaders/`.
 
 ## The TUI
 
@@ -232,7 +288,7 @@ bin/fieldkit tui                                   # opens on the Dashboard
   w   watch          live event tail — sees steps from another terminal in ~250ms
   c   chain plan     preview every registered chain profile
   l   chain launch   pick a profile + target + ctx, walk it
-  t   ttps           browse the 161-TTP catalog with live filter
+  t   ttps           browse the TTP catalog (216 entries) with live filter
   1-5 chain detail   from the dashboard's CHAINS block, jump to chain #N
   ?   help           keymap overlay
   q   quit           (Ctrl-C also)
@@ -266,11 +322,12 @@ gruvbox / dracula / nord / etc. all recolor live).
 
 | Path | What |
 |---|---|
-| `fieldkit/` | the engine — state/config/creds/scope, the loop (`netexec`, `ingest`, `recce`, `spray`, `dump`, `sharespider`, `fs_scrub`, `wordlist`, `kb`), execution (`transport`, `recce_transport`, `executor`, `runner`, `hostenum`, `privesc`, `poc`, `classify`, `escalate`, `staging`, `mssql`, `postgres`, `mongodb`), AD depth (`kerberos`, `delegation`, `adcs`, `bloodhound`), evasion (`evasion`, `lab`), reporting (`report`, `reportkb`, `bridge`, `archive`, `status_json`, `watch`), and the thin `cli` |
+| `fieldkit/` | the engine — state/config/creds/scope, the loop (`netexec`, `ingest`, `recce`, `spray`, `dump`, `sharespider`, `fs_scrub`, `wordlist`, `kb`), execution (`transport`, `recce_transport`, `executor`, `runner`, `hostenum`, `privesc`, `poc`, `classify`, `escalate`, `staging`, `mssql`, `postgres`, `mongodb`), AD depth (`kerberos`, `delegation`, `adcs`, `bloodhound`), evasion (`evasion`, `lab`), analysis (`enrich`, `confidence`, `timeline`, `correlate`, `cve_lookup`), reporting (`report`, `reportkb`, `bridge`, `archive`, `status_json`, `watch`, `cvss`, `html_report`, `pptx_export`), weaponization (`weaponization`, `beacon`), and the thin `cli` |
+| `fieldkit/loaders/` | reference templates per weaponization catalog entry (`.c.j2`, `.cs.j2`, `.asm`, `.py.j2`); read-only — fieldkit never compiles or runs them |
 | `fieldkit/tui/` | the optional Textual TUI — Dashboard / Analyze / Escalate / Watch |
 | `fieldkit/vendor/` | vendored Textual + Rich + deps (~12 MB); enables `bin/fieldkit tui` without `pip install` |
 | `bin/fieldkit` | run it from a clone without installing |
-| `tests/` | the test suite (~1,900, ~3½ min, no network/tools needed) |
+| `tests/` | the test suite (2,456 tests, ~8 min, no network/tools needed) |
 | `exploits/` | operator-staged binaries/PoCs (air-gap); see `SUPPLIED-BINARIES.md` |
 | `QUICKSTART.md` · `WORKFLOW.md` · `TECHNICAL-GUIDE.md` | operator docs; `ARCHITECTURE.md` = architecture notes |
 | `package.sh` | bundle source + staged exploits into one archive for an air-gapped box |
