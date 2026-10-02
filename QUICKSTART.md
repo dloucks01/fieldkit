@@ -4,9 +4,10 @@ Run an engagement start to finish. One SQLite store holds everything — stop an
 resume anytime; `fieldkit status` tells you where you are. **Authorized engagements only.**
 
 > Prereqs: your usual tools on `$PATH` (netexec/nxc, impacket, certipy, evil-winrm;
-> for `poc`: msfvenom/wixl/gcc/mingw; for DBs: psql/mongosh). fieldkit is stdlib-only
-> and drives them — **`fieldkit init`** runs preflight inline and flags missing spine
-> tools right at the start; **`fieldkit preflight`** shows the full list.
+> for `poc`: msfvenom/wixl/gcc/mingw; for DBs: psql/mongosh; for cloud/K8s: whatever
+> enumerator you already use). fieldkit is stdlib-only and drives them —
+> **`fieldkit init`** runs preflight inline and flags missing tools right at the
+> start; **`fieldkit preflight`** shows the full list.
 
 ## The run
 
@@ -71,19 +72,19 @@ fieldkit archive                                        # one .tar.gz for handof
 ```
 
 Run **`fieldkit status`** anytime — one command shows the phase, top-3 next moves,
-which hosts you're pwned on, and any missing spine tools. **`fieldkit doctor`**
-is the broader health check (tools + chain lint + engagement + TTPs, single exit
-code for CI). **`fieldkit refresh <bridge.json>`** re-ingests a recce bridge +
-runs analyze in one command — the returning-operator flow after a break.
-**`fieldkit ttps list`** browses the 161-TTP catalog; **`fieldkit ttps show <key>`**
-pretty-prints one.
+which hosts you're pwned on, and any missing tools. **`fieldkit doctor`** is the
+broader health check (tools + chain lint + engagement + TTPs, single exit code for
+CI). **`fieldkit refresh <bridge.json>`** re-ingests a recce bridge + runs analyze
+in one command — the returning-operator flow after a break. **`fieldkit ttps list`**
+browses the 216-TTP catalog; **`fieldkit ttps show <key>`** pretty-prints one.
 
-## Beyond AD — the other domains
+## The other domains — every one a peer
 
-The credential loop above is the AD spine. The same engine (state → captured evidence
-→ anti-fabrication report) drives four more domains; each records findings that show up
-in `fieldkit analyze` (cross-domain section), `fieldkit status`, and `fieldkit report`
-exactly like AD ones. Findings are **observations** until you prove them.
+The run above shows an AD-driven path because that's the most familiar shape for a
+quickstart. The same engine drives six other domains with the same shape (ingest →
+analyze → act → report), each recording findings that show up in `fieldkit analyze`,
+`fieldkit status`, and `fieldkit report` exactly like AD ones. Any mix in any order.
+Findings are **observations** until you prove them.
 
 ```bash
 # External services → match discovered service versions against the CVE-TTP library
@@ -95,20 +96,36 @@ fieldkit web probe https://app.corp.local               # → endpoint assets
 fieldkit web scan  https://app.corp.local               # → web_vuln findings
 fieldkit ingest nuclei nuclei.jsonl                     # or fold a saved scan
 
+# Databases → first-class escalation drivers (same ranking + report pipeline)
+fieldkit mssql escalate 10.0.0.50 --allow config-change # xp_cmdshell + EXECUTE AS pivots
+fieldkit postgres escalate 10.0.0.51 --allow config-change  # COPY FROM PROGRAM
+fieldkit mongodb enum 10.0.0.52                         # unauth probe + role check + user dump
+
 # Cloud IAM → owned→admin escalation paths ("BloodHound for cloud")
-fieldkit ingest cloud iam-graph.json                    # principals + escalation edges
+fieldkit ingest cloud iam-graph.json --from aws         # principals + escalation edges
 fieldkit cloud paths                                     # e.g. dev -sts:AssumeRole-> admin
 
 # Kubernetes RBAC → owned→cluster-admin paths
-fieldkit ingest k8s rbac-graph.json                     # subjects + escalation edges
+fieldkit ingest k8s rbac-graph.json --from kubectl      # subjects + escalation edges
 fieldkit k8s paths                                       # e.g. app -bind-> cluster-admin
 
+# SaaS / identity provider → owned→tenant-admin role paths
+fieldkit ingest saas entra-graph.json --from msgraph    # Entra / Okta role assignments
+fieldkit saas paths                                      # e.g. app-admin -activate-> global-admin
+
+# CI/CD → repo-write / runner → deploy-admin paths
+fieldkit ingest cicd pipelines.json                     # runners, repos, approval policies
+fieldkit cicd paths                                      # e.g. repo-write -deploys-> prod-admin
+
+# Cross-domain stitching — the whole point of the shared asset model
+fieldkit paths                                           # owned→admin BFS over the entire graph
 fieldkit assets --kind endpoint                          # list assets of any kind
 ```
 
-Cloud/k8s ingest a **normalized graph** your own enumerator produces (prowler /
-ScoutSuite / `kubectl auth can-i` / rbac-tool) — fieldkit calls no cloud/cluster APIs
-itself, the same tool-agnostic handoff as everything else it drives.
+Cloud/K8s/SaaS/CI-CD ingest a **normalized graph** your own enumerator produces
+(prowler / ScoutSuite / `aws iam get-account-authorization-details` / `kubectl auth
+can-i --list` / Microsoft Graph) — fieldkit calls no cloud/cluster/IdP APIs itself,
+the same tool-agnostic handoff as everything else it drives.
 
 ## If…
 

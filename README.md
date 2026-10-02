@@ -5,17 +5,16 @@
 The field kit for the hours between first contact and full compromise.
 
 fieldkit is a **stateful, multi-domain execution engine** for **authorized** penetration
-testing. It began as an internal-AD engine — the credential loop is still its spine —
-and the same core (one SQLite engagement store, an injected-runner execution layer that
-captures everything, and an anti-fabrication report) now carries **web**,
-**external-service**, **cloud-IAM**, **Kubernetes-RBAC**, **SaaS / identity-provider**
-and **CI/CD** domains too. From a
-credential, a foothold, or just a scan it ingests what you know (creds, hosts, tool
-output, IAM/RBAC graphs), drives your proven tools (netexec, impacket, certipy, httpx,
-nuclei, …) against the scope, finds the paths to compromise, and reports only what it
-actually proved. **Standalone — clones to a base Kali box and runs with no install**
-(Python 3 stdlib only for the engine; the tools it drives are your existing kit.
-Optional `bin/fieldkit tui` uses vendored Textual — no `pip install` needed.)
+testing. One SQLite engagement store, an injected-runner execution layer that captures
+everything, and an anti-fabrication report form the spine — the domains ride on top as
+equal peers: **Active Directory**, **web**, **external-service**, **cloud-IAM**,
+**Kubernetes-RBAC**, **SaaS / identity-provider**, and **CI/CD**. From a credential, a
+foothold, or just a scan it ingests what you know (creds, hosts, tool output, IAM/RBAC
+graphs), drives your proven tools (netexec, impacket, certipy, httpx, nuclei, …) against
+the scope, finds the paths to compromise, and reports only what it actually proved.
+**Standalone — clones to a base Kali box and runs with no install** (Python 3 stdlib
+only for the engine; the tools it drives are your existing kit. Optional `bin/fieldkit
+tui` uses vendored Textual — no `pip install` needed.)
 
 **New here?** → the one-page runbook is **[`QUICKSTART.md`](QUICKSTART.md)**.
 
@@ -40,14 +39,21 @@ your own kit; `preflight` shows which are present. Then walk a real run with
 ## What it does
 
 ```
-add cred/hosts → spray (loop: loot → promote → re-spray) → enum → analyze
-      → escalate (auto: stage/build/prep, evasion re-delivery, Potato variants)
-      → roast / delegation / adcs / bloodhound → report (Findings + Observations)
+ingest / add cred / add hosts  →  enum / analyze
+                               →  escalate  (auto: stage/build/prep, evasion re-delivery)
+                               →  domain actions (any order, any mix):
+                                    spray · roast · delegation · adcs · bloodhound
+                                    web probe · web scan
+                                    cloud paths · k8s paths · saas paths · cicd paths
+                                    mssql · postgres · mongodb
+                               →  paths  (cross-domain stitching, owned→admin BFS)
+                               →  report  (Findings + Observations)
 ```
 
-- **The credential loop is the spine.** `spray → parse (Pwn3d!) → loot SAM/LSA/NTDS →
-  promote recovered secrets → spray again`, until dry. Lockout-safe by construction: it
-  reads the domain password policy first and replays only each account's own proven secret.
+- **One store, one capture layer, one report.** Every domain writes to the same SQLite
+  engagement DB; every command fieldkit runs is captured verbatim; every proven finding
+  flows through the same anti-fabrication `--check` gate before it renders. A web RCE,
+  a cloud IAM path, and a Kerberos ticket all go through the same pipeline.
 - **The orchestrator escalates for you.** `escalate` walks the ranked vectors and follows a
   fallback axis — advance, retry, stop on proof, halt on the unknown; on a miss it
   **auto-stages** a tool from the arsenal, **auto-builds** a payload (`poc`), or
@@ -55,42 +61,51 @@ add cred/hosts → spray (loop: loot → promote → re-spray) → enum → anal
   catch it **climbs the delivery ladder**; for SeImpersonate it tries the **Potato variants**
   (GodPotato / PrintSpoofer / JuicyPotatoNG / SweetPotato / SharpEfsPotato). Routes it can't
   one-shot (overwrite a running binary, plant a DLL) are handed to `prep`.
-- **MSSQL is a real path.** Sysadmin → xp_cmdshell → SYSTEM; and a non-sysadmin login →
-  sysadmin via `EXECUTE AS` impersonation (`fieldkit mssql escalate`).
-- **Everything that runs is captured**, so the report's anti-fabrication `--check` passes by
-  construction — a finding can't render without the command + output that proved it.
+- **Credential loop where credentials matter.** When a spray surfaces access, loot → promote
+  → re-spray runs until dry — lockout-safe by construction (reads the domain password
+  policy first, replays only each account's own proven secret). Same loop semantics apply
+  to any domain that produces credentials — cloud SSO cache, K8s SA tokens, SaaS session
+  cookies all promote the same way.
+- **Database routes are real paths.** MSSQL / PostgreSQL / MongoDB each have first-class
+  escalation drivers (xp_cmdshell → SYSTEM, `EXECUTE AS` sysadmin pivots, `COPY FROM
+  PROGRAM`, admin DB enumeration), ranked and reported alongside every other route.
+- **Three-axis ranking** (exploitability × safety × detection) orders every move the same
+  way across every domain — the quiet, safe, precondition-met path floats up whether it's
+  a kernel LPE, a web deserialization, or an IAM assume-role chain.
 - **Assume-caught.** Evasion is a ranking axis: every technique is red until a Defender lab
   proves it clean; a live catch marks it red and the loop falls back.
 
 ## Domains
 
-The AD credential loop is the spine, but the same store → capture → anti-fabrication-report
-core drives six more domains. Each is a thin driver over shared machinery — the **asset
-model** (`host` / `endpoint` / `cloud_principal` / `k8s_subject` / `saas_principal` /
-`cicd_principal` / … are all assets), the **asset graph** (directed escalation edges), and
-the same owned→high-value **BloodHound BFS** — so a web/cloud/k8s/SaaS/CI-CD finding flows
-through `report --check` exactly like an AD one. Every graph domain's escalation paths are **ranked worst-first** by blast
-radius.
+Seven first-class domains, treated as equal peers over one shared engine. Each is a thin
+driver over the shared machinery — the **asset model** (`host` / `endpoint` /
+`cloud_principal` / `k8s_subject` / `saas_principal` / `cicd_principal` / … are all
+assets), the **asset graph** (directed escalation edges), and the owned→high-value
+**BFS** — so a cloud IAM path, a web RCE, a K8s SA token escalation, and a Kerberos
+ticket all flow through `report --check` through the same gate. Every graph domain's
+escalation paths are **ranked worst-first** by blast radius.
 
 | Domain | Drive it with | What it finds |
 |---|---|---|
 | **Active Directory** | `spray` → `escalate` → `roast`/`delegation`/`adcs`/`bloodhound` | credential loop → SYSTEM/root → DA paths |
-| **Web** | `web probe`/`web scan` · `ingest httpx`/`nuclei` | live endpoints + `web_vuln` findings |
-| **External services** | `ingest nmap -sV` → `external` | discovered services matched to the CVE-TTP library (`exposed_service_cve`) |
+| **CI/CD pipelines** | `ingest cicd <graph>` → `cicd paths` | repo-write/runner → deploy-admin paths (`cicd_privesc`) |
 | **Cloud IAM** | `ingest cloud <graph>` → `cloud paths` | owned→admin IAM escalation paths (`cloud_privesc`) |
+| **Databases** | `mssql`/`postgres`/`mongodb escalate` · `ingest nmap` | sysadmin pivots, xp_cmdshell → SYSTEM, admin DB enum |
+| **External services** | `ingest nmap -sV` → `external` | discovered services matched to the CVE-TTP library (`exposed_service_cve`) |
 | **Kubernetes RBAC** | `ingest k8s <graph>` → `k8s paths` | owned→cluster-admin RBAC paths (`k8s_privesc`) |
 | **SaaS / identity provider** | `ingest saas <graph>` → `saas paths` | owned→tenant-admin Entra/Okta role paths (`saas_privesc`) |
-| **CI/CD pipelines** | `ingest cicd <graph>` → `cicd paths` | repo-write/runner → deploy-admin paths (`cicd_privesc`) |
+| **Web** | `web probe`/`web scan` · `ingest httpx`/`nuclei` | live endpoints + `web_vuln` findings |
 
-**Cross-domain stitching** is the payoff of one asset model: `fieldkit paths` bridges the
-AD/host core into the asset graph (recovered credentials become owned identities, hosts we
-admin become owned nodes), links web endpoints to the hosts
-they run on (a proven web RCE becomes an owned foothold) and links the per-domain graphs
-through shared identity (a recovered domain account whose UPN matches a cloud role, a SaaS
-user federated to a cloud role, a declared `aliases`, or an explicit `ingest pivots` edge),
-then runs the owned→admin BFS over the *whole* graph — surfacing escalation that crosses a
-boundary a defender assumed contained it (`web → host/AD`, `AD → cloud`, `SaaS → cloud`,
-`cloud → k8s`), stepping over any nearer in-domain admin. Each stitched path is a ranked `cross_domain_privesc` observation.
+**Cross-domain stitching** is the payoff of one asset model: `fieldkit paths` collapses the
+per-domain graphs into one through shared identity — a recovered AD account whose UPN
+matches a cloud role, a SaaS user federated to a cloud role, a declared `aliases`, or an
+explicit `ingest pivots` edge — then runs the owned→admin BFS over the *whole* graph.
+Credentials recovered anywhere become owned identities everywhere they reach; hosts owned
+anywhere become owned nodes in every graph that references them; a web endpoint links to
+the host it runs on. The BFS surfaces escalation that crosses a boundary a defender
+assumed contained it (`web → host/AD`, `AD → cloud`, `SaaS → cloud`, `cloud → k8s`,
+`cicd → cloud`), stepping over any nearer in-domain admin. Each stitched path is a ranked
+`cross_domain_privesc` observation.
 
 `fieldkit status` shows the whole picture — assets by kind and findings by domain — in one
 board; `fieldkit report` renders every domain's findings through the one anti-fabrication
@@ -126,36 +141,46 @@ runs on a fresh clone without `pip install` — see [The TUI](#the-tui) below.
 bin/fieldkit preflight                             # optional: are the tools it drives on PATH?
 
 # one engagement = one database in the working directory
-bin/fieldkit init 'ACME internal'
-bin/fieldkit config set lhost=10.10.14.7 lport=443 domain=corp.local
+bin/fieldkit init 'client Q4'
+bin/fieldkit config set lhost=10.10.14.7 lport=443
 
-# tell it what you know (creds in whatever form you have them)
+# ingest what you know, from any domain (any mix, any order)
 bin/fieldkit add cred 'CORP/jdoe:Winter2025!'      # DOMAIN\user, user@corp.local, user:LM:NT, …
 bin/fieldkit add hosts scope.txt                   # a single IP, a CIDR, or a file of them
-bin/fieldkit ingest nmap scan.xml                  # also -oN / -oG; folds hosts + services into state
+bin/fieldkit ingest nmap scan.xml                  # hosts + services → state
+bin/fieldkit ingest httpx httpx.jsonl              # live web endpoints
+bin/fieldkit ingest cloud iam.json --from aws      # AWS IAM graph (native format)
+bin/fieldkit ingest k8s rbac.json --from kubectl   # kubectl auth can-i --list
+bin/fieldkit ingest saas entra.json --from msgraph # SaaS / IdP roles
+bin/fieldkit ingest cicd pipelines.json            # CI/CD runners + repos
 bin/fieldkit ingest hashcat hashcat.potfile        # cracked hashes → promoted credentials
-bin/fieldkit usernames --first-file first.txt --last-file last.txt   # generate first.last / flast / etc.
 
-# run the loop, then escalate a foothold
-bin/fieldkit spray smb                             # reads the lockout policy first
-bin/fieldkit enum 10.0.0.7
-bin/fieldkit analyze
-bin/fieldkit escalate 10.0.0.7 --allow config-change
+# analyze across every domain, then act
+bin/fieldkit analyze                               # ranks every opportunity across every domain
+bin/fieldkit status                                # the board — assets by kind, findings by domain
 
-# go wide in AD (any order)
-bin/fieldkit roast --dc 10.0.0.10
-bin/fieldkit delegation --dc 10.0.0.10
-bin/fieldkit adcs find --dc 10.0.0.10
-bin/fieldkit bloodhound import ./bh/
+# per-domain actions (pick whichever your engagement needs — all first-class)
+bin/fieldkit spray smb                             # AD: lockout-safe credential loop
+bin/fieldkit escalate 10.0.0.7 --allow config-change     # host-side privesc
+bin/fieldkit roast --dc 10.0.0.10                  # AD: Kerberoast
+bin/fieldkit delegation --dc 10.0.0.10             # AD: delegation abuse
+bin/fieldkit adcs find --dc 10.0.0.10              # AD: ESC1-16 catalogue
+bin/fieldkit bloodhound import ./bh/               # AD: BFS over the AD graph
+bin/fieldkit web scan                              # web: nuclei + verify
+bin/fieldkit mssql escalate 10.0.0.50              # DB: sysadmin pivot
+bin/fieldkit cloud paths                           # cloud: owned→admin IAM BFS
+bin/fieldkit k8s paths                             # K8s: owned→cluster-admin RBAC BFS
+bin/fieldkit saas paths                            # SaaS: owned→tenant-admin role BFS
+bin/fieldkit cicd paths                            # CI/CD: repo-write → deploy-admin BFS
+bin/fieldkit paths                                 # cross-domain stitched BFS over everything
 
 # write it up (Findings + Observations, straight from captured evidence)
 bin/fieldkit report --check                        # anti-fabrication gate
 bin/fieldkit report -o report                      # report.md (+ .docx/.pdf via pandoc)
 bin/fieldkit report --cleanup -o report            # internal artifact-removal manifest
 bin/fieldkit export-recce recce.json               # fold proven findings into recce
-bin/fieldkit archive                               # one .tar.gz for handoff/retention (DB + report + cleanup + recce + steps)
+bin/fieldkit archive                               # one .tar.gz for handoff/retention
 
-bin/fieldkit status                                # the board, any time
 bin/fieldkit doctor                                # one health check: tools + chain lint + engagement + TTPs
 bin/fieldkit refresh eng/fieldkit/recce-bridge.json  # returning-operator one-liner: re-ingest + analyze
 ```
@@ -304,15 +329,20 @@ gruvbox / dracula / nord / etc. all recolor live).
 
 ## Design
 
-- **Orchestrate, don't reimplement.** fieldkit is the brain — state, the loop, credential
-  normalization, escalation, reporting. netexec/impacket/certipy own the protocols; msfvenom/
-  wixl/gcc own the payload bytes.
+- **Orchestrate, don't reimplement.** fieldkit is the brain — state, orchestration, credential
+  normalization, escalation, reporting. The tools it drives (netexec, impacket, certipy, httpx,
+  nuclei, msfvenom, wixl, gcc, kubectl, aws CLI, …) own their protocols; fieldkit sequences
+  them and captures what they said.
+- **Every domain is a peer.** AD, web, cloud, K8s, SaaS, CI/CD and databases ride the same
+  core (shared asset model, shared graph, shared BFS, shared report). No domain is privileged
+  in the architecture — the ranking math decides which route floats up for a given engagement.
 - **One store, everything is a projection.** All state is one SQLite DB; `analyze` ranks what
   it proves, `report` renders the captured evidence. Stop and resume anywhere.
 - **One canonical credential model.** Liberal ingest, strict output: renderers emit argv
-  lists, never shell strings, so quotes/backslashes reach the tool intact.
-- **Three-axis ranking** (exploitability × safety × detection) orders every move, so the
-  quiet, safe, precondition-met path floats up.
+  lists, never shell strings, so quotes/backslashes reach the tool intact. A credential
+  recovered in any domain promotes the same way.
+- **Three-axis ranking** (exploitability × safety × detection) orders every move the same way
+  across every domain, so the quiet, safe, precondition-met path floats up.
 - **Findings vs Observations.** The report proves what it exploited (Findings, with the full
   captured walkthrough) and clearly labels what it only identified (Observations).
 
@@ -320,7 +350,7 @@ gruvbox / dracula / nord / etc. all recolor live).
 
 | Path | What |
 |---|---|
-| `fieldkit/` | the engine — state/config/creds/scope, the loop (`netexec`, `ingest`, `recce`, `spray`, `dump`, `sharespider`, `fs_scrub`, `wordlist`, `kb`), execution (`transport`, `recce_transport`, `executor`, `runner`, `hostenum`, `privesc`, `poc`, `classify`, `escalate`, `staging`, `mssql`, `postgres`, `mongodb`), AD depth (`kerberos`, `delegation`, `adcs`, `bloodhound`), evasion (`evasion`, `lab`), analysis (`enrich`, `confidence`, `timeline`, `correlate`, `cve_lookup`), reporting (`report`, `reportkb`, `bridge`, `archive`, `status_json`, `watch`, `cvss`, `html_report`, `pptx_export`), weaponization (`weaponization`, `beacon`), and the thin `cli` |
+| `fieldkit/` | the engine — core (`state`, `config`, `creds`, `scope`, `runner`, `executor`, `transport`, `classify`, `assetgraph`), ingest + enumeration (`netexec`, `ingest`, `recce`, `hostenum`, `nxc_probes`, `dump`, `sharespider`, `fs_scrub`, `wordlist`), domain drivers — all peers: AD (`kerberos`, `delegation`, `adcs`, `bloodhound`, `dcsync`, `spray`), web (`web`, `webscan`), databases (`mssql`, `postgres`, `mongodb`), cloud/K8s/SaaS/CI-CD (`cloud_iam`, `k8s`, `saas`, `cicd`), the orchestrator (`analyze`, `privesc`, `escalate`, `staging`, `poc`, `chain`), evasion (`evasion`, `lab`), analysis (`enrich`, `confidence`, `timeline`, `correlate`, `cve_lookup`), reporting (`report`, `reportkb`, `bridge`, `archive`, `status_json`, `watch`, `cvss`, `html_report`, `pptx_export`), weaponization (`weaponization`, `beacon`), and the thin `cli` |
 | `fieldkit/loaders/` | reference templates per weaponization catalog entry (`.c.j2`, `.cs.j2`, `.asm`, `.py.j2`); read-only — fieldkit never compiles or runs them |
 | `fieldkit/tui/` | the optional Textual TUI — Dashboard / Analyze / Escalate / Watch |
 | `fieldkit/vendor/` | vendored Textual + Rich + deps (~12 MB); enables `bin/fieldkit tui` without `pip install` |
@@ -348,19 +378,24 @@ back into recce's workbook + report. See **[`INTEGRATION.md`](INTEGRATION.md)**.
 
 ## Scope
 
-Internal-network engagements from a credential or foothold through lateral movement and local
-privilege escalation to reporting. **Out of scope by design:** phishing / AiTM, persistence,
+Authorized penetration testing from a credential, foothold, or scan through compromise and
+reporting across every supported domain. **Out of scope by design:** phishing / AiTM,
 physical/wireless, and beacon/BOF-grade evasion (fieldkit states a path's detection risk
 rather than promising invisibility). **Authorized engagements only** — every component assumes
 you have permission for the target.
 
 ```mermaid
 flowchart LR
-  I["add cred / hosts<br/>ingest"] --> S["spray (loop)"]
-  S -->|Pwn3d!| L["loot → promote"] --> S
-  S -->|foothold| E["enum → analyze"]
-  E --> X["escalate<br/>stage/build/prep · evasion · potatoes"] --> L
-  E --> AD["roast · delegation · adcs · bloodhound"] --> E
-  X --> RP["report<br/>Findings + Observations"]
-  AD --> RP
+  I["ingest<br/>creds · hosts · nmap · httpx<br/>cloud · k8s · saas · cicd"] --> A["analyze<br/>rank every opportunity<br/>across every domain"]
+  A --> AD["AD<br/>spray · roast · delegation<br/>adcs · bloodhound"]
+  A --> W["web<br/>probe · scan"]
+  A --> DB["DB<br/>mssql · postgres · mongodb"]
+  A --> C["cloud / k8s / saas / cicd<br/>paths"]
+  A --> E["escalate<br/>stage · build · prep · evasion"]
+  AD --> P["paths<br/>cross-domain stitched BFS<br/>(owned→admin)"]
+  W --> P
+  DB --> P
+  C --> P
+  E --> P
+  P --> RP["report<br/>Findings + Observations"]
 ```
