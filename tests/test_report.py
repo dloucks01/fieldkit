@@ -449,5 +449,66 @@ class CrossDomainNarrativeTest(ReportTestCase):
         self.assertNotIn("Cross-domain attack narrative", md)
 
 
+class SanitizationTest(unittest.TestCase):
+    """Captured tool output / evidence often carries ANSI escape sequences
+    (color codes, cursor-manipulation like \\x1b[2J\\x1b[H) and control bytes
+    (bell \\x07, NUL, etc.). Rendering those raw into the report lets a
+    client who ``cat``s report.md on a terminal get a cleared screen, a
+    bell, and colored text applied — in a worst case, an attacker-tunable
+    tool banner could inject sequences that overwrite earlier terminal
+    lines. ``_sanitize_captured`` strips them from the RENDERED report
+    while leaving the SQLite ``step.output`` column untouched for
+    forensics."""
+
+    def test_sanitize_strips_ansi_escapes(self):
+        from fieldkit.report import _sanitize_captured
+        self.assertEqual(_sanitize_captured("\x1b[31mred\x1b[0m"), "red")
+        self.assertEqual(_sanitize_captured("\x1b[2J\x1b[H clean"), " clean")
+
+    def test_sanitize_strips_c0_control_bytes_but_keeps_tab_lf_cr(self):
+        from fieldkit.report import _sanitize_captured
+        self.assertEqual(_sanitize_captured("bell\x07here"), "bellhere")
+        self.assertEqual(_sanitize_captured("\x00null"), "null")
+        # TAB / LF / CR are legitimate whitespace in captured output
+        self.assertEqual(
+            _sanitize_captured("line1\nline2\tcol2\rend"),
+            "line1\nline2\tcol2\rend")
+
+    def test_sanitize_handles_none_and_non_string(self):
+        from fieldkit.report import _sanitize_captured
+        self.assertEqual(_sanitize_captured(None), "")
+        # non-string gets str()-coerced then cleaned
+        self.assertEqual(_sanitize_captured(42), "42")
+
+    def test_render_strips_control_bytes_from_evidence_and_output(self):
+        """Regression: previously the report writer passed step.output and
+        finding.evidence straight into a markdown code fence, so ANSI
+        escapes + control bytes ended up in report.md verbatim."""
+        from fieldkit.report import render_markdown
+        eng = {"client": "san-test", "assessor": "op", "date": "2026-01-01",
+               "scope": "lab", "targets": []}
+        findings = [{
+            "id": 1, "vector_type": "sudo_misconfig", "title": "sudo:ALL",
+            "severity": "High", "proven": True,
+            "evidence": "\x1b[31muid=0\x1b[0m",
+            "affected_host": "10.0.0.5",
+            "host": {"ip": "10.0.0.5", "hostname": "web", "os": "linux"},
+            "steps": [{
+                "cmd": "sudo id",
+                "output": "\x1b[2J\x1b[H\x1b[31muid=0(root)\x1b[0m\x07bell",
+                "transport": "ssh", "exit_code": 0}],
+            "artifacts": [],
+        }]
+        md = render_markdown(eng, findings)
+        # No raw escape bytes in the output.
+        self.assertNotIn("\x1b", md,
+                         "ANSI escape leaked into rendered report")
+        self.assertNotIn("\x07", md, "bell leaked into rendered report")
+        self.assertNotIn("\x00", md, "NUL leaked into rendered report")
+        # The ACTUAL content survives.
+        self.assertIn("uid=0", md)
+        self.assertIn("bell", md)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

@@ -20,12 +20,41 @@ Rendering is pure (dicts in, text out), so it is testable without a database; th
 assembles the dicts from state via :func:`build`.
 """
 import os
+import re
 import shutil
 import tempfile
 from datetime import datetime, timezone
 
 from . import reportkb as kb
 from . import runner as runner_mod
+
+
+#: ANSI escape sequence (CSI / OSC / plain-ESC). Captured tool output often
+#: carries color codes (``\x1b[31m...``), cursor manipulation (``\x1b[2J``,
+#: ``\x1b[H``), and OSC title changes (``\x1b]0;...\x07``). Rendering those
+#: raw into the report lets a client who ``cat``s report.md on a terminal see
+#: colors applied + their screen cleared + a bell. Worse, a lab target whose
+#: banner is attacker-controlled could inject sequences that scroll back and
+#: overwrite earlier terminal lines. We strip them from the rendered report;
+#: the raw bytes stay in the SQLite ``step.output`` column for forensics.
+_ANSI_ESC = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\].*?(?:\x07|\x1b\\)|.)")
+
+#: C0 control bytes that are neither TAB nor LF nor CR. Bell (``\x07``),
+#: STX (``\x02``), SI (``\x0f``), ... can poison terminal state. NUL is
+#: particularly bad in a markdown viewer (``\x00``). Keep newlines + tabs.
+_CTRL = re.compile(r"[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]")
+
+
+def _sanitize_captured(text):
+    """Render-safe text: strip ANSI escapes + non-printable C0 controls from
+    captured tool output / evidence before writing into a report markdown.
+    The step's raw ``output`` column keeps the original bytes; this helper
+    protects the operator and the client from a tool that embedded terminal
+    control sequences in its output."""
+    if text is None:
+        return ""
+    text = _ANSI_ESC.sub("", str(text))
+    return _CTRL.sub("", text)
 
 PLACEHOLDERS = ("<pid>", "<target>", "<service", "<youruser>", "<the-allowed",
                 "/path/to", "example.com", "placeholder", "todo", "xxxx")
@@ -465,7 +494,7 @@ def _render_cross_domain_narrative(w, paths):
         w(f"{i}. **[{p.get('priority', '?')}] {p.get('start', '?')} → "
           f"{p.get('target', '?')}** — {n} hop{'' if n == 1 else 's'} across "
           f"{len(doms)} domain{'' if len(doms) == 1 else 's'} ({route}).")
-        w(f"   Chain: `{p.get('evidence', '')}`")
+        w(f"   Chain: `{_sanitize_captured(p.get('evidence', ''))}`")
         w("")
     w("Each chain is recorded as a *Cross-domain* observation below. **Break it at the "
       "pivot** — where it crosses domains (a federated or synced identity, a reused "
@@ -513,7 +542,7 @@ def _render_finding(w, i, f):
         w(f"**Step {n} — command{via}:**")
         w("")
         w("```")
-        w(str(s.get("cmd", "")).rstrip())
+        w(_sanitize_captured(s.get("cmd", "")).rstrip())
         w("```")
         if s.get("output"):
             proof_step = s
@@ -521,12 +550,13 @@ def _render_finding(w, i, f):
             w("Observed result:")
             w("")
             w("```")
-            w(str(s["output"]).rstrip())
+            w(_sanitize_captured(s["output"]).rstrip())
             w("```")
             w("")
             _shot(w, "the terminal above — the command and its result.")
     # the decisive proof (money shot)
-    proof = (f.get("evidence") or (proof_step or {}).get("output", "")).strip()
+    proof = _sanitize_captured(
+        f.get("evidence") or (proof_step or {}).get("output", "")).strip()
     if proof:
         w("### Proof of compromise")
         w("")
@@ -607,7 +637,7 @@ def _render_observation(w, i, f):
         w("Identified from the following evidence:")
         w("")
         w("```")
-        w(str(f["evidence"]).rstrip())
+        w(_sanitize_captured(f["evidence"]).rstrip())
         w("```")
         w("")
     w("To confirm, exploit the weakness with the corresponding technique in a controlled "
