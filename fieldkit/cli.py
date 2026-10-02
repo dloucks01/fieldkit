@@ -2287,6 +2287,312 @@ def cmd_ttps_show(args):
     return 0
 
 
+@needs_engagement
+def cmd_enrich(args, store):
+    """Walk every captured step and surface the structured entities
+    found inside — IPs, hashes, emails, cloud / PAT secrets, Kerberos
+    tickets.
+
+    The point: Nemesis / BloodHound Legacy auto-extract this. fieldkit
+    was previously missing it, so the operator had to grep step output
+    by hand. ``fieldkit enrich`` runs the extractor over state and
+    prints the deduplicated table, optionally filtered to one kind."""
+    from . import enrich as enrich_mod
+    rows = [dict(r) for r in store.steps()]
+    entities = enrich_mod.extract_from_steps(rows)
+    if args.kind:
+        entities = [(k, v, c) for (k, v, c) in entities if k == args.kind]
+    if args.json:
+        import json
+        print(json.dumps([{"kind": k, "value": v, "context": c}
+                           for (k, v, c) in entities], indent=2))
+        return 0
+    if not entities:
+        print("no structured entities found in captured step output")
+        return 0
+    # Group by kind for a cleaner read.
+    by_kind = {}
+    for kind, value, ctx in entities:
+        by_kind.setdefault(kind, []).append((value, ctx))
+    for kind in sorted(by_kind):
+        rows = by_kind[kind]
+        print(f"\n== {kind} ({len(rows)}) ==")
+        for value, ctx in rows:
+            print(f"  {value}")
+            if ctx and ctx != value:
+                print(f"    └─ {ctx[:140]}")
+    # Suggest hashcat modes for hash-shaped kinds we recognized.
+    hash_kinds = {"nt_hash", "netntlmv1", "netntlmv2", "kerberos_tgsrep",
+                  "kerberos_asrep", "md5crypt", "sha256crypt",
+                  "sha512crypt", "bcrypt_hash"}
+    hashes = [(k, v) for (k, v, _c) in entities if k in hash_kinds]
+    if hashes:
+        print("\n== hashcat modes ==")
+        for kind, value in hashes[:10]:
+            m = enrich_mod.suggest_hashcat_mode(value)
+            if m:
+                mode, name = m
+                print(f"  {kind:16s}  -m {mode:<6d} ({name})")
+    return 0
+
+
+@needs_engagement
+def cmd_beacon_new(args, store):
+    """Register a new beacon build."""
+    from . import beacon as beacon_mod
+    cfg = beacon_mod.BeaconConfig(
+        name=args.name, platform=args.platform, transport=args.transport,
+        callback_url=args.callback_url, interval_s=args.interval,
+        jitter_pct=args.jitter)
+    try:
+        bid = beacon_mod.register_beacon(store, cfg)
+    except ValueError as e:
+        _err(str(e))
+        return 2
+    print(f"registered beacon #{bid}  {args.name}  "
+          f"({args.platform}/{args.transport})")
+    return 0
+
+
+@needs_engagement
+def cmd_beacon_list(args, store):
+    from . import beacon as beacon_mod
+    rows = beacon_mod.list_beacons(store)
+    if not rows:
+        print("no beacons registered")
+        return 0
+    for r in rows:
+        last = r.get("last_seen") or "(never)"
+        print(f"#{r['id']:3d}  {r['name']:30s}  "
+              f"{r['platform']:7s}  {r['transport']:9s}  "
+              f"created={r['created_at']}  last_seen={last}")
+    return 0
+
+
+@needs_engagement
+def cmd_beacon_task(args, store):
+    from . import beacon as beacon_mod
+    b = beacon_mod.by_name(store, args.name)
+    if b is None:
+        _err(f"no beacon named {args.name!r}")
+        return 2
+    try:
+        tid = beacon_mod.issue_task(store, b["id"], args.cmd, args.args or [])
+    except (ValueError, TypeError) as e:
+        _err(str(e))
+        return 2
+    print(f"queued task #{tid} for {args.name}: {args.cmd} {args.args}")
+    return 0
+
+
+@needs_engagement
+def cmd_beacon_result(args, store):
+    from . import beacon as beacon_mod
+    if args.from_file:
+        with open(args.from_file, "rb") as fh:
+            data = fh.read()
+    else:
+        data = sys.stdin.buffer.read()
+    try:
+        text = data.decode("utf-8", errors="replace")
+    except Exception:
+        text = repr(data)
+    try:
+        beacon_mod.record_result(store, args.task_id, text)
+    except LookupError as e:
+        _err(str(e))
+        return 2
+    print(f"recorded result for task #{args.task_id}  ({len(data)} bytes)")
+    return 0
+
+
+@needs_engagement
+def cmd_beacon_history(args, store):
+    from . import beacon as beacon_mod
+    b = beacon_mod.by_name(store, args.name)
+    if b is None:
+        _err(f"no beacon named {args.name!r}")
+        return 2
+    rows = beacon_mod.task_history(store, b["id"], limit=args.limit)
+    if not rows:
+        print(f"no tasks for beacon {args.name}")
+        return 0
+    for t in rows:
+        status = "pending" if t.get("completed_at") is None else "completed"
+        print(f"  #{t['id']:4d}  {status:10s}  {t['cmd']:9s}  "
+              f"args={t['args']}  issued={t['issued_at']}")
+        if t.get("result"):
+            # Head of the result only
+            preview = t["result"][:200].replace("\n", " ")
+            print(f"           result: {preview}")
+    return 0
+
+
+@needs_engagement
+def cmd_beacon_build_config(args, store):
+    """Print the substitution dict for the beacon's reference template."""
+    import json as _json
+    from . import beacon as beacon_mod
+    b = beacon_mod.by_name(store, args.name)
+    if b is None:
+        _err(f"no beacon named {args.name!r}")
+        return 2
+    cfg = _json.loads(store.conn.execute(
+        "SELECT config_json FROM beacon WHERE id = ?",
+        (b["id"],)).fetchone()[0])
+    config = beacon_mod.BeaconConfig(
+        name=cfg["name"], platform=cfg["platform"],
+        transport=cfg["transport"], callback_url=cfg["callback_url"],
+        interval_s=cfg["interval_s"], jitter_pct=cfg["jitter_pct"],
+        build_seed=b["build_seed"])
+    print(_json.dumps(beacon_mod.render_build_config(config), indent=2))
+    return 0
+
+
+def cmd_weaponization_list(args):
+    """Browse the weaponization catalog."""
+    from . import weaponization as weap_mod
+    techs = weap_mod.all_techniques()
+    if args.category:
+        techs = [t for t in techs if t.category == args.category]
+    if args.platform:
+        techs = [t for t in techs if t.platform == args.platform
+                 or t.platform == "cross"]
+    if not techs:
+        print("no matching techniques in the catalog")
+        return 0
+    cur = None
+    for t in techs:
+        if t.category != cur:
+            cur = t.category
+            print(f"\n== {cur} ==")
+        print(f"  {t.key:28s}  [{t.platform:7s}  {t.opsec:8s}]  {t.name}")
+    return 0
+
+
+def cmd_weaponization_show(args):
+    """Print the full description of one weaponization technique."""
+    from . import weaponization as weap_mod
+    t = weap_mod.by_key(args.key)
+    if not t:
+        _err(f"no technique keyed {args.key!r} in the catalog")
+        return 2
+    print(f"{t.key}  —  {t.name}")
+    print(f"  category: {t.category}   platform: {t.platform}   opsec: {t.opsec}")
+    print(f"\n  {t.description}")
+    if t.prereqs:
+        print("\n  prereqs:")
+        for p in t.prereqs:
+            print(f"    - {p}")
+    if t.references:
+        print(f"\n  references: {', '.join(t.references)}")
+    if t.template:
+        print(f"\n  template: fieldkit/loaders/{t.template}")
+        print(f"           (run `fieldkit weaponization render {t.key}` to print it)")
+    return 0
+
+
+def cmd_weaponization_render(args):
+    """Print the reference template body for the named technique."""
+    from . import weaponization as weap_mod
+    body = weap_mod.template_body(args.key)
+    if body is None:
+        t = weap_mod.by_key(args.key)
+        if t is None:
+            _err(f"no technique keyed {args.key!r} in the catalog")
+            return 2
+        _err(f"{args.key} has no reference template "
+             f"(not every catalog entry ships one)")
+        return 1
+    print(body, end="")
+    return 0
+
+
+def cmd_cvss(args):
+    """Derive a CVSS v3.1 vector + base score from a severity + ranking
+    triple. Pure derivation — no store open required."""
+    from . import cvss as cvss_mod
+    r = cvss_mod.derive(args.severity, args.exploitability, args.safety,
+                        args.detection, scope=args.scope)
+    print(f"score:    {r.score:.1f} ({r.severity})")
+    print(f"vector:   {r.vector}")
+    return 0
+
+
+def cmd_correlate(args):
+    """Walk a directory of fieldkit engagement DBs read-only and emit
+    every recurring (kind, value) across them."""
+    import glob
+    from . import correlate as corr_mod
+    from .state import Store
+    root = args.dir or os.getcwd()
+    if not os.path.isdir(root):
+        _err(f"{root}: not a directory")
+        return 2
+    if args.recursive:
+        db_paths = sorted(glob.glob(os.path.join(root, "**/*.db"),
+                                       recursive=True))
+    else:
+        db_paths = sorted(glob.glob(os.path.join(root, "*.db")))
+    if not db_paths:
+        print(f"no *.db files found under {root}"
+              + (" (recursive)" if args.recursive else ""))
+        return 0
+    stores = {}
+    opened = []
+    try:
+        for p in db_paths:
+            try:
+                cm = Store.open(p)
+                store = cm.__enter__()
+                opened.append((cm, store))
+                stores[os.path.basename(p)] = store
+            except Exception as e:
+                print(f"warning: skipping {p}: {e}", file=sys.stderr)
+        matches = corr_mod.correlate(stores)
+    finally:
+        for cm, _ in reversed(opened):
+            try:
+                cm.__exit__(None, None, None)
+            except Exception:
+                pass
+    if args.kind:
+        matches = [m for m in matches if m.kind == args.kind]
+    if not matches:
+        print(f"no cross-engagement matches across {len(stores)} DB(s)")
+        return 0
+    for m in matches:
+        print(f"{m.kind:12s}  {m.value}  →  {', '.join(m.engagements)}")
+    return 0
+
+
+def cmd_cve_lookup(args):
+    """Project the TTP catalog's version-range CVE rules into a lookup."""
+    from . import cve_lookup
+    matches = cve_lookup.lookup(args.component, args.version)
+    if not matches:
+        print(f"no CVE catalog entries match {args.component}={args.version}")
+        return 0
+    for m in matches:
+        print(f"{m.cve:18s}  {m.ttp_key:30s}  {m.name}")
+        print(f"    range: {m.range_spec}")
+    return 0
+
+
+@needs_engagement
+def cmd_timeline(args, store):
+    """Chronological projection of every timestamped row in the
+    engagement store — the "what did we do, in order" view."""
+    from . import timeline as timeline_mod
+    events = timeline_mod.build_timeline(store)
+    if args.narrative:
+        print(timeline_mod.render_narrative(events))
+        return 0
+    kinds = set(args.kind) if args.kind else None
+    print(timeline_mod.render(events, kinds=kinds))
+    return 0
+
+
 def cmd_doctor(args):
     """One health-check for the whole install + current engagement.
 
@@ -3887,6 +4193,60 @@ def cmd_report(args, store):
         with open(path, "w") as fh:
             fh.write(report_mod.cleanup_manifest(engagement, proven))
         print(f"wrote {path}  (INTERNAL cleanup manifest — do not send to the client)")
+        return 0
+
+    if getattr(args, "interactive_html", None):
+        from . import html_report as html_mod
+        html = html_mod.render(engagement, findings)
+        with open(args.interactive_html, "w") as fh:
+            fh.write(html)
+        print(f"wrote {args.interactive_html}  "
+              f"({_plural(len(findings), 'finding')}, "
+              f"self-contained — opens offline)")
+        return 0
+
+    if getattr(args, "pptx", None):
+        from . import pptx_export as pptx_mod
+        from . import timeline as timeline_mod
+        narrative = timeline_mod.render_narrative(
+            timeline_mod.build_timeline(store))
+        brand_cfg = cfg.get("report-brand", {}) if isinstance(cfg, dict) else {}
+        brand = pptx_mod.BrandConfig(
+            title_rgb=brand_cfg.get("title_rgb", "1a1a1a"),
+            accent_rgb=brand_cfg.get("accent_rgb", "0366d6"),
+            footer=brand_cfg.get("footer", ""))
+        size = pptx_mod.render_to_file(args.pptx, engagement, findings,
+                                         narrative=narrative, brand=brand)
+        print(f"wrote {args.pptx}  ({size} bytes, 5-slide exec deck)")
+        return 0
+
+    if getattr(args, "exec_summary", False):
+        from . import timeline as timeline_mod
+        counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Info": 0}
+        for f in proven:
+            sev = f.get("severity") or "Medium"
+            counts[sev] = counts.get(sev, 0) + 1
+        print(f"Engagement: {engagement.get('name', '(unnamed)')}")
+        print(f"Scope:      {engagement.get('scope', '(no scope)')}")
+        print()
+        print("Severity breakdown (proven findings):")
+        for sev in ("Critical", "High", "Medium", "Low", "Info"):
+            if counts[sev]:
+                print(f"  {sev:10s}  {counts[sev]}")
+        print()
+        sev_rank = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
+        top = sorted(proven,
+                      key=lambda f: (sev_rank.get(f.get("severity", "Info"), 4),
+                                      f.get("affected_host", "")))[:5]
+        if top:
+            print("Top findings:")
+            for f in top:
+                print(f"  [{f.get('severity','?'):8s}] "
+                      f"{f.get('vector_type','?')} "
+                      f"on {f.get('affected_host','?')}")
+            print()
+        events = timeline_mod.build_timeline(store)
+        print(timeline_mod.render_narrative(events))
         return 0
 
     if errors and not args.force:
@@ -5745,6 +6105,72 @@ the spec is missing that field. `--from-file` reads one credential per line.
                                 "exit code reflects the post-fix state.")
     p_doctor.set_defaults(func=cmd_doctor)
 
+    p_enrich = sub.add_parser(
+        "enrich",
+        help="extract structured entities (IPs, hashes, PATs, …) from captured steps",
+        description="Walks every captured step in the engagement and surfaces the "
+                    "structured entities inside — IPs, hashes, emails, URLs, cloud "
+                    "access keys, GitHub / GitLab / Slack / Stripe tokens, Kerberos "
+                    "tickets. Dedups by (kind, value). Attaches a hashcat mode "
+                    "suggestion for every hash-shaped match so the operator can go "
+                    "straight to cracking without eyeballing the shape.")
+    p_enrich.add_argument("--kind", default=None,
+                          help="only show entities of this kind (nt_hash, email, …)")
+    p_enrich.add_argument("--json", action="store_true",
+                          help="emit JSON instead of the grouped table")
+    p_enrich.set_defaults(func=cmd_enrich)
+
+    p_timeline = sub.add_parser(
+        "timeline",
+        help="chronological projection of every captured event",
+        description="Walks the engagement database and emits every "
+                    "timestamped row (steps, findings, credential "
+                    "promotions, evasion verdicts) as a single ribbon "
+                    "ordered by ts. The projection fieldkit was previously "
+                    "missing — operators had to piece this together from "
+                    "`sqlite3` queries by hand.")
+    p_timeline.add_argument("--kind", action="append", default=None,
+                             help="filter to one kind (repeat for several). "
+                                  "kinds: step, finding, credential, evasion.")
+    p_timeline.add_argument("--narrative", action="store_true",
+                             help="emit a prose paragraph summarising the "
+                                  "engagement instead of the ribbon — "
+                                  "suitable for a report preface")
+    p_timeline.set_defaults(func=cmd_timeline)
+
+    p_corr = sub.add_parser(
+        "correlate",
+        help="cross-engagement correlation (shared creds, hosts, users)",
+        description="Walks a directory of fieldkit engagement DBs and surfaces "
+                    "every credential / username / host / hostname that recurs "
+                    "across two or more of them. The point: a cracked credential "
+                    "in engagement A almost always reaches engagement B's AD if "
+                    "both target the same org — the single-engagement core can't "
+                    "tell you that; this subcommand can.")
+    p_corr.add_argument("--dir", default=None,
+                         help="directory to walk for *.db files (default: CWD)")
+    p_corr.add_argument("--recursive", action="store_true",
+                         help="walk subdirectories too")
+    p_corr.add_argument("--kind",
+                         help="filter to one match kind (username, credential, "
+                              "secret, host)")
+    p_corr.set_defaults(func=cmd_correlate)
+
+    p_cve = sub.add_parser(
+        "cve-lookup",
+        help="offline CVE lookup for a component/version pair",
+        description="Projects the TTP catalog's version-range CVE rules into a "
+                    "lookup: given a component (kernel / sudo_version / "
+                    "pkexec_version / glibc_version) and a version string, "
+                    "returns every CVE whose range includes the version. Zero "
+                    "network, zero external data file — the TTP catalog IS the "
+                    "catalog, so a new cve:* TTP picks up here automatically.")
+    p_cve.add_argument("component",
+                        help="kernel | sudo_version | pkexec_version | glibc_version")
+    p_cve.add_argument("version",
+                        help="version string as HostFacts would carry it (e.g. 5.15.0)")
+    p_cve.set_defaults(func=cmd_cve_lookup)
+
     _build_session_parser(sub)
     _build_ttps_parser(sub)
 
@@ -6242,7 +6668,128 @@ the spec is missing that field. `--from-file` reads one credential per line.
                                "(html > pdf > docx > md) to the OS default handler "
                                "(xdg-open on Linux, open on macOS, start on Windows). "
                                "Silent no-op when no opener is on PATH.")
+    p_report.add_argument("--exec-summary", action="store_true",
+                          help="emit a short executive summary to stdout "
+                               "instead of writing the full report — severity-count "
+                               "table + top-5 proven findings + the engagement "
+                               "narrative. Suitable for a readout slide or "
+                               "email body.")
+    p_report.add_argument("--interactive-html", metavar="PATH",
+                          help="write a single self-contained interactive HTML "
+                               "report to this path — embedded CSS/JS, filter "
+                               "controls, collapsible per-host sections, SVG "
+                               "attack paths, dark/light theme. No external "
+                               "assets, no pandoc dependency.")
+    p_report.add_argument("--pptx", metavar="PATH",
+                          help="write a 5-slide PPTX executive deck (title / "
+                               "severity breakdown / top findings / narrative / "
+                               "remediation priorities) to this path. Stdlib-"
+                               "only hand-crafted Open XML — no python-pptx "
+                               "dependency. Branding read from fieldkit.config "
+                               "([report-brand] title_rgb / accent_rgb / "
+                               "footer).")
     p_report.set_defaults(func=cmd_report)
+
+    p_cvss = sub.add_parser(
+        "cvss",
+        help="derive a CVSS v3.1 vector + base score for a finding shape",
+        description="Produces a CVSS v3.1 vector string + base score from a "
+                    "severity + ranking triple — the derivation customer reports "
+                    "need per finding. Pure stdlib, no network. Pass the shape "
+                    "directly on the CLI; downstream `report` templates can call "
+                    "``fieldkit.cvss.derive_from_kb`` for the auto-filled version.")
+    p_cvss.add_argument("--severity", required=True,
+                        help="Critical | High | Medium | Low | Info")
+    p_cvss.add_argument("--exploitability", required=True,
+                        help="high | medium | low")
+    p_cvss.add_argument("--safety", required=True,
+                        help="crash-risk | service-restart | config-edit | reversible | read-only")
+    p_cvss.add_argument("--detection", required=True,
+                        help="loud | moderate | quiet")
+    p_cvss.add_argument("--scope", default="U",
+                        help="U (unchanged, default) | C (changed — reaches "
+                             "resources outside its security authority)")
+    p_cvss.set_defaults(func=cmd_cvss)
+
+    p_weap = sub.add_parser(
+        "weaponization",
+        help="browse the catalog of loader / bypass / syscall / encoder / delivery options",
+        description="Prints the metadata catalog of weaponization options "
+                    "(loaders, AMSI/ETW bypasses, syscall frameworks, encoders, "
+                    "delivery channels) with their OPSEC profile, prerequisites, "
+                    "and references. Operator-facing pick list — fieldkit does "
+                    "not generate payloads inline; the arsenal does.")
+    weap_sub = p_weap.add_subparsers(dest="weaponization_command",
+                                        metavar="<action>")
+    w_list = weap_sub.add_parser("list", help="list every entry in the catalog")
+    w_list.add_argument("--category", help="filter: loader | bypass | syscall | encoder | delivery")
+    w_list.add_argument("--platform", help="filter: windows | linux | cross")
+    w_list.set_defaults(func=cmd_weaponization_list)
+    w_show = weap_sub.add_parser("show", help="print the full description of one entry")
+    w_show.add_argument("key", help="technique key (e.g. hells-gate)")
+    w_show.set_defaults(func=cmd_weaponization_show)
+    w_render = weap_sub.add_parser("render",
+        help="print the reference template for one entry (if any)")
+    w_render.add_argument("key", help="technique key (e.g. amsi-patch-memory)")
+    w_render.set_defaults(func=cmd_weaponization_render)
+    p_weap.set_defaults(func=lambda a: _missing(p_weap))
+
+    p_beacon = sub.add_parser(
+        "beacon",
+        help="track + task fieldkit's engagement-side view of operator beacons",
+        description="Manages the beacon metadata + task queue that lives "
+                    "alongside the rest of the engagement state. fieldkit does "
+                    "NOT run a live C2 — operators run Havoc / Mythic / Sliver / "
+                    "their own, and use `fieldkit beacon` to track what was "
+                    "built, what's been asked, what's been reported back. "
+                    "Beacon payload code lives as reference templates under "
+                    "`fieldkit/loaders/` (slice 13).")
+    beacon_sub = p_beacon.add_subparsers(dest="beacon_command",
+                                           metavar="<action>")
+
+    b_new = beacon_sub.add_parser("new", help="register a new beacon build")
+    b_new.add_argument("name", help="short identifier (e.g. corp-ws02-primary)")
+    b_new.add_argument("--platform", required=True,
+                       help="windows | linux | cross")
+    b_new.add_argument("--transport", required=True,
+                       help="https | smb-pipe | doh | webdav")
+    b_new.add_argument("--callback-url", required=True,
+                       help="operator-controlled C2 endpoint URL")
+    b_new.add_argument("--interval", type=int, default=60,
+                       help="base poll interval in seconds (default 60)")
+    b_new.add_argument("--jitter", type=int, default=30,
+                       help="jitter percent (default 30 — poll +/- 30%%)")
+    b_new.set_defaults(func=cmd_beacon_new)
+
+    b_list = beacon_sub.add_parser("list", help="list registered beacons")
+    b_list.set_defaults(func=cmd_beacon_list)
+
+    b_task = beacon_sub.add_parser("task", help="queue a task for a beacon")
+    b_task.add_argument("name", help="beacon name")
+    b_task.add_argument("cmd", help="shell | upload | download | sleep | kill")
+    b_task.add_argument("args", nargs="*", help="command arguments")
+    b_task.set_defaults(func=cmd_beacon_task)
+
+    b_result = beacon_sub.add_parser("result",
+        help="record a beacon's reported-back task result")
+    b_result.add_argument("task_id", type=int, help="beacon_task row id")
+    b_result.add_argument("--from-file", metavar="PATH",
+                          help="read result bytes from this file (otherwise "
+                               "reads from stdin)")
+    b_result.set_defaults(func=cmd_beacon_result)
+
+    b_hist = beacon_sub.add_parser("history",
+        help="show every task for a beacon (pending + completed)")
+    b_hist.add_argument("name", help="beacon name")
+    b_hist.add_argument("--limit", type=int, default=50)
+    b_hist.set_defaults(func=cmd_beacon_history)
+
+    b_build = beacon_sub.add_parser("build-config",
+        help="print the substitution dict for a beacon's reference template")
+    b_build.add_argument("name", help="beacon name")
+    b_build.set_defaults(func=cmd_beacon_build_config)
+
+    p_beacon.set_defaults(func=lambda a: _missing(p_beacon))
 
     p_recce = sub.add_parser(
         "export-recce", help="fold proven findings back into recce (fieldkit-import JSON)",
