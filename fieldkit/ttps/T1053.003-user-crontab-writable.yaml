@@ -1,0 +1,35 @@
+technique: T1053.003
+name: writable per-user crontab → scheduled code as that user
+key: persist:user-crontab-writable
+tactic: [persistence, privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: moderate
+detect:
+  facts_match: {has_writable_user_crontabs: true}
+execute:
+  command: |-
+    for d in /var/spool/cron/crontabs /var/spool/cron; do
+      for f in "$d"/*; do
+        [ -w "$f" ] 2>/dev/null && echo "=== $f ===" && head "$f"
+      done
+    done 2>/dev/null | head -40
+verify:
+  success: "crontab"
+cleanup:
+  command: ""
+report:
+  vector_type: user_crontab_writable
+  evidence: "a /var/spool/cron/crontabs/<user> is writable by current UID"
+  description: >
+    /var/spool/cron/crontabs/<user> stores that user's crontab verbatim —
+    writing an exec line schedules code as that user on the next tick.
+    Loose perms here are common on dev boxes and freshly-provisioned
+    service accounts where the admin typed ``crontab -e`` without
+    checking the resulting mode.
+  remediation: >
+    Each crontab file must be 0600 owned by the user. The spool
+    directory must be 1733 or stricter.
+  refs: [T1053.003]

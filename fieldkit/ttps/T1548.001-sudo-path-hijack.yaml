@@ -1,0 +1,39 @@
+technique: T1548.001
+name: sudo PATH hijack (env_keep / !secure_path / relative command)
+key: privesc:sudo-path-hijack
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  facts_match: {sudo_preserves_path: true}
+execute:
+  command: |-
+    # Three paths that all collapse to the same primitive: the sudo
+    # target doesn't resolve commands via a trusted PATH, so a binary
+    # we write earlier in PATH wins. Surface the exact match + the
+    # relative-command rule (if any) so the operator picks the right
+    # payload drop.
+    sudo -n -l 2>/dev/null | grep -E 'env_keep.*PATH|!secure_path|^[[:space:]]*\([^)]+\)[[:space:]]+NOPASSWD.*[[:space:]][^/]' || true
+    echo "---"; echo "PATH: $PATH"
+verify:
+  success: "env_keep"
+cleanup:
+  command: ""
+report:
+  vector_type: sudo_path_hijack
+  evidence: "sudo -l output declares PATH preservation or a relative-path command"
+  description: >
+    When a sudo rule either preserves ``PATH`` (``env_keep += PATH``),
+    disables secure_path (``!secure_path``), or runs a relative command
+    name (e.g. ``NOPASSWD: service ...`` instead of ``/usr/sbin/service
+    ...``), the operator plants a same-named binary earlier in PATH and
+    the next sudo invocation runs that binary as the target user. One
+    of the most common Linux escalation paths in prod.
+  remediation: >
+    sudo rules must use absolute paths. Remove ``env_keep += PATH``,
+    keep ``secure_path`` on. ``Defaults secure_path="/usr/sbin:..."``
+    should be the first line of /etc/sudoers.
+  refs: [T1548.001]

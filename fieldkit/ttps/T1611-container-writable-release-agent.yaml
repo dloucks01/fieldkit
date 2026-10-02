@@ -1,0 +1,37 @@
+technique: T1611
+name: cgroup v1 writable release_agent → host root
+key: container:writable-release-agent
+tactic: [privilege-escalation, defense-evasion]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: loud
+detect:
+  facts_match: {writable_release_agent: true}
+execute:
+  command: |-
+    # Classic --privileged container escape on cgroup v1: find the
+    # writable release_agent, point it at a payload inside the
+    # container, write 1 to notify_on_release on an empty cgroup, let
+    # the last task leave. Kernel runs the release_agent path as root
+    # with host context.
+    find /sys/fs/cgroup -maxdepth 3 -name release_agent -writable 2>/dev/null | head -5
+    cat /proc/filesystems | grep -i cgroup | head
+verify:
+  success: "release_agent"
+cleanup:
+  command: ""
+report:
+  vector_type: writable_release_agent
+  evidence: "a cgroup v1 release_agent is writable from inside the container"
+  description: >
+    When a container mounts cgroup v1 writable (default on
+    ``--privileged`` with cgroup v1 host), writing a path to
+    ``release_agent`` + marking a cgroup for notify_on_release makes
+    the kernel execute that path as PID 1 on host when the cgroup
+    empties. One of the oldest + still-shipped docker escape primitives.
+  remediation: >
+    Avoid ``--privileged`` containers. Mount /sys read-only. Prefer
+    hosts on cgroup v2 (which removed release_agent entirely).
+  refs: [T1611]

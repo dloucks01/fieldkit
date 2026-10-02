@@ -1,0 +1,38 @@
+# Firefox saved logins — logins.json + key4.db offline NSS decrypt
+technique: T1555.003
+name: Firefox saved logins (offline decrypt)
+key: loot:firefox-browser
+tactic: [credential-access]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  facts_match: {has_firefox_profiles: true}
+execute:
+  command: |-
+    for p in $(find $HOME/.mozilla/firefox -maxdepth 2 -type d -name '*.default*' 2>/dev/null); do
+      echo "=== $p ==="
+      [ -r "$p/key4.db" ]      && echo "key4.db: $(stat -c '%s' "$p/key4.db") bytes"
+      [ -r "$p/logins.json" ]  && echo "logins.json: $(stat -c '%s' "$p/logins.json") bytes"
+      [ -r "$p/cookies.sqlite" ] && echo "cookies.sqlite: present"
+    done
+verify:
+  success: "key4.db"
+cleanup:
+  command: ""
+report:
+  vector_type: firefox_browser_loot
+  evidence: "Firefox profile with logins.json + key4.db readable"
+  description: >
+    Firefox stores encrypted passwords in ``logins.json`` under the active
+    profile; the AES key lives in ``key4.db`` (sqlite). With read access to
+    both the operator extracts the master key via libnss (``pk12util`` +
+    ``nss`` tooling) and decrypts every saved password offline.
+    cookies.sqlite yields session cookies for SSO replay in parallel.
+  remediation: >
+    Enforce a Firefox master password / primary-password policy — key4.db
+    without the primary password is not immediately decryptable. Audit
+    profiles synced to shared / long-lived accounts.
+  refs: [T1555]

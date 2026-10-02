@@ -1,0 +1,51 @@
+technique: T1543.002
+name: D-Bus policy misconfig → privileged method call
+key: privesc:dbus-policy-misconfig
+tactic: [privilege-escalation, defense-evasion]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: moderate
+detect:
+  facts_match: {has_dbus_broad_policies: true}
+execute:
+  command: |-
+    # D-Bus system policies live under /etc/dbus-1/system.d and
+    # /usr/share/dbus-1/system.d. A broad `<policy context="default">`
+    # with `allow send_destination=` opens the named service to any
+    # local user — if the service runs as root (NetworkManager,
+    # PackageKit, UDisks2 etc.), the operator calls methods that
+    # modify host state as root.
+    for f in /etc/dbus-1/system.d/*.conf /usr/share/dbus-1/system.d/*.conf; do
+      if [ -r "$f" ]; then
+        if grep -qE '<policy context="default".*>.*allow send_destination=' "$f"; then
+          echo "=== $f: broad default allow ==="
+          grep -nE '<policy|<allow|<deny' "$f" | head -10
+        fi
+      fi
+    done
+verify:
+  success: "<policy"
+cleanup:
+  command: ""
+report:
+  vector_type: dbus_policy_misconfig
+  evidence: "D-Bus policy file grants broad principals privileged method calls"
+  description: >
+    D-Bus policies that use ``<policy context="default">`` + ``allow
+    send_destination=`` without further user/group narrowing expose
+    their service's method surface to any local user. If the service
+    runs as root (NetworkManager controlling the network stack,
+    PackageKit installing packages, UDisks2 mounting devices,
+    sometimes systemd1 itself), the operator calls methods that modify
+    host state as root — install malicious packages via PackageKit,
+    plant setuid via UDisks2 loopback mounts, etc. One of the quieter
+    Linux privesc paths because D-Bus audit log coverage is still weak
+    on most distros.
+  remediation: >
+    Review every ``/etc/dbus-1/system.d/*.conf`` for broad default
+    policies. Scope method access by ``user=`` or ``group=``. Enforce
+    PolicyKit (polkit) rules on sensitive methods so a user-level call
+    still requires explicit authorization.
+  refs: [T1543.002]

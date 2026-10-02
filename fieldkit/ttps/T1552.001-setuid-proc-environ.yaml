@@ -1,0 +1,42 @@
+technique: T1552.001
+name: SUID process environment loot (/proc/<pid>/environ)
+key: loot:setuid-proc-environ
+tactic: [credential-access, privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: medium
+  safety: read-only
+  detection: quiet
+detect:
+  facts_match: {has_readable_suid_proc_environ: true}
+execute:
+  command: |-
+    # Each candidate pid is a live SUID process whose /proc/<pid>/environ
+    # we can read. The environ holds whatever the parent passed in — on
+    # misconfigured wrappers that routinely includes DB passwords, API
+    # keys, LDAP binds and vault tokens.
+    for p in $(ls -d /proc/[0-9]* 2>/dev/null); do
+      exe=$(readlink "$p/exe" 2>/dev/null)
+      if [ -n "$exe" ] && [ -u "$exe" ] && [ -r "$p/environ" ]; then
+        echo "=== $(basename $p) :: $exe ==="
+        tr '\0' '\n' < "$p/environ" | head -30
+      fi
+    done | head -200
+verify:
+  success: "="
+cleanup:
+  command: ""
+report:
+  vector_type: suid_proc_environ_loot
+  evidence: "readable /proc/<pid>/environ on a running SUID binary"
+  description: >
+    When a user with the right UID can read ``/proc/<pid>/environ`` of
+    a running SUID process (common when the SUID runs as a service user
+    we belong to), the environment the parent passed is exposed. A
+    shell wrapper around a legacy SUID that sets DB_PASSWORD / API_KEY
+    before exec leaks every one of those strings here.
+  remediation: >
+    hidepid=2 on /proc hides other processes from unrelated users.
+    Don't pass secrets through environment variables to setuid wrappers
+    — use a short-lived auth socket instead.
+  refs: [T1552.001]

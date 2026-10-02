@@ -1,0 +1,34 @@
+technique: T1543.003
+name: writable /etc/init.d script → root at next service start
+key: persist:sysv-init-writable
+tactic: [persistence, privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: moderate
+detect:
+  facts_match: {has_writable_sysv_init: true}
+execute:
+  command: |-
+    for f in /etc/init.d/* /etc/rc.d/init.d/* 2>/dev/null; do
+      [ -w "$f" ] 2>/dev/null && echo "=== $f ===" && head -5 "$f"
+    done | head -60
+verify:
+  success: "/etc/init.d/"
+cleanup:
+  command: ""
+report:
+  vector_type: writable_sysv_init
+  evidence: "a /etc/init.d script is writable by current UID"
+  description: >
+    SysV init scripts (``/etc/init.d/*``) run as root on service start.
+    Writable init scripts are rare on modern systemd-first distros but
+    persist on CentOS 7, Oracle Linux, several appliance OSes and
+    anywhere systemd-sysv-compat is used — appending an exec line turns
+    the next service restart (which admins DO trigger) into root code.
+  remediation: >
+    Init scripts must be 0755 root:root. Audit any package manager that
+    installs init scripts with non-root ownership. Prefer systemd units
+    (which have per-user permission audit built into systemd-analyze).
+  refs: [T1543.003]

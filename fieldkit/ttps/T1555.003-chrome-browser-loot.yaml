@@ -1,0 +1,43 @@
+# Chrome / Chromium / Edge saved logins via Login Data + Local State decrypt
+technique: T1555.003
+name: Chrome / Chromium saved logins (offline decrypt)
+key: loot:chrome-browser
+tactic: [credential-access]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  facts_match: {has_chrome_profiles: true}
+execute:
+  command: |-
+    for p in $(find $HOME/.config/google-chrome $HOME/.config/chromium                     $HOME/.config/microsoft-edge $HOME/.config/BraveSoftware                     -maxdepth 2 -type d -name 'Default' 2>/dev/null); do
+      echo "=== $p ==="
+      [ -r "$p/Login Data" ]   && echo "Login Data: $(stat -c '%s' "$p/Login Data") bytes"
+      [ -r "$p/Cookies" ]      && echo "Cookies: $(stat -c '%s' "$p/Cookies") bytes"
+      base=$(dirname "$p")
+      [ -r "$base/Local State" ] && echo "Local State: present (holds master-key under os_crypt.encrypted_key)"
+      # Dump the SQL table structure as proof-of-access without copying contents.
+      sqlite3 "$p/Login Data" '.schema logins' 2>/dev/null | head -3
+    done
+verify:
+  success: "Login Data"
+cleanup:
+  command: ""
+report:
+  vector_type: chrome_browser_loot
+  evidence: "Chrome / Chromium profile with Login Data + Local State readable"
+  description: >
+    Chrome / Chromium / Edge / Brave share a single storage layout:
+    saved passwords in ``<profile>/Login Data`` (SQLite, ``logins`` table),
+    cookies in ``<profile>/Cookies``, and the AES-GCM master key encrypted
+    under the OS keyring in ``<profile root>/Local State`` ``os_crypt.
+    encrypted_key``. With read access to all three + the user's login
+    keyring the operator decrypts every saved password and session cookie
+    offline — SSO replay against the user's full web perimeter.
+  remediation: >
+    Enforce browser profile sync policies and avoid shared / long-lived
+    local accounts for engineers who access the production web perimeter.
+    Rotate any password surfaced from a compromised profile.
+  refs: [T1555.003]

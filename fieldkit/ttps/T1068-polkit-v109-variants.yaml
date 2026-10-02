@@ -1,0 +1,52 @@
+technique: T1068
+name: polkit v109+ post-PwnKit variants → SYSTEM
+key: cve:polkit-v109-variants
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: medium
+  safety: config-change
+  detection: moderate
+detect:
+  version_range:
+    pkexec_version: ">=0.105,<0.120"
+execute:
+  command: |-
+    pkexec --version
+    ls -la $(which pkexec 2>/dev/null)
+  stages:
+    - name: polkit-v109-variants
+      as: '{{stage}}/polkit-v109-variants'
+verify:
+  success: "uid=0"
+cleanup:
+  command: |-
+    rm -f {{stage}}/polkit-v109-variants
+report:
+  vector_type: kernel_cve
+  evidence: "{{field}} {{version}} in {{lo}}-{{hi}}"
+  description: >
+    Polkit versions after the PwnKit (CVE-2021-4034) fix landed still
+    carried related argv-handling + rules-reload bugs across the 0.105 -
+    0.120 line (CVE-2021-3560 reload race, pre-0.120 regex rule corner
+    cases). A target with ``pkexec`` in this range is a candidate for
+    one of the related 0.105 - 0.120 PoCs — slower than PwnKit but
+    still reliable local root on affected builds.
+  remediation: >
+    Patch polkit to 0.120+ or vendor backport. Remove SUID on pkexec
+    where not needed (``chmod u-s $(which pkexec)``).
+  refs: [T1068, CVE-2021-3560]
+playbook:
+  summary: >
+    pkexec version {{field}} {{version}} is in the post-PwnKit vulnerable
+    window ({{lo}}-{{hi}}). Pick the matching variant exploit (0.105 - 0.120
+    pkexec arg-handling / CVE-2021-3560 reload race) from the arsenal and
+    stage it. Confirm patch level — distros backport frequently.
+  place: '{{stage}}/polkit-v109-variants'
+  steps:
+    - identify the exact variant for the pkexec version — argv-handling for 0.105-0.113, reload race for 0.113-0.117
+    - build the matching exploit attacker-side from the arsenal
+    - push to {{stage}}/polkit-v109-variants (`fieldkit prep <host> cve:polkit-v109-variants --stage`, or scp it)
+    - chmod +x {{stage}}/polkit-v109-variants
+    - run and capture `id` proving uid=0
+  restore: rm -f {{stage}}/polkit-v109-variants

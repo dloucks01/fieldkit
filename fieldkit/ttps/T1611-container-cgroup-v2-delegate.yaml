@@ -1,0 +1,41 @@
+technique: T1611
+name: cgroup v2 delegate misconfig → host-cgroup pivot
+key: container:cgroup-v2-delegate
+tactic: [privilege-escalation, defense-evasion]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: loud
+detect:
+  facts_match: {writable_cgroup_delegate: true}
+execute:
+  command: |-
+    # On cgroup v2 hosts release_agent is gone, but a misconfigured
+    # container that mounts /sys/fs/cgroup writable can still move its
+    # own PID into a different cgroup — including one that bypasses the
+    # container's resource namespace. The pivot is to write our PID into
+    # the host's root cgroup.procs file (where accessible).
+    cat /proc/self/cgroup
+    awk -F: '/^0::/{print $3}' /proc/self/cgroup
+    echo "---"
+    find /sys/fs/cgroup -maxdepth 2 -name 'cgroup.procs' -writable 2>/dev/null | head
+verify:
+  success: "cgroup.procs"
+cleanup:
+  command: ""
+report:
+  vector_type: writable_cgroup_delegate
+  evidence: "writable cgroup.procs on the container's own cgroup node"
+  description: >
+    cgroup v2 removed ``release_agent`` but misconfigured delegation
+    still gives containers write access to cgroup.procs — moving the
+    attacker's PID into a cgroup outside the resource namespace lets
+    them bypass memory / CPU limits, and in some configurations reach
+    sibling-container state. One of the "new" escape primitives after
+    release_agent's removal.
+  remediation: >
+    Don't mount /sys/fs/cgroup writable into containers. Follow the
+    runc / containerd delegation guidance — delegate to a sub-cgroup,
+    not the task's own cgroup root.
+  refs: [T1611]

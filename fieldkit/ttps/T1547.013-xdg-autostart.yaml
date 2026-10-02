@@ -1,0 +1,34 @@
+technique: T1547.013
+name: writable XDG autostart entry
+key: persist:xdg-autostart
+tactic: [persistence]
+platform: [linux]
+ranking:
+  exploitability: medium
+  safety: config-change
+  detection: moderate
+detect:
+  facts_match: {has_writable_xdg_autostart: true}
+execute:
+  command: |-
+    for d in "$HOME/.config/autostart" /etc/xdg/autostart /usr/share/gnome/autostart; do
+      [ -d "$d" ] && echo "=== $d ===" && ls -la "$d" 2>/dev/null | head -10
+    done
+verify:
+  success: "autostart"
+cleanup:
+  command: ""
+report:
+  vector_type: writable_xdg_autostart
+  evidence: "writable autostart dir or existing .desktop file in autostart"
+  description: >
+    Any .desktop file in an XDG autostart dir (per-user
+    ~/.config/autostart or system-wide /etc/xdg/autostart) runs on
+    GUI-session login. Writable system-wide dirs let us plant one new
+    .desktop (runs as whoever next logs in via GNOME/KDE/XFCE — often
+    the box's primary user, who has elevated sudo). Writable existing
+    files let us edit an entry (runs as its owner — a cleaner handle).
+  remediation: >
+    /etc/xdg/autostart must be 0755 root:root. Audit per-user autostart
+    additions as part of normal user-account hygiene.
+  refs: [T1547.013]

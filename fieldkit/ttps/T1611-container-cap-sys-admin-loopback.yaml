@@ -1,0 +1,36 @@
+# CAP_SYS_ADMIN → mount loopback of /dev/sda → host rootfs
+technique: T1611
+name: CAP_SYS_ADMIN → loopback-mount host rootfs
+key: container:cap-sys-admin-loopback
+tactic: [defense-evasion, credential-access, privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: loud
+detect:
+  facts_match: {has_cap_sys_admin: true, in_container: true}
+execute:
+  command: |-
+    # Enumerate reachable block devices. A follow-up operator step mounts
+    # /dev/sda1 (or whatever's root on the host) read-write into the
+    # container's filesystem — direct access to host-side /etc/shadow,
+    # /root/.ssh, planted setuid binaries.
+    ls -l /dev/sd* /dev/vd* /dev/nvme* 2>/dev/null | head -10
+verify:
+  success: "sd"
+cleanup:
+  command: ""
+report:
+  vector_type: cap_sys_admin
+  evidence: "container holds CAP_SYS_ADMIN"
+  description: >
+    CAP_SYS_ADMIN lets a container ``mount(2)`` arbitrary block devices
+    into its filesystem. Discover the host's root block device (/dev/sda1
+    typically), mount it read-write, read /etc/shadow + plant a setuid
+    binary + exfiltrate SSH keys. Full host compromise.
+  remediation: >
+    CAP_SYS_ADMIN should NEVER be granted to an untrusted container —
+    it's effectively root on the host. Drop it + enforce
+    seccomp-default profiles.
+  refs: [T1611]

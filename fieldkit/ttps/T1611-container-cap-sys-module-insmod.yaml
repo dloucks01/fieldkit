@@ -1,0 +1,34 @@
+# CAP_SYS_MODULE → load kernel module → ring-0 code execution
+technique: T1611
+name: CAP_SYS_MODULE → kernel module load → ring-0 escape
+key: container:cap-sys-module-insmod
+tactic: [defense-evasion, privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: moderate
+detect:
+  facts_match: {has_cap_sys_module: true, in_container: true}
+execute:
+  command: |-
+    # Build + insmod a trivial LKM that spawns a reverse shell from the
+    # kernel. The payload step compiles against /lib/modules/$(uname -r);
+    # if /lib/modules is bind-mounted into the container (common on CI
+    # runners) that's zero friction. Otherwise bring your own .ko.
+    uname -r; ls /lib/modules 2>/dev/null | head
+verify:
+  success: "modules"
+cleanup:
+  command: ""
+report:
+  vector_type: cap_sys_module
+  evidence: "container holds CAP_SYS_MODULE"
+  description: >
+    CAP_SYS_MODULE lets a process ``init_module(2)`` an arbitrary kernel
+    module. From a container that's loaded into the host kernel — ring-0
+    code execution with no namespace boundary. Full host compromise.
+  remediation: >
+    CAP_SYS_MODULE must never be granted to a container. Drop it +
+    don't bind-mount /lib/modules into containers.
+  refs: [T1611]

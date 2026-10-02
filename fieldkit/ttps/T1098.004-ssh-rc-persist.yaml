@@ -1,0 +1,41 @@
+technique: T1098.004
+name: ~/.ssh/rc login hook persistence
+key: persist:ssh-rc
+tactic: [persistence, defense-evasion]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: quiet
+detect:
+  facts_match: {writable_ssh_rc: true}
+execute:
+  command: |-
+    # ~/.ssh/rc runs on every ssh-in with the user's shell BEFORE
+    # ~/.bashrc. Most hunting tools audit ~/.bashrc + shell profile
+    # files but miss ~/.ssh/rc — it's a quiet, long-lived handle.
+    if [ -e "$HOME/.ssh/rc" ]; then
+      ls -la "$HOME/.ssh/rc"
+      head "$HOME/.ssh/rc"
+    else
+      echo "~/.ssh/rc does not exist yet — writable parent allows creation"
+      ls -la "$HOME/.ssh"
+    fi
+verify:
+  success: ".ssh"
+cleanup:
+  command: ""
+report:
+  vector_type: writable_ssh_rc
+  evidence: "~/.ssh/rc writable (or its parent dir allows us to create it)"
+  description: >
+    sshd runs ``~/.ssh/rc`` on every successful ssh login with the
+    user's shell, before ``~/.bashrc`` and before the user's own
+    command runs. Most endpoint audit tools look at ``.bashrc`` /
+    ``.profile`` but not ``.ssh/rc``, so dropping a hook here is a
+    quiet long-lived persistence slot for any user we have write-access
+    to.
+  remediation: >
+    ``~/.ssh/`` must be 0700 owned by its user; ``~/.ssh/rc`` must be
+    audited by endpoint tools alongside shell-init files.
+  refs: [T1098.004]

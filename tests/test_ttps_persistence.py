@@ -44,6 +44,17 @@ FACTS_GATED_PERSIST = {
     "persist:writable-pam-module",
     "persist:writable-udev",
     "persist:systemd-user-unit",
+    # slice 3 — writable user crontab, shell-init of another user,
+    # XDG autostart, ~/.ssh/rc login hook
+    "persist:user-crontab-writable",
+    "persist:shell-init-hijack",
+    "persist:xdg-autostart",
+    "persist:ssh-rc",
+    # slice 4 — SysV init writable, systemd generator writable
+    "persist:sysv-init-writable",
+    "persist:systemd-generator-writable",
+    # slice 6 — PAM passthrough logger
+    "persist:pam-passthrough-logger",
 }
 
 

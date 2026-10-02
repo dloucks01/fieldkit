@@ -124,7 +124,14 @@ class LinuxFactsTest(EnumTestCase):
         self.assertIsNone(report.blocked)
         self.assertEqual(set(report.ran),
                          {"id", "sudo", "suid", "caps", "kernel", "versions",
-                          "container", "hygiene", "cloud_tokens", "ssh_env"})
+                          "container", "hygiene", "cloud_tokens", "ssh_env",
+                          "browsers", "proc_caps", "nfs_env",
+                          "keyrings", "cgroup_v1_escape", "at_spool", "xauth",
+                          "sudo_path", "ssh_rc", "xdg_autostart", "shell_init",
+                          "user_crontabs", "suid_environ",
+                          "sysv_init", "systemd_generators", "directory_auth",
+                          "cgroup_v2_escape",
+                          "aws_sso_cache", "dbus_policy"})
         f = facts_for(self.store, hid)
         self.assertEqual((f.user, f.uid), ("svc", 1000))
         self.assertFalse(f.is_root)

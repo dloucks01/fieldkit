@@ -1,0 +1,40 @@
+technique: T1021.001
+name: X11 xauth cookie pivot → attach to live GUI session
+key: lateral:x11-xauth
+tactic: [lateral-movement, credential-access, collection]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: moderate
+detect:
+  facts_match: {xauth_cookie_present: true}
+execute:
+  command: |-
+    # The cookie in ~/.Xauthority (or /tmp/xauth-<uid>) authenticates
+    # against the running X server. With it the operator can screenshot
+    # the user's session, inject keystrokes with xdotool, and read any
+    # window title / clipboard contents — a full lateral into their
+    # live GUI session.
+    xauth list 2>/dev/null | head -10
+    if command -v xdotool >/dev/null 2>&1; then
+      DISPLAY=:0 XAUTHORITY="$HOME/.Xauthority" xdotool getactivewindow getwindowname 2>/dev/null
+    fi
+verify:
+  success: "MIT-MAGIC"
+cleanup:
+  command: ""
+report:
+  vector_type: xauth_cookie_pivot
+  evidence: "~/.Xauthority readable and non-empty"
+  description: >
+    An X11 cookie is a bearer token for the running X server. On
+    multi-user hosts with X forwarding or shared displays, a readable
+    ~/.Xauthority (or a stale /tmp/xauth-<uid> owned by a UID we share
+    a group with) lets us attach to another user's live session —
+    screenshot it, inject keystrokes, read window titles and clipboard.
+  remediation: >
+    Prefer Wayland for multi-user hosts (per-session isolation).
+    Enforce ~/.Xauthority 0600 and /tmp xauth files 0600 owned by the
+    session's UID.
+  refs: [T1021.001]

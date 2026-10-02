@@ -1,0 +1,39 @@
+technique: T1546.004
+name: shell-init hijack (writable other-user .bashrc / .zshrc)
+key: persist:shell-init-hijack
+tactic: [persistence, privilege-escalation, lateral-movement]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: moderate
+detect:
+  facts_match: {has_writable_shell_init: true}
+execute:
+  command: |-
+    # Enumerate exactly which init files are writable; the operator picks
+    # the smallest / least-noisy injection point (``.inputrc`` is quieter
+    # than ``.bashrc`` for login shells; ``.bash_profile`` runs once per
+    # login versus every subshell).
+    for u in $(getent passwd 2>/dev/null | awk -F: '$3>=1000 && $3<70000 {print $1":"$6}'); do
+      user=${u%%:*}; home=${u#*:}
+      for f in .bashrc .profile .bash_profile .zshrc .inputrc; do
+        [ -w "$home/$f" ] 2>/dev/null && echo "$user $home/$f"
+      done
+    done | head -20
+verify:
+  success: "/home/"
+cleanup:
+  command: ""
+report:
+  vector_type: writable_shell_init
+  evidence: "another user's shell init file is writable by current UID"
+  description: >
+    Writing a one-line exec to another user's ``.bashrc`` /
+    ``.bash_profile`` / ``.zshrc`` turns their next login shell into
+    our code. If the target user has sudo or a higher-value session
+    (DBA, oncall), this is a direct lateral + escalation path.
+  remediation: >
+    Shell-init files must be 0600 owned by their user, parent $HOME 0750.
+    Audit any shared-group write perms on /home.
+  refs: [T1546.004]

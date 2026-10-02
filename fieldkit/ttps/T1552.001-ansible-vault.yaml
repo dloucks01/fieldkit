@@ -1,0 +1,38 @@
+technique: T1552.001
+name: Ansible vault keys + playbook secrets
+key: loot:ansible-vault
+tactic: [credential-access]
+platform: [linux]
+ranking:
+  exploitability: medium
+  safety: read-only
+  detection: quiet
+detect:
+  always: true
+execute:
+  command: |-
+    # Three canonical locations: the vault password file (``vault_password_file``
+    # in ansible.cfg + its referenced path), inline ``!vault`` blocks in
+    # yaml playbooks, and ``.vault_pass`` / ``vault_pass.txt`` next to
+    # inventory.
+    find /etc/ansible /opt /srv /home /root \
+         -maxdepth 5 -type f \( -name 'ansible.cfg' -o -name 'vault_pass*' \
+                                 -o -name '.vault_pass' \) 2>/dev/null | head -20
+    grep -rln --include='*.y*ml' '!vault' /etc/ansible /opt /srv /home /root 2>/dev/null | head -20
+verify:
+  success: "vault"
+cleanup:
+  command: ""
+report:
+  vector_type: ansible_vault_loot
+  evidence: "ansible playbooks / vault_password_file artefacts readable"
+  description: >
+    Ansible stores encrypted secrets inline (``!vault`` blocks) and
+    separately as ``vault_password_file`` paths referenced from
+    ansible.cfg. If the password file is readable (common on CI runners
+    + Ansible controller boxes), every ``!vault`` block decrypts.
+  remediation: >
+    Keep ``vault_password_file`` 0400 and owned by the Ansible user.
+    Prefer ``--vault-id`` with an operator-prompted password over
+    on-disk vault_password files.
+  refs: [T1552.001]

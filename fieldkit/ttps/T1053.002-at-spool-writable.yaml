@@ -1,0 +1,38 @@
+technique: T1053.002
+name: writable at(1) spool → root scheduled job
+key: privesc:at-spool-writable
+tactic: [privilege-escalation, persistence]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: moderate
+detect:
+  facts_match: {at_spool_writable: true}
+execute:
+  command: |-
+    ls -la /var/spool/cron/atjobs /var/spool/at /var/spool/atjobs 2>/dev/null
+    # Format of an at(1) job file is well-documented — the first line
+    # names the UID (0 for root), the body is a shell script. Dropping
+    # a correctly-formatted file into a writable spool makes atd run it
+    # at the embedded time as the embedded UID.
+    echo "---"
+    atq 2>/dev/null | head
+verify:
+  success: "spool"
+cleanup:
+  command: ""
+report:
+  vector_type: at_spool_writable
+  evidence: "/var/spool/at or /var/spool/cron/atjobs writable by current UID"
+  description: >
+    When atd's spool is writable, dropping a correctly-formed job file
+    there makes atd execute arbitrary commands as the UID baked into
+    the job (0 → root). Older + stripped-down distros (minimal
+    containers, embedded appliances) commonly leave this writable by
+    the ``daemon`` group that service accounts belong to.
+  remediation: >
+    The at(1) spool must be ``drwx------ root daemon`` (or
+    ``root:atdaemon`` depending on distro). Audit any service account
+    with group membership that reaches the daemon group.
+  refs: [T1053.002]

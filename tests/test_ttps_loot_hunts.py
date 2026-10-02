@@ -47,6 +47,26 @@ FACTS_GATED_LOOT_KEYS = {
     "loot:kubectl-config",
     "loot:terraform-state",
     "loot:jenkins-credentials",
+    # slice 3 — facts-gated adds
+    "loot:gnome-keyring",
+    "loot:kwallet",
+    "loot:setuid-proc-environ",
+    # slice 4 — browser cookies, K8s secrets
+    "loot:browser-cookies",
+    "loot:k8s-secret-enum",
+    # slice 6 — AWS SSO cache
+    "loot:aws-sso-cache",
+}
+
+#: Slice 3 added more always-fire grep-driven loot hunts (ansible vault,
+#: GitLab runner config, CI runner artifact dirs). Same shape as the
+#: C2-slice LOOT_KEYS — always fire, medium/read-only/quiet (score 233),
+#: broad grep sweeps rather than specific primitives — so they ride the
+#: same invariants, just with their own vector_types.
+SLICE3_ALWAYS_FIRE_LOOT = {
+    "loot:ansible-vault",
+    "loot:gitlab-runner",
+    "loot:ci-artifact-dirs",
 }
 
 
@@ -109,11 +129,12 @@ class LootRankingTest(unittest.TestCase):
 
     def test_all_five_fire_on_bare_linux_foothold(self):
         # Empty facts host — no privesc route enumerated, no loot
-        # HostFacts field. All 5 loot TTPs still fire (`always: true`)
-        # so the operator has SOMETHING actionable to run.
+        # HostFacts field. All 5 C2-slice + 3 slice-3 always-fire loot
+        # TTPs still fire (`always: true`) so the operator has SOMETHING
+        # actionable to run.
         vs = self._fire()
         loot_keys = {v.key for v in vs if v.key.startswith("loot:")}
-        self.assertEqual(loot_keys, LOOT_KEYS)
+        self.assertEqual(loot_keys, LOOT_KEYS | SLICE3_ALWAYS_FIRE_LOOT)
 
     def test_sudo_all_ranks_above_all_loot(self):
         # A host with sudo -l (ALL:ALL) is root — the loot hunts are

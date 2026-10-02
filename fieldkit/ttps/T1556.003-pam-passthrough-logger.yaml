@@ -1,0 +1,53 @@
+technique: T1556.003
+name: PAM module passthrough logger (writable auth path)
+key: persist:pam-passthrough-logger
+tactic: [persistence, credential-access, defense-evasion]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: quiet
+detect:
+  facts_match: {has_writable_pam_modules: true}
+execute:
+  command: |-
+    # The "passthrough logger" variant of the writable-PAM-module primitive:
+    # replace the real pam_unix.so with a shim that:
+    #   1. captures the cleartext password via pam_get_item(PAM_AUTHTOK)
+    #   2. appends username:password:timestamp to an attacker log file
+    #   3. forwards the auth call to the ORIGINAL pam_unix.so
+    # Users and services keep logging in normally — zero visible symptom —
+    # while every password handed to PAM lands in the operator's log.
+    # Enumeration surfaces the writable module + PAM stack files that
+    # reference it (so the operator picks the right swap target).
+    for p in /lib/security/*.so /lib/x86_64-linux-gnu/security/*.so \
+             /lib64/security/*.so /usr/lib/x86_64-linux-gnu/security/*.so \
+             /usr/lib/security/*.so; do
+      [ -w "$p" ] 2>/dev/null && echo "WRITABLE: $p"
+    done
+    echo "---PAM stacks referencing these:---"
+    grep -lE "pam_unix|pam_sss|pam_ldap" /etc/pam.d/* 2>/dev/null | head -10
+verify:
+  success: "WRITABLE"
+cleanup:
+  command: ""
+report:
+  vector_type: pam_passthrough_logger
+  evidence: "a PAM module is writable and the PAM stack references it"
+  description: >
+    A writable PAM module file lets the operator plant a passthrough shim:
+    it captures the cleartext password via ``pam_get_item(PAM_AUTHTOK)``,
+    logs user:pass:timestamp to an attacker file, and forwards the auth
+    call to the original module. Users and services keep logging in
+    normally — zero visible symptom — while every password handed to
+    PAM lands in the log. Distinct from the "writable PAM module" entry
+    because that primitive REPLACES the module (users get rejected until
+    the operator restores it); this one STAYS functional, which is why
+    it's the preferred weaponization and should be flagged as a separate
+    hunting target.
+  remediation: >
+    Enforce PAM module files 0644 root:root; audit every /lib*/security
+    directory for non-root ownership. SELinux / AppArmor policy for
+    system auth should deny write to any process other than the package
+    manager.
+  refs: [T1556.003]

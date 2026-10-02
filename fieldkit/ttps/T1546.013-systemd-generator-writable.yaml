@@ -1,0 +1,35 @@
+technique: T1546.013
+name: writable systemd generator → pre-login root execution
+key: persist:systemd-generator-writable
+tactic: [persistence, privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: moderate
+detect:
+  facts_match: {has_writable_systemd_generators: true}
+execute:
+  command: |-
+    for d in /lib/systemd/system-generators /usr/lib/systemd/system-generators              /etc/systemd/system-generators /run/systemd/system-generators; do
+      [ -d "$d" ] && echo "=== $d ===" && ls -la "$d" 2>/dev/null
+    done
+verify:
+  success: "generators"
+cleanup:
+  command: ""
+report:
+  vector_type: writable_systemd_generator
+  evidence: "a systemd generator binary / dir is writable by current UID"
+  description: >
+    systemd runs generators at EVERY boot before ANY unit — they emit
+    unit files on the fly. A writable generator (or a writable
+    generator dir where we can drop a new one) is pre-login root
+    execution on next reboot; also triggerable with ``systemctl daemon-
+    reload`` by any admin.
+  remediation: >
+    Generator binaries + dirs must be 0755 root:root. Audit every
+    package install path that places files under
+    ``/lib/systemd/system-generators`` or
+    ``/etc/systemd/system-generators``.
+  refs: [T1546.013]

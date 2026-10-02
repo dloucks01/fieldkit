@@ -1,0 +1,43 @@
+technique: T1078.004
+name: K8s SA token → cluster-admin reach
+key: lateral:k8s-cluster-admin
+tactic: [privilege-escalation, lateral-movement]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: moderate
+detect:
+  facts_match: {has_k8s_token: true}
+execute:
+  command: |-
+    tok=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null)
+    api="${KUBERNETES_SERVICE_HOST:-kubernetes.default}:${KUBERNETES_SERVICE_PORT:-443}"
+    # Probe cluster-wide verbs that cluster-admin unlocks: * on *, bind,
+    # escalate, impersonate. If ANY of these are allowed cluster-wide,
+    # the SA walks to cluster-admin trivially.
+    for ra in       '{"verb":"*","resource":"*"}'       '{"verb":"bind","resource":"roles","group":"rbac.authorization.k8s.io"}'       '{"verb":"escalate","resource":"roles","group":"rbac.authorization.k8s.io"}'       '{"verb":"impersonate","resource":"users"}'       '{"verb":"create","resource":"serviceaccounts/token"}'; do
+      echo "=== $ra ==="
+      curl -sk -H "Authorization: Bearer $tok"         "https://$api/apis/authorization.k8s.io/v1/selfsubjectaccessreviews"         -X POST -H 'Content-Type: application/json'         -d "{\"spec\":{\"resourceAttributes\":$ra}}"         | grep -o '"allowed":[a-z]*' | head -1
+    done
+verify:
+  success: "allowed"
+cleanup:
+  command: ""
+report:
+  vector_type: k8s_cluster_admin_reach
+  evidence: "SA token with a verb that walks to cluster-admin"
+  description: >
+    cluster-admin reach from a pod SA is a slow but reliable attack
+    chain. Any ONE of ``*/*`` cluster-wide, ``bind``, ``escalate``,
+    ``impersonate``, or ``create serviceaccounts/token`` lets the SA
+    mint a new role / impersonate / fork a cluster-admin token.
+    SelfSubjectAccessReview surfaces which verb is open; the operator
+    then runs the exact path (``kubectl auth can-i --list`` for the
+    full picture).
+  remediation: >
+    Audit every ClusterRoleBinding touching default or wide-scope SAs.
+    Deny ``bind`` / ``escalate`` / ``impersonate`` to anything other
+    than audited admin controllers. Prefer namespaced Roles over
+    ClusterRoles.
+  refs: [T1078.004]

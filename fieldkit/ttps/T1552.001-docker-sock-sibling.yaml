@@ -1,0 +1,38 @@
+# Docker socket pivot → spawn a privileged sibling container
+technique: T1552.001
+name: Docker socket → privileged sibling container
+key: lateral:docker-sock-sibling
+tactic: [privilege-escalation, lateral-movement, defense-evasion]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: loud
+detect:
+  facts_match: {has_docker_sock: true}
+execute:
+  command: |-
+    # The docker socket inside a container is a root-equivalent primitive:
+    # ask dockerd to spawn a NEW container that bind-mounts the host rootfs
+    # and runs with --privileged, step into it, done. We only enumerate
+    # here — the mutation lives behind --allow config-change.
+    docker version 2>/dev/null | head -5
+    docker ps -a 2>/dev/null | head -3
+verify:
+  success: "Server"
+cleanup:
+  command: ""
+report:
+  vector_type: docker_sock_sibling
+  evidence: "writable /var/run/docker.sock inside container"
+  description: >
+    A readable + writable docker socket inside a container speaks to the
+    HOST dockerd as root. Ask dockerd to spawn a new ``--privileged``
+    sibling container with ``-v /:/host`` — step into it, now you own
+    the host. Even without --privileged a sibling with the right
+    capability set + hostPID is enough.
+  remediation: >
+    Don't bind-mount ``/var/run/docker.sock`` into untrusted containers.
+    Use rootless dockerd. Prefer kubernetes with a hardened
+    PodSecurityPolicy / PSA profile over sharing the raw docker socket.
+  refs: [T1552.001]

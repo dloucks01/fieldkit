@@ -1,0 +1,37 @@
+# NFS pivot — mountable export → bind root UID → setuid planting
+technique: T1021.004
+name: NFS mount pivot (no_root_squash)
+key: lateral:nfs-mount-pivot
+tactic: [lateral-movement, privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  facts_match: {has_nfs_mountable: true}
+execute:
+  command: |-
+    # Show the reachable NFS surface — mounts already in use + exports
+    # we can mount from a UID-forging attacker host.
+    awk '$3 ~ /^nfs/{print $1, "->", $2}' /proc/mounts 2>/dev/null
+    [ -r /etc/exports ] && grep -v '^#' /etc/exports | head -20
+verify:
+  success: "nfs"
+cleanup:
+  command: ""
+report:
+  vector_type: nfs_mount_pivot
+  evidence: "readable NFS mount or export declaration"
+  description: >
+    NFS exports with ``no_root_squash`` (classic default on legacy stacks
+    and some lab environments) let a client who mounts the export plant
+    setuid-0 binaries that execute as root when triggered. Even with
+    root_squash, exports typically allow UID forging — mount, create files
+    as the right UID, pivot. Readable ``/etc/exports`` on the foothold is
+    a pivot map.
+  remediation: >
+    Set ``root_squash`` on every export (default on modern Linux). Scope
+    exports to specific client IPs. Prefer NFSv4 with Kerberos
+    authentication (sec=krb5i / krb5p).
+  refs: [T1021.004]

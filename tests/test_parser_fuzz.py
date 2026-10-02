@@ -316,6 +316,201 @@ class TestProbesCoercePlus(ParserFuzzBase):
     expected_exc = ()
 
 
+class TestProbesLapsV2(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_laps_v2
+        cls.parser = staticmethod(parse_laps_v2)
+    expected_exc = ()
+
+
+class TestProbesGppAutologin(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_gpp_autologin
+        cls.parser = staticmethod(parse_gpp_autologin)
+    expected_exc = ()
+
+
+class TestProbesChrome(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_chrome
+        cls.parser = staticmethod(parse_chrome)
+    expected_exc = ()
+
+
+class TestProbesFirefox(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_firefox
+        cls.parser = staticmethod(parse_firefox)
+    expected_exc = ()
+
+
+class TestProbesKeepassDiscover(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_keepass_discover
+        cls.parser = staticmethod(parse_keepass_discover)
+    expected_exc = ()
+
+
+class TestProbesMasky(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_masky
+        cls.parser = staticmethod(parse_masky)
+    expected_exc = ()
+
+
+class TestProbesShadowCredentials(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_shadowcredentials
+        cls.parser = staticmethod(parse_shadowcredentials)
+    expected_exc = ()
+
+
+class TestProbesPetitpotam(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_petitpotam
+        cls.parser = staticmethod(parse_petitpotam)
+    expected_exc = ()
+
+
+class TestProbesNopac(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_nopac
+        cls.parser = staticmethod(parse_nopac)
+    expected_exc = ()
+
+
+class TestProbesLsaBackupKeys(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_lsa_backup_keys
+        cls.parser = staticmethod(parse_lsa_backup_keys)
+    expected_exc = ()
+
+
+class TestProbesDpapiNg(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_dpapi_ng
+        cls.parser = staticmethod(parse_dpapi_ng)
+    expected_exc = ()
+
+
+class TestProbesRdcman(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_rdcman
+        cls.parser = staticmethod(parse_rdcman)
+    expected_exc = ()
+
+
+class TestProbesEnumDns(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_enum_dns
+        cls.parser = staticmethod(parse_enum_dns)
+    expected_exc = ()
+
+
+class TestProbesDropSc(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_drop_sc
+        cls.parser = staticmethod(parse_drop_sc)
+    expected_exc = ()
+
+
+class TestProbesScuffy(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_scuffy
+        cls.parser = staticmethod(parse_scuffy)
+    expected_exc = ()
+
+
+class TestProbesSpooler(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_spooler
+        cls.parser = staticmethod(parse_spooler)
+    expected_exc = ()
+
+
+class TestProbesLdapChecker(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_ldap_checker
+        cls.parser = staticmethod(parse_ldap_checker)
+    expected_exc = ()
+
+
+class TestProbesObsoleteNtHashUsers(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_obsolete_nt_hash_users
+        cls.parser = staticmethod(parse_obsolete_nt_hash_users)
+    expected_exc = ()
+
+
+class TestProbesPre2k(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_pre2k
+        cls.parser = staticmethod(parse_pre2k)
+    expected_exc = ()
+
+
+class TestProbesGetNetwork(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_get_network
+        cls.parser = staticmethod(parse_get_network)
+    expected_exc = ()
+
+
+class TestProbesGroupMembership(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_groupmembership
+        cls.parser = staticmethod(parse_groupmembership)
+    expected_exc = ()
+
+
+class TestProbesRidBrute(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_rid_brute
+        cls.parser = staticmethod(parse_rid_brute)
+    expected_exc = ()
+
+
+class TestProbesUsersComputers(ParserFuzzBase):
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.nxc_probes import parse_users_computers
+        cls.parser = staticmethod(parse_users_computers)
+    expected_exc = ()
+
+
+class TestEnrichExtractEntities(ParserFuzzBase):
+    """The entity extractor must survive arbitrary binary / malformed input
+    without crashing — it will be run over EVERY captured step output,
+    including nxc timeouts, half-ANSI dumps, and tool crash tails."""
+    @classmethod
+    def setUpClass(cls):
+        from fieldkit.enrich import extract_entities
+        cls.parser = staticmethod(extract_entities)
+    expected_exc = ()
+
+
 # ---------------------------------------------------------------- scan outputs
 
 

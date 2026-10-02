@@ -293,6 +293,226 @@ class TestRunProbes(unittest.TestCase):
         ]
         self.assertTrue(np._is_dc_admin_by_shares(both_writable))
 
+    # --- axis 2 slice 2: 7 more probe parsers --------------------------
+
+    def test_parse_laps_v2_promotes_computer_account_password(self):
+        """LAPS v2 output surfaces ``Account: HOST$  Password: <pw>``; must promote
+        the pair to a credential and tag the finding ``admin=True`` since reading
+        LAPS implies the caller already has the delegated right."""
+        out = ("SMB  10.0.0.5  445  DC01  Account: WS07$   Password: Correct-Horse-Battery\n")
+        r = np.parse_laps_v2(out)
+        self.assertEqual(len(r.credentials), 1)
+        self.assertEqual(r.credentials[0].username, "WS07$")
+        self.assertEqual(r.credentials[0].secret, "Correct-Horse-Battery")
+        self.assertTrue(r.findings[0].admin)
+
+    def test_parse_gpp_autologin_pairs_username_and_password(self):
+        """unattend.xml output prints Username / Password on consecutive lines —
+        parser must correlate them so a stray Password: line without a preceding
+        Username: doesn't promote a hollow credential."""
+        out = ("[+] Found /sysvol/CORP.LOCAL/Policies/{G}/MACHINE/unattend.xml\n"
+               "Username: localadmin\n"
+               "Password: AutoLogon-S3cret\n")
+        r = np.parse_gpp_autologin(out)
+        self.assertEqual(len(r.credentials), 1)
+        self.assertEqual(r.credentials[0].username, "localadmin")
+
+        orphan = "Password: NoPair\n"
+        self.assertEqual(np.parse_gpp_autologin(orphan).credentials, [])
+
+    def test_parse_chrome_promotes_decrypted_logins(self):
+        out = ("[+] http://portal.corp.local alice BrowserPw!\n"
+               "[+] https://sso.corp.local bob N3xt0ne\n")
+        r = np.parse_chrome(out)
+        self.assertEqual(len(r.credentials), 2)
+        secrets = {c.secret for c in r.credentials}
+        self.assertEqual(secrets, {"BrowserPw!", "N3xt0ne"})
+
+    def test_parse_firefox_promotes_decrypted_logins(self):
+        out = ("[+] https://jira.corp.local eve FxSecret!\n")
+        r = np.parse_firefox(out)
+        self.assertEqual(len(r.credentials), 1)
+        self.assertEqual(r.credentials[0].source, "nxc-probe:firefox")
+
+    def test_parse_keepass_discover_flags_kdbx_findings(self):
+        """Must surface .kdbx finds as High (the DB is useless without the master
+        key — but discovery alone is a weaponization opportunity)."""
+        out = ("[+] Found: \\\\SRV\\Backups\\IT\\passwords.kdbx\n"
+               "[+] Found: \\\\SRV\\Shared\\notes.kdbx\n"
+               "[-] No KeePass databases on \\\\PRINT01\n")
+        r = np.parse_keepass_discover(out)
+        self.assertEqual(len(r.findings), 2)
+        self.assertTrue(all(f.severity == "High" for f in r.findings))
+
+    def test_parse_masky_promotes_nt_hash_as_critical(self):
+        """Masky returns an NT hash of the logged-on user. Parser must extract both
+        the username and the hex hash so retest can replay the credential."""
+        out = ("[+] Successfully retrieved alice NT hash: aad3b435b51404eeaad3b435b51404ee\n")
+        r = np.parse_masky(out)
+        self.assertEqual(len(r.credentials), 1)
+        self.assertEqual(r.credentials[0].secret_type, "ntlm")
+        self.assertEqual(r.findings[0].severity, "Critical")
+
+    def test_parse_masky_ignores_non_hex_tails(self):
+        """A log line matching 'NT hash:' pattern but followed by a non-hex value
+        must NOT promote — guards against generic log messages or malformed output."""
+        out = ("[*] Target has NT hash: unknown\n")
+        r = np.parse_masky(out)
+        self.assertEqual(r.credentials, [])
+
+    def test_parse_shadowcredentials_flags_write_success(self):
+        out = ("[+] Shadow credentials added for CN=alice,OU=users,DC=corp,DC=local\n"
+               "[+] Certificate saved to /tmp/alice.pfx\n")
+        r = np.parse_shadowcredentials(out)
+        self.assertEqual(len(r.findings), 2)
+        # First finding (the write success) must be admin-tagged.
+        self.assertTrue(r.findings[0].admin)
+
+    # --- axis 2 slice 3: 6 more probe parsers --------------------------
+
+    def test_parse_petitpotam_flags_vulnerable_target(self):
+        out = ("SMB   10.0.0.10  445  DC01  [+] DC01 is vulnerable to PetitPotam\n")
+        r = np.parse_petitpotam(out)
+        self.assertEqual(len(r.findings), 1)
+        self.assertEqual(r.findings[0].severity, "High")
+
+    def test_parse_nopac_promotes_dumped_hash(self):
+        """noPAC's shape is "DOMAIN\\user:RID:LMhash:NThash" — classic
+        secretsdump line. Parser must promote the NT hash as a usable
+        credential."""
+        out = ("[+] DC01 is vulnerable to noPAC\n"
+               "krbtgt:502:aad3b435b51404eeaad3b435b51404ee:"
+               "31d6cfe0d16ae931b73c59d7e0c089c0:::\n")
+        r = np.parse_nopac(out)
+        # Vulnerability finding + credential promoted.
+        vulns = [f for f in r.findings if f.kind == "nopac_vulnerable"]
+        self.assertTrue(vulns)
+        self.assertTrue(vulns[0].admin)
+        self.assertEqual(len(r.credentials), 1)
+        self.assertEqual(r.credentials[0].username, "krbtgt")
+
+    def test_parse_lsa_backup_keys_flags_pvk_export_as_critical(self):
+        out = ("[+] DPAPI domain backup key saved to /tmp/corp.pvk\n")
+        r = np.parse_lsa_backup_keys(out)
+        self.assertEqual(len(r.findings), 1)
+        self.assertEqual(r.findings[0].severity, "Critical")
+        self.assertTrue(r.findings[0].admin)
+
+    def test_parse_dpapi_ng_surfaces_decrypted_blobs(self):
+        out = ("[+] Decrypted LAPSv2 blob: WORKSTATION-01$ -> SuperSecret!\n"
+               "[+] Unprotected KeyCredential for alice: xxxx\n")
+        r = np.parse_dpapi_ng(out)
+        self.assertEqual(len(r.findings), 2)
+
+    def test_parse_rdcman_promotes_server_user_password(self):
+        out = ("[+] WIN-DB01\\sqladmin:DbPassw0rd!\n")
+        r = np.parse_rdcman(out)
+        self.assertEqual(len(r.credentials), 1)
+        c = r.credentials[0]
+        self.assertEqual(c.username, "sqladmin")
+        self.assertEqual(c.domain, "WIN-DB01")
+        self.assertEqual(c.secret, "DbPassw0rd!")
+
+    def test_parse_rdcman_ignores_lines_without_both_parts(self):
+        """A line with ":" but no "\\" (plain log output) must not promote."""
+        out = ("[+] Starting RDCMan parse: /path/to/file.rdg\n")
+        r = np.parse_rdcman(out)
+        self.assertEqual(r.credentials, [])
+
+    def test_parse_enum_dns_surfaces_host_records(self):
+        out = ("dc01.corp.local  A     10.0.0.10\n"
+               "dc01.corp.local  A     10.0.0.10\n"  # duplicate, must dedupe
+               "fs01.corp.local  A     10.0.0.20\n"
+               "ldap.corp.local  CNAME dc01.corp.local\n")
+        r = np.parse_enum_dns(out)
+        self.assertEqual(len(r.findings), 3)
+        self.assertTrue(all(f.kind == "dns_record" for f in r.findings))
+
+    # --- axis 2 slice 5: 10 more probe parsers -------------------------
+
+    def test_parse_drop_sc_promotes_cached_server_credentials(self):
+        out = ("[+] Found config: C:\\ProgramData\\sc.xml\n"
+               "URL: wss://sc.corp\n"
+               "User: svc_sc\n"
+               "Password: ScPw!\n")
+        r = np.parse_drop_sc(out)
+        self.assertEqual(len(r.credentials), 1)
+        self.assertEqual(r.credentials[0].domain, "wss://sc.corp")
+
+    def test_parse_scuffy_flags_scf_write(self):
+        out = "[+] File written to \\\\attacker\\share\\loot.scf\n"
+        r = np.parse_scuffy(out)
+        self.assertEqual(len(r.findings), 1)
+        self.assertEqual(r.findings[0].severity, "High")
+
+    def test_parse_spooler_flags_enabled_service(self):
+        out = "[+] 10.0.0.1 Print Spooler service is enabled and running\n"
+        r = np.parse_spooler(out)
+        self.assertEqual(len(r.findings), 1)
+        self.assertEqual(r.findings[0].kind, "print_spooler_enabled")
+
+    def test_parse_ldap_checker_flags_relay_candidates(self):
+        out = ("[+] dc01 does not require LDAP signing\n"
+               "[+] dc02 does not require channel binding\n")
+        r = np.parse_ldap_checker(out)
+        self.assertEqual(len(r.findings), 2)
+        self.assertTrue(all(f.kind == "ldap_relay_candidate" for f in r.findings))
+
+    def test_parse_obsolete_nt_hash_users_flags_pre2004(self):
+        out = ("legacyuser   2001-05-01   pre2004\n"
+               "modernuser   2024-01-01   nt4\n")
+        r = np.parse_obsolete_nt_hash_users(out)
+        self.assertEqual(len(r.findings), 1)
+        self.assertIn("legacyuser", r.findings[0].title)
+
+    def test_parse_pre2k_promotes_hostname_lowercased_password(self):
+        """pre2k shape is: computer account password == lowercased hostname.
+        Parser must extract HOST$ and promote `host:host-lowered` as a
+        credential so the credential loop replays it."""
+        out = ("[+] HOST01$ pre2k auth works\n")
+        r = np.parse_pre2k(out)
+        self.assertEqual(len(r.credentials), 1)
+        self.assertEqual(r.credentials[0].username, "HOST01$")
+        self.assertEqual(r.credentials[0].secret, "host01")
+
+    def test_parse_get_network_dedupes_subnet_lines(self):
+        out = ("[+] 10.0.0.0/24  Site: HQ\n"
+               "[+] 10.0.0.0/24  Site: HQ\n"
+               "[+] 10.0.1.0/24  Site: Branch\n")
+        r = np.parse_get_network(out)
+        self.assertEqual(len(r.findings), 2)
+
+    def test_parse_groupmembership_extracts_member_names(self):
+        out = ("[+] Member: alice\n"
+               "[+] Member: bob\n"
+               "[+] Member: svc_backup\n")
+        r = np.parse_groupmembership(out)
+        self.assertEqual(len(r.findings), 3)
+
+    def test_parse_rid_brute_classifies_sid_types(self):
+        out = ("CORP\\alice (SidTypeUser)\n"
+               "CORP\\Domain Admins (SidTypeGroup)\n"
+               "CORP\\host01$ (SidTypeUser)\n"
+               "CORP\\alice (SidTypeUser)\n"
+               )  # last line duplicate, must dedupe
+        r = np.parse_rid_brute(out)
+        self.assertEqual(len(r.findings), 3)
+        kinds = {f.kind for f in r.findings}
+        self.assertEqual(kinds, {"domain_user", "domain_group"})
+
+    def test_parse_users_computers_distinguishes_user_vs_computer(self):
+        out = ("[*] alice     Senior Engineer\n"
+               "[*] WS07$     Windows 11 23H2\n"
+               "[*] svc_db    DB service account\n"
+               "[*] DC01$     Windows Server 2022\n")
+        r = np.parse_users_computers(out)
+        kinds = {f.kind for f in r.findings}
+        self.assertEqual(kinds, {"domain_user", "domain_computer"})
+        users = {f.title.split()[-1] for f in r.findings if f.kind == "domain_user"}
+        computers = {f.title.split()[-1] for f in r.findings if f.kind == "domain_computer"}
+        self.assertEqual(users, {"alice", "svc_db"})
+        self.assertEqual(computers, {"WS07$", "DC01$"})
+
 
 if __name__ == "__main__":
     unittest.main()

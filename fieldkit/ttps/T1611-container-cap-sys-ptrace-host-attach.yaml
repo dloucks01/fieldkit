@@ -1,0 +1,35 @@
+# CAP_SYS_PTRACE + hostPID → attach to host process + exec code
+technique: T1611
+name: CAP_SYS_PTRACE + hostPID → host-process attach
+key: container:ptrace-host-attach
+tactic: [privilege-escalation]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: config-change
+  detection: loud
+detect:
+  facts_match: {has_cap_sys_ptrace: true, hostpid_visible: true}
+execute:
+  command: |-
+    # List host-visible processes we could attach to. Payload step is a
+    # ptrace(PTRACE_ATTACH) + inject-and-exec against a well-chosen host
+    # PID (systemd / sshd commonly chosen for the signing primitive).
+    ls /proc/1/root/etc/hostname 2>/dev/null || echo "no /proc/1/root"
+    ps -eo pid,user,cmd 2>/dev/null | head -10
+verify:
+  success: "root"
+cleanup:
+  command: ""
+report:
+  vector_type: cap_sys_ptrace
+  evidence: "container holds CAP_SYS_PTRACE and shares hostPID"
+  description: >
+    CAP_SYS_PTRACE + hostPID (``--pid=host`` or k8s ``hostPID: true``)
+    lets the container PTRACE_ATTACH to any host process. Inject
+    shellcode into a host-side root process → arbitrary code execution
+    on the host as root.
+  remediation: >
+    Don't set hostPID. Drop CAP_SYS_PTRACE from the container capability
+    set.
+  refs: [T1611]

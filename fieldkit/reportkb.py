@@ -669,6 +669,180 @@ KB = {
              "who edits it to obtain a UID-0 account.",
         rem="Restore correct ownership/permissions (/etc/passwd 0644 root:root, /etc/shadow 0640 root:shadow, "
             "/etc/sudoers 0440 root:root)."),
+
+    # -- slice 3 credential loot + privesc + persistence + lateral --
+    "gnome_keyring_loot": dict(sev="High", cwe="CWE-522", os="lin",
+        name="GNOME Keyring exposes every saved user secret",
+        desc="gnome-keyring stores every saved password behind a per-session AES-wrapped vault that unlocks on "
+             "login. A sibling process in the user's session reads every secret via libsecret / the "
+             "org.freedesktop.secrets D-Bus interface — no master password, no decryption step.",
+        rem="Avoid shared user sessions on multi-user hosts. Audit D-Bus policy on org.freedesktop.secrets. "
+            "Enforce separate keyrings per sensitive application where possible."),
+    "kwallet_loot": dict(sev="High", cwe="CWE-522", os="lin",
+        name="KDE KWallet exposes every saved user secret",
+        desc="kwalletd (KDE's keyring) auto-unlocks on login and exposes every stored secret to sibling "
+             "processes in the user's session via kwallet-query / D-Bus.",
+        rem="Lock the wallet on screensaver. Audit kwalletd D-Bus policy. Avoid shared sessions on sensitive "
+            "hosts."),
+    "ansible_vault_loot": dict(sev="High", cwe="CWE-522", os="lin",
+        name="Ansible vault_password_file + playbook secrets exposed",
+        desc="Ansible stores encrypted secrets inline (!vault blocks) with the master password at a path "
+             "referenced by ansible.cfg. A readable vault_password_file decrypts every !vault block in the "
+             "playbook tree.",
+        rem="Keep vault_password_file 0400 and owned by the Ansible user. Prefer --vault-id with an "
+            "operator-prompted password over on-disk vault_password files."),
+    "gitlab_runner_loot": dict(sev="Critical", cwe="CWE-522", os="lin",
+        name="GitLab Runner registration token readable",
+        desc="/etc/gitlab-runner/config.toml holds the runner token + GitLab URL. An operator who reads both "
+             "registers a new runner against the same instance and claims pipeline jobs, running code as the "
+             "pipeline user on every project the runner is shared with.",
+        rem="config.toml must be 0600 root:root. Rotate the runner token after any suspected compromise "
+            "(gitlab-runner reset-token)."),
+    "ci_artifact_loot": dict(sev="High", cwe="CWE-200", os="lin",
+        name="CI runner workspace retains credentials between jobs",
+        desc="CI runners (GitLab, Jenkins, GitHub Actions, drone) leave job workdirs intact between runs. "
+             ".env files, decoded secrets, PFX/PEM keys and .git-credentials dropped during a pipeline "
+             "step routinely survive and are readable by the next job.",
+        rem="Clean workdirs between jobs (GIT_STRATEGY=clone + delete-on-finish). Keep CI runners on "
+            "dedicated throwaway hosts with no persistent shared storage."),
+    "sudo_path_hijack": dict(sev="High", cwe="CWE-426", os="lin",
+        name="sudo rule preserves PATH or references a relative command",
+        desc="A sudo rule that env_keeps PATH, disables secure_path, or runs a relative command lets a user "
+             "plant a same-named binary earlier in PATH; the next sudo invocation runs the attacker binary "
+             "as the sudo target.",
+        rem="sudo rules must use absolute paths. Remove env_keep += PATH, keep secure_path on. "
+            "`Defaults secure_path=\"/usr/sbin:...\"` should be the first line of /etc/sudoers."),
+    "suid_proc_environ_loot": dict(sev="Medium", cwe="CWE-200", os="lin",
+        name="Readable /proc/<pid>/environ on a SUID process",
+        desc="When a process whose environ is readable to our UID is a SUID binary wrapped by a shell that "
+             "sets secrets as environment variables, those strings are exposed via /proc/<pid>/environ "
+             "without any crash required.",
+        rem="hidepid=2 on /proc hides other processes from unrelated users. Don't pass secrets through "
+            "environment variables to setuid wrappers; use a short-lived auth socket instead."),
+    "at_spool_writable": dict(sev="High", cwe="CWE-732", os="lin",
+        name="at(1) spool directory writable by non-root",
+        desc="Dropping a correctly-formed job file into a writable /var/spool/at / /var/spool/cron/atjobs "
+             "makes atd execute arbitrary commands as the UID baked into the job (0 → root). Common on "
+             "minimal and embedded distros that mishandle the daemon-group permission.",
+        rem="The at(1) spool must be drwx------ root:daemon (or root:atdaemon depending on distro). Audit "
+            "any service account with group membership that reaches the daemon group."),
+    "writable_release_agent": dict(sev="Critical", cwe="CWE-732", os="lin",
+        name="cgroup v1 release_agent writable from container",
+        desc="A --privileged container on a cgroup-v1 host can write a payload path to the cgroup's "
+             "release_agent file; the kernel runs that path as PID 1 on the HOST when the cgroup empties. "
+             "A one-shot docker escape with no coerce step.",
+        rem="Avoid --privileged containers. Mount /sys read-only inside containers. Prefer hosts on cgroup v2, "
+            "which removed release_agent entirely."),
+    "user_crontab_writable": dict(sev="High", cwe="CWE-732", os="lin",
+        name="Per-user crontab writable by current UID",
+        desc="/var/spool/cron/crontabs/<user> stores that user's crontab verbatim. A loose permission there "
+             "lets the operator write exec lines that cron runs as the target user on the next tick.",
+        rem="Each crontab file must be 0600 owned by the user. The spool directory must be 1733 or stricter."),
+    "writable_shell_init": dict(sev="High", cwe="CWE-732", os="lin",
+        name="Writable shell-init of another user",
+        desc="Writing a one-line exec to another user's .bashrc / .bash_profile / .zshrc turns their next "
+             "login shell into attacker code. If the target user has sudo or a privileged session, this is "
+             "a direct lateral + escalation path.",
+        rem="Shell-init files must be 0600 owned by their user. Parent $HOME must be 0750. Audit any "
+            "shared-group write perms on /home."),
+    "writable_xdg_autostart": dict(sev="Medium", cwe="CWE-732", os="lin",
+        name="Writable XDG autostart entry",
+        desc="A .desktop file in an XDG autostart dir runs on GUI-session login. Writable system-wide dirs "
+             "let the operator plant one that runs as the next user to log in; writable existing files let "
+             "them edit an entry that runs as its owner.",
+        rem="/etc/xdg/autostart must be 0755 root:root. Audit per-user autostart additions as part of "
+            "normal user-account hygiene."),
+    "writable_ssh_rc": dict(sev="High", cwe="CWE-732", os="lin",
+        name="Writable ~/.ssh/rc login hook",
+        desc="sshd runs ~/.ssh/rc on every successful SSH login with the user's shell, before ~/.bashrc. "
+             "Most endpoint audit tools look at shell-init files but miss ~/.ssh/rc, making it a quiet "
+             "long-lived persistence slot.",
+        rem="~/.ssh/ must be 0700 owned by its user. Audit ~/.ssh/rc alongside shell-init files in endpoint "
+            "monitoring."),
+    "xauth_cookie_pivot": dict(sev="High", cwe="CWE-922", os="lin",
+        name="X11 cookie pivot into live GUI session",
+        desc="A readable ~/.Xauthority (or stale /tmp xauth-<uid> owned by a UID whose group we share) is a "
+             "bearer token for the running X server. The operator attaches to another user's session, "
+             "screenshots it, injects keystrokes with xdotool, and reads window titles / clipboard.",
+        rem="Prefer Wayland for multi-user hosts (per-session isolation). Enforce ~/.Xauthority 0600 and "
+            "/tmp xauth files 0600 owned by the session's UID."),
+
+    # -- slice 4 — axis 1 finish --
+    "browser_cookies_sso": dict(sev="High", cwe="CWE-522", os="lin",
+        name="Browser cookies replay SSO sessions",
+        desc="Chromium / Firefox cookie databases carry session cookies for SSO providers that survive the "
+             "user's logout + 2FA. An operator who exfils the Cookies DB + the matching Local State / key4.db "
+             "mints a fully-authenticated session against every SSO-protected service the user can reach.",
+        rem="Reduce session-cookie TTL on SSO providers. Rely on device-bound tokens (WebAuthn, TPM-backed "
+            "cookie binding). Enforce profile isolation on shared workstations."),
+    "writable_cgroup_delegate": dict(sev="High", cwe="CWE-732", os="lin",
+        name="cgroup v2 delegate misconfig → host-cgroup pivot",
+        desc="cgroup v2 removed release_agent but misconfigured delegation still gives containers write access "
+             "to cgroup.procs. Moving the attacker's PID into a cgroup outside the resource namespace bypasses "
+             "container limits and in some configurations reaches sibling-container state.",
+        rem="Don't mount /sys/fs/cgroup writable into containers. Follow the runc / containerd delegation "
+            "guidance — delegate to a sub-cgroup, not the task's own cgroup root."),
+    "k8s_secret_enum": dict(sev="High", cwe="CWE-200", os="",
+        name="K8s SA token can read namespace / cluster secrets",
+        desc="Pod secrets routinely include DB passwords, image-pull secrets, S3 keys and raw SA tokens of "
+             "other service accounts. An SA token with secrets.get in its namespace (or cluster-wide list) is "
+             "one of the highest-value pivots in a K8s compromise.",
+        rem="Default SAs must not have secrets access. Use automountServiceAccountToken: false where the pod "
+            "doesn't call the API. Prefer short-lived projected serviceAccountToken volumes."),
+    "k8s_cluster_admin_reach": dict(sev="Critical", cwe="CWE-269", os="",
+        name="K8s SA token walks to cluster-admin",
+        desc="A pod SA with any one of */* cluster-wide, bind, escalate, impersonate, or create "
+             "serviceaccounts/token effectively reaches cluster-admin — the token can mint a new role or fork "
+             "a cluster-admin token.",
+        rem="Audit every ClusterRoleBinding touching default or wide-scope SAs. Deny bind / escalate / "
+            "impersonate to anything other than audited admin controllers. Prefer namespaced Roles over "
+            "ClusterRoles."),
+    "writable_sysv_init": dict(sev="High", cwe="CWE-732", os="lin",
+        name="Writable /etc/init.d script → root at next service start",
+        desc="SysV init scripts (/etc/init.d/*) run as root on service start. Writable init scripts are rare "
+             "on modern systemd-first distros but persist on CentOS 7, Oracle Linux and appliance OSes that use "
+             "systemd-sysv-compat — appending an exec line turns the next service restart into root code.",
+        rem="Init scripts must be 0755 root:root. Audit any package manager that installs init scripts with "
+            "non-root ownership. Prefer systemd units."),
+    "writable_systemd_generator": dict(sev="Critical", cwe="CWE-732", os="lin",
+        name="Writable systemd generator → pre-login root execution",
+        desc="systemd runs generators at every boot before any unit — a writable generator (or a writable "
+             "dir where we can drop a new one) is pre-login root execution on next reboot; also triggerable "
+             "with systemctl daemon-reload by any admin.",
+        rem="Generator binaries and dirs must be 0755 root:root. Audit every package install path that "
+            "touches /lib/systemd/system-generators or /etc/systemd/system-generators."),
+    "nis_ldap_reuse": dict(sev="Medium", cwe="CWE-521", os="lin",
+        name="Central directory authentication enables credential reuse",
+        desc="When a host authenticates against a central NIS / LDAP / SSSD directory, every other host "
+             "joined to the same directory accepts the same username/password pair. A credential cracked on "
+             "one host sprays trivially across the entire fleet.",
+        rem="Prefer Kerberos / short-lived tokens over password-based directory auth. Enforce per-host "
+            "account restrictions in sudoers / login.pam. Rotate the central directory's cached passwords."),
+    "pam_passthrough_logger": dict(sev="Critical", cwe="CWE-732", os="lin",
+        name="PAM module passthrough logger — silent credential capture",
+        desc="A writable PAM module file lets the operator plant a passthrough shim that captures the "
+             "cleartext password via pam_get_item(PAM_AUTHTOK) and forwards the call to the original module. "
+             "Users and services keep logging in normally — zero visible symptom — while every password "
+             "handed to PAM lands in the attacker's log.",
+        rem="Enforce PAM module files 0644 root:root. Audit every /lib*/security directory for non-root "
+            "ownership. SELinux / AppArmor policy for system_auth should deny write to any process other "
+            "than the package manager."),
+    "aws_sso_cache_loot": dict(sev="High", cwe="CWE-522", os="lin",
+        name="AWS SSO cache contains still-valid accessToken",
+        desc="aws sso login caches the user's accessToken in ~/.aws/sso/cache/*.json. The cached token is "
+             "a direct AWS console + API session for the user's identity for the token's TTL (default 8h). "
+             "Reading the token on a shared workstation lets the operator enumerate the user's full AWS "
+             "footprint before the user notices.",
+        rem="Shorten the SSO session TTL where tolerable. Ensure $HOME is 0700 on multi-user workstations. "
+            "Hook inotify on ~/.aws/sso/cache into endpoint telemetry."),
+    "dbus_policy_misconfig": dict(sev="High", cwe="CWE-732", os="lin",
+        name="D-Bus policy grants broad principals privileged method calls",
+        desc="A system D-Bus policy with `<policy context=\"default\">` + `allow send_destination=` on a "
+             "privileged service lets any local user call methods that modify host state as root (NetworkManager, "
+             "PackageKit, UDisks2, systemd1). D-Bus audit log coverage is weak on most distros, so this is a "
+             "quiet privesc.",
+        rem="Review every /etc/dbus-1/system.d/*.conf for broad default policies. Scope method access by "
+            "user= or group=. Enforce PolicyKit rules on sensitive methods."),
 }
 
 DEFAULT = dict(sev="Medium", cwe="CWE-269", os="",
@@ -779,6 +953,31 @@ RISK = {
     "idor": "read-only", "mass_assignment": "config-edit", "prototype_pollution": "reversible",
     "unauth_database": "read-only", "exposed_docker_api": "reversible",
     "memory_corruption": "crash-risk", "use_after_free": "crash-risk", "format_string": "reversible",
+    # slice 3 — new vector_types added above
+    "gnome_keyring_loot": "read-only", "kwallet_loot": "read-only",
+    "ansible_vault_loot": "read-only", "gitlab_runner_loot": "read-only",
+    "ci_artifact_loot": "read-only",
+    "sudo_path_hijack": "reversible",
+    "suid_proc_environ_loot": "read-only",
+    "at_spool_writable": "config-edit",
+    "writable_release_agent": "config-edit",
+    "user_crontab_writable": "config-edit",
+    "writable_shell_init": "config-edit",
+    "writable_xdg_autostart": "config-edit",
+    "writable_ssh_rc": "config-edit",
+    "xauth_cookie_pivot": "read-only",
+    # slice 4
+    "browser_cookies_sso": "read-only",
+    "writable_cgroup_delegate": "config-edit",
+    "k8s_secret_enum": "read-only",
+    "k8s_cluster_admin_reach": "read-only",
+    "writable_sysv_init": "config-edit",
+    "writable_systemd_generator": "config-edit",
+    "nis_ldap_reuse": "read-only",
+    # slice 6
+    "pam_passthrough_logger": "config-edit",
+    "aws_sso_cache_loot": "read-only",
+    "dbus_policy_misconfig": "config-edit",
 }
 RISK_META = {
     "read-only": dict(danger="Low — reading data only, no change to the target.",

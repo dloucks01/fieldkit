@@ -1,0 +1,52 @@
+technique: T1552.001
+name: AWS SSO token cache (short-lived console / API access)
+key: loot:aws-sso-cache
+tactic: [credential-access]
+platform: [linux]
+ranking:
+  exploitability: high
+  safety: read-only
+  detection: quiet
+detect:
+  facts_match: {has_aws_sso_cache: true}
+execute:
+  command: |-
+    # ~/.aws/sso/cache/*.json holds the SSO accessToken an `aws sso login`
+    # minted. Each cached token is a direct AWS console + API session
+    # for the user's SSO identity for the token's TTL (default 8h).
+    # Reading the token lets the operator run `aws sts get-caller-identity`
+    # as the user and enumerate their full AWS footprint.
+    for f in $HOME/.aws/sso/cache/*.json; do
+      if [ -r "$f" ]; then
+        echo "=== $f ==="
+        # Expose the shape of each cached entry without printing the raw
+        # token (operator exfils in the follow-up step)
+        awk -F\" '{
+          for(i=1;i<NF;i++){
+            if($i=="accessToken") print "accessToken: present ("length($(i+2))" chars)";
+            if($i=="expiresAt") print "expiresAt: "$(i+2);
+            if($i=="startUrl") print "startUrl: "$(i+2);
+          }
+        }' "$f"
+      fi
+    done
+verify:
+  success: "accessToken"
+cleanup:
+  command: ""
+report:
+  vector_type: aws_sso_cache_loot
+  evidence: "readable ~/.aws/sso/cache/*.json with still-valid accessToken"
+  description: >
+    AWS SSO caches the user's accessToken in ``~/.aws/sso/cache/*.json``
+    after `aws sso login`. The cached token is a direct AWS console +
+    API session for the user's identity for the token's TTL (default 8
+    hours). Reading the token on a shared workstation lets the operator
+    enumerate the user's full AWS footprint — accounts, roles, assume-role
+    chains — before the user even notices.
+  remediation: >
+    Shorten the SSO session TTL where tolerable. Ensure $HOME is 0700 on
+    multi-user workstations. Audit any process that reads the cache dir
+    (``inotify`` on ~/.aws/sso/cache can be hooked into endpoint
+    telemetry).
+  refs: [T1552.001]
