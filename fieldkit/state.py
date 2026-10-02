@@ -402,8 +402,42 @@ _V11 = [
     "WHERE cred_id IS NULL",
 ]
 
+# v12: beacon tasking tables. One row per operator-authored beacon build
+# (name + build config), one row per task issued / result received. The
+# existing step table records every beacon check-in that produced output,
+# so retest / report machinery sees beacon activity like any other proof.
+_V12 = [
+    """
+    CREATE TABLE beacon (
+        id         INTEGER PRIMARY KEY,
+        name       TEXT NOT NULL UNIQUE,
+        platform   TEXT NOT NULL,        -- windows | linux | cross
+        transport  TEXT NOT NULL,        -- https | smb-pipe | dns | doh | webdav
+        build_seed TEXT NOT NULL,        -- hex, drives per-build mutation
+        config_json TEXT NOT NULL,       -- JSON blob of operator config
+        created_at TEXT NOT NULL,
+        last_seen  TEXT                  -- updated by check-in
+    )
+    """,
+    """
+    CREATE TABLE beacon_task (
+        id         INTEGER PRIMARY KEY,
+        beacon_id  INTEGER NOT NULL REFERENCES beacon(id) ON DELETE CASCADE,
+        cmd        TEXT NOT NULL,        -- shell | upload | download | sleep | kill
+        args_json  TEXT NOT NULL,        -- JSON list of args
+        issued_at  TEXT NOT NULL,
+        result     TEXT,                 -- captured output when the beacon reports back
+        completed_at TEXT                -- NULL = pending
+    )
+    """,
+    "CREATE INDEX ix_beacon_task_beacon ON beacon_task(beacon_id)",
+    "CREATE INDEX ix_beacon_task_pending ON beacon_task(beacon_id) "
+    "WHERE completed_at IS NULL",
+]
+
 MIGRATIONS = [(1, _V1), (2, _V2), (3, _V3), (4, _V4), (5, _V5),
-              (6, _V6), (7, _V7), (8, _V8), (9, _V9), (10, _V10), (11, _V11)]
+              (6, _V6), (7, _V7), (8, _V8), (9, _V9), (10, _V10),
+              (11, _V11), (12, _V12)]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
