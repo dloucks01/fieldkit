@@ -36,6 +36,11 @@ def parse_entry(entry, max_expand=DEFAULT_MAX_EXPAND):
     if not entry:
         return []
     parts = [p for p in entry.replace(",", " ").split() if p]
+    # An entry like ``,`` or ``  ``  (comma / whitespace only) survives the
+    # ``if not entry`` check above but collapses to zero parts here — don't
+    # crash with IndexError, just skip it the same way an empty line is.
+    if not parts:
+        return []
     target, hostname = parts[0], (parts[1] if len(parts) > 1 else None)
 
     if "/" in target:

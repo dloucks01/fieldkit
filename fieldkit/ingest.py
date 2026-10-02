@@ -51,24 +51,35 @@ def _os_from_banner(info):
 
 
 def _credential_from_result(result):
-    """Normalize an nxc ``[+]`` line into a stored credential.
+    """Normalize an nxc ``[+]`` line into a stored credential, or ``None``
+    when the line's principal + secret can't form a well-shaped credential
+    (empty user, empty secret, pure separators, etc. — garbage nxc sometimes
+    emits around a crashing module). The caller drops ``None`` rows.
 
-    Reuses the one credential parser, so a hash echoed by a ``-H`` spray classifies
-    as an NT hash exactly the way ``add cred`` would, and a local-auth spray (nxc
-    prints the *hostname* where a domain would be) is kept as-is — the loop reuses
-    the credential the same way nxc proved it.
+    Reuses the one credential parser, so a hash echoed by a ``-H`` spray
+    classifies as an NT hash exactly the way ``add cred`` would, and a
+    local-auth spray (nxc prints the *hostname* where a domain would be) is
+    kept as-is — the loop reuses the credential the same way nxc proved it.
     """
     if result.domain:
         spec = f"{result.domain}\\{result.username}:{result.secret}"
     else:
         spec = f"{result.username}:{result.secret}"
-    return parse_credential(spec).credential
+    try:
+        return parse_credential(spec).credential
+    except Exception:                                            # noqa: BLE001
+        # parse_credential raises CredentialError on empty user / empty secret /
+        # unparseable shape. For an ingest stream we silently drop the row —
+        # the alternative is to crash the whole ingest on one bad line from a
+        # misbehaving tool, which the parser-fuzz tests prove can happen.
+        return None
 
 
 def classify_nxc(text):
     """Parse an nxc capture into an :class:`NxcIntent` without touching the store."""
     parsed = parse_output(text)
-    creds = [(_credential_from_result(r), r) for r in parsed.valid]
+    creds = [(cred, r) for r in parsed.valid
+             for cred in (_credential_from_result(r),) if cred is not None]
     return NxcIntent(hosts=parsed.hosts, creds=creds)
 
 

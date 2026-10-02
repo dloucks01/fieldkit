@@ -124,31 +124,52 @@ def parse_saas(text):
         raise SaasError("expected a JSON object with principals/edges")
     tenant = str(doc.get("tenant") or doc.get("provider") or "tenant")
     principals, edges = [], []
-    for p in doc.get("principals") or []:
-        pid = (p.get("id") or p.get("name") or "").strip()
+    raw_principals = doc.get("principals") or []
+    if not isinstance(raw_principals, list):
+        raise SaasError(
+            f"principals must be a JSON list, got {type(raw_principals).__name__}")
+    for p in raw_principals:
+        if not isinstance(p, dict):
+            continue
+        pid = _as_str(p.get("id") or p.get("name") or "").strip()
         if not pid:
             continue
         # Preserve top-level ``aliases`` / ``roles`` into props (see cloud_iam.parse_iam
         # for the rationale) so cross-domain stitching can match this identity against
         # a federated principal in another domain.
-        props = dict(p.get("props") or {})
+        props_val = p.get("props") or {}
+        props = dict(props_val) if isinstance(props_val, dict) else {}
         for extra in ("aliases", "roles"):
             if extra in p and extra not in props:
                 props[extra] = p[extra]
         principals.append({
             "key": pid,
-            "name": (p.get("name") or pid).strip(),
-            "type": (p.get("type") or "user").strip(),
+            "name": _as_str(p.get("name") or pid).strip(),
+            "type": _as_str(p.get("type") or "user").strip(),
             "admin": bool(p.get("admin")),
             "owned": bool(p.get("owned")),
             "props": props,
-            "permissions": [str(x) for x in (p.get("permissions") or [])]})
-    for e in doc.get("edges") or []:
-        src, dst = (e.get("src") or "").strip(), (e.get("dst") or "").strip()
+            "permissions": [str(x) for x in (p.get("permissions") or [])
+                            if x is not None]})
+    raw_edges = doc.get("edges") or []
+    if not isinstance(raw_edges, list):
+        raise SaasError(
+            f"edges must be a JSON list, got {type(raw_edges).__name__}")
+    for e in raw_edges:
+        if not isinstance(e, dict):
+            continue
+        src = _as_str(e.get("src") or "").strip()
+        dst = _as_str(e.get("dst") or "").strip()
         if src and dst:
             edges.append({"src": src, "dst": dst,
-                          "kind": (e.get("kind") or "grants").strip()})
+                          "kind": _as_str(e.get("kind") or "grants").strip()})
     return tenant, principals, edges
+
+
+def _as_str(v):
+    """Coerce a graph-JSON field value to str; see cloud_iam._as_str for the
+    rationale."""
+    return v if isinstance(v, str) else str(v)
 
 
 def apply_saas(store, text):

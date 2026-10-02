@@ -57,32 +57,56 @@ def parse_iam(text):
         raise CloudIamError("expected a JSON object with principals/edges")
     provider = str(doc.get("provider") or "cloud")
     principals, edges = [], []
-    for p in doc.get("principals") or []:
-        arn = (p.get("arn") or p.get("id") or "").strip()
+    # ``principals`` MUST be a list — a string ("not a list") or a null walks
+    # straight into attribute errors on the item side if we trust the shape.
+    raw_principals = doc.get("principals") or []
+    if not isinstance(raw_principals, list):
+        raise CloudIamError(
+            f"principals must be a JSON list, got {type(raw_principals).__name__}")
+    for p in raw_principals:
+        if not isinstance(p, dict):
+            continue                                      # skip null / scalar entries
+        arn = _as_str(p.get("arn") or p.get("id") or "").strip()
         if not arn:
             continue
         # Accept ``aliases`` (and similar cross-domain identity fields) either nested
         # under ``props`` or at the top level — the latter is what most operators
         # write intuitively. Cross-domain stitching in ``fieldkit paths`` needs the
         # field to live inside ``props`` downstream, so merge it in here.
-        props = dict(p.get("props") or {})
+        props_val = p.get("props") or {}
+        props = dict(props_val) if isinstance(props_val, dict) else {}
         for extra in ("aliases", "roles"):
             if extra in p and extra not in props:
                 props[extra] = p[extra]
         principals.append({
             "arn": arn,
-            "name": (p.get("name") or arn).strip(),
-            "type": (p.get("type") or "principal").strip(),
+            "name": _as_str(p.get("name") or arn).strip(),
+            "type": _as_str(p.get("type") or "principal").strip(),
             "admin": bool(p.get("admin")),
             "owned": bool(p.get("owned")),
             "props": props,
-            "permissions": [str(x) for x in (p.get("permissions") or [])]})
-    for e in doc.get("edges") or []:
-        src, dst = (e.get("src") or "").strip(), (e.get("dst") or "").strip()
+            "permissions": [str(x) for x in (p.get("permissions") or [])
+                            if x is not None]})
+    raw_edges = doc.get("edges") or []
+    if not isinstance(raw_edges, list):
+        raise CloudIamError(
+            f"edges must be a JSON list, got {type(raw_edges).__name__}")
+    for e in raw_edges:
+        if not isinstance(e, dict):
+            continue
+        src = _as_str(e.get("src") or "").strip()
+        dst = _as_str(e.get("dst") or "").strip()
         if src and dst:
             edges.append({"src": src, "dst": dst,
-                          "kind": (e.get("kind") or "assume").strip()})
+                          "kind": _as_str(e.get("kind") or "assume").strip()})
     return provider, principals, edges
+
+
+def _as_str(v):
+    """Coerce a graph-JSON field value to str. Operators sometimes paste an
+    enumerator dump where a numeric id landed in a string field (an aws-cli
+    oddity); .strip() on an int blows up, so cast first."""
+    return v if isinstance(v, str) else str(v)
 
 
 class CloudIamError(ValueError):

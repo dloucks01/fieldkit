@@ -116,30 +116,45 @@ def parse_rbac(text):
         raise K8sRbacError("expected a JSON object with subjects/edges")
     cluster = str(doc.get("cluster") or "cluster")
     subjects, edges = [], []
-    for s in doc.get("subjects") or []:
-        sid = (s.get("id") or s.get("name") or "").strip()
+    raw_subjects = doc.get("subjects") or []
+    if not isinstance(raw_subjects, list):
+        raise K8sRbacError(
+            f"subjects must be a JSON list, got {type(raw_subjects).__name__}")
+    for s in raw_subjects:
+        if not isinstance(s, dict):
+            continue
+        sid = _as_str(s.get("id") or s.get("name") or "").strip()
         if not sid:
             continue
         # Preserve top-level ``aliases`` / ``roles`` into props (see cloud_iam.parse_iam
         # for the rationale) so cross-domain stitching can match this subject against
         # a federated identity in another domain.
-        props = dict(s.get("props") or {})
+        props_val = s.get("props") or {}
+        props = dict(props_val) if isinstance(props_val, dict) else {}
         for extra in ("aliases", "roles"):
             if extra in s and extra not in props:
                 props[extra] = s[extra]
         subjects.append({
             "key": sid,
-            "name": (s.get("name") or sid).strip(),
-            "type": (s.get("kind") or "serviceaccount").strip(),
+            "name": _as_str(s.get("name") or sid).strip(),
+            "type": _as_str(s.get("kind") or "serviceaccount").strip(),
             "admin": bool(s.get("admin")),
             "owned": bool(s.get("owned")),
             "props": props,
-            "permissions": [str(x) for x in (s.get("permissions") or [])]})
-    for e in doc.get("edges") or []:
-        src, dst = (e.get("src") or "").strip(), (e.get("dst") or "").strip()
+            "permissions": [str(x) for x in (s.get("permissions") or [])
+                            if x is not None]})
+    raw_edges = doc.get("edges") or []
+    if not isinstance(raw_edges, list):
+        raise K8sRbacError(
+            f"edges must be a JSON list, got {type(raw_edges).__name__}")
+    for e in raw_edges:
+        if not isinstance(e, dict):
+            continue
+        src = _as_str(e.get("src") or "").strip()
+        dst = _as_str(e.get("dst") or "").strip()
         if src and dst:
             edges.append({"src": src, "dst": dst,
-                          "kind": (e.get("kind") or "rbac").strip()})
+                          "kind": _as_str(e.get("kind") or "rbac").strip()})
     return cluster, subjects, edges
 
 
@@ -166,3 +181,9 @@ def escalation_paths(store, *, max_depth=8):
     """Every shortest owned→admin RBAC escalation path in the k8s subject graph."""
     return assetgraph.escalation_paths(store, K8S_SUBJECT, label="Kubernetes RBAC",
                                        max_depth=max_depth)
+
+def _as_str(v):
+    """Coerce a graph-JSON field value to str — operator-pasted enumerator
+    dumps occasionally land a numeric id in a string slot; .strip() on an int
+    blows up, so cast first."""
+    return v if isinstance(v, str) else str(v)
