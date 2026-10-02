@@ -306,7 +306,15 @@ class ExportTest(unittest.TestCase):
 
 
 class ArchitectureTest(unittest.TestCase):
-    """The load-bearing invariants from ARCHITECTURE.md, checked mechanically so they can't rot."""
+    """The load-bearing architecture invariants, checked mechanically so they can't rot:
+
+    1. Only ``fieldkit/runner.py`` spawns subprocesses — every other module
+       imports it and calls ``runner.run(argv, timeout=...)``.
+    2. No module does I/O at import time — ``fieldkit --help`` imports
+       everything, so a rogue ``open()`` / ``urlopen()`` / ``mkdir()`` at
+       module scope fails the invariant.
+    3. State goes through ``fieldkit/state.py`` — every read + write
+       through a Store method, no raw SQL scattered across handlers."""
 
     def _package_files(self):
         """Every .py file under fieldkit/, recursively, EXCLUDING the

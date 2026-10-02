@@ -14,7 +14,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fieldkit"
 version = "2.0.0.dev0"
-description = "Stateful internal-AD execution engine that drives your existing pentest toolkit."
+description = "Stateful, multi-domain execution engine for authorized pentests — drives your existing toolkit from a credential or foothold to full compromise."
 readme = "README.md"
 requires-python = ">=3.8"
 license = { file = "LICENSE" }

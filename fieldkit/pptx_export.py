@@ -1,8 +1,8 @@
 """PPTX executive deck exporter — stdlib-only.
 
 Produces an Open XML .pptx file suitable for a stakeholder read-out
-without taking a hard dependency on python-pptx (which would break the
-stdlib-only architectural invariant codified in AGENTS.md).
+without taking a hard dependency on python-pptx (fieldkit's engine is
+stdlib-only).
 
 The .pptx format is a ZIP archive of XML files. This module hand-rolls
 the minimal subset the PowerPoint / Keynote / LibreOffice Impress

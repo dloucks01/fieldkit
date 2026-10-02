@@ -136,4 +136,4 @@ itself, the same tool-agnostic handoff as everything else it drives.
 - `recce.json` — proven findings for the recce triage tool.
 - `<engagement>-<date>.tar.gz` — one-command bundle of the whole engagement (DB + report + cleanup + recce + full evidence trail) from `fieldkit archive`. **Internal**, not for the client.
 
-More detail: **`TECHNICAL-GUIDE.md`** · the visual map: **`WORKFLOW.md`**.
+Pairs with [**recce**](https://github.com/dloucks01/recce) — see **[`INTEGRATION.md`](INTEGRATION.md)**.

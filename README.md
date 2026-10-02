@@ -17,9 +17,7 @@ actually proved. **Standalone — clones to a base Kali box and runs with no ins
 (Python 3 stdlib only for the engine; the tools it drives are your existing kit.
 Optional `bin/fieldkit tui` uses vendored Textual — no `pip install` needed.)
 
-**New here?** → the one-page runbook is **[`QUICKSTART.md`](QUICKSTART.md)**, the visual
-map is **[`WORKFLOW.md`](WORKFLOW.md)**, the deep reference is
-**[`TECHNICAL-GUIDE.md`](TECHNICAL-GUIDE.md)**.
+**New here?** → the one-page runbook is **[`QUICKSTART.md`](QUICKSTART.md)**.
 
 ## Get started in 30 seconds
 
@@ -329,7 +327,8 @@ gruvbox / dracula / nord / etc. all recolor live).
 | `bin/fieldkit` | run it from a clone without installing |
 | `tests/` | the test suite (2,456 tests, ~8 min, no network/tools needed) |
 | `exploits/` | operator-staged binaries/PoCs (air-gap); see `SUPPLIED-BINARIES.md` |
-| `QUICKSTART.md` · `WORKFLOW.md` · `TECHNICAL-GUIDE.md` | operator docs; `ARCHITECTURE.md` = architecture notes |
+| `QUICKSTART.md` | one-page operator runbook |
+| `INTEGRATION.md` | pairing with [recce](https://github.com/dloucks01/recce) |
 | `package.sh` | bundle source + staged exploits into one archive for an air-gapped box |
 
 The engagement database holds client credentials **in the clear** — treat it as loot

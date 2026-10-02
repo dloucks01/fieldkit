@@ -4,6 +4,10 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
 
 # ---- Operator working files (per-engagement, NEVER commit) ----
 # The engagement database holds client credentials in the clear — treat the file as
